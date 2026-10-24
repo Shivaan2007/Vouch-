@@ -33,3 +33,11 @@ A nonce can be used once, ever. Only the claimed user can answer; only the reque
 
 ## Env
 `PORT`, `DB_PATH` (default `vouch.db`; use a persistent disk on Render or the database resets on deploy), `GEMINI_API_KEY` / `GEMINI_MODEL` (read by C's analyze()).
+
+## Demo reset (only when `DEMO_KEY` is set; otherwise these routes 404)
+- `GET /demo`: one-page UI (key box, status, reset, wipe). Open it on the phone running the hotspot.
+- `POST /demo/reset` (header `x-demo-key`): clears requests, approvals, alerts, rate limits. Users, pairs and the circle stay, so pre-paired phones keep working and the next request is a first request again.
+- `POST /demo/reset?hard=1`: also deletes users, pairs and circles. Every phone has to register and pair again.
+- `GET /demo/status`: who is registered and online, pair count, open requests. Check it before each judge.
+- Every reset emits `demo:reset { hard }` to all connected phones. B can listen to clear screens (after a hard reset the app should re-register and show the pairing screen).
+- To pre-seed: pair the three demo phones once (A, B, C in one circle), then use the soft reset between judges.

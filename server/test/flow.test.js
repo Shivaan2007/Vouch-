@@ -295,3 +295,36 @@ test('Gemini/analyze failures do not break the flow', async () => {
     } finally { await t.stop(); }
   }
 });
+
+test('demo reset: disabled without a key, guarded by it, soft keeps friends, hard wipes', async () => {
+  const off = await startServer();
+  try { assert.equal((await fetch(`${off.url}/demo`)).status, 404); } finally { await off.stop(); }
+
+  const t = await startServer({ demoKey: 'sekrit-demo-key' });
+  try {
+    const post = (path, key) => fetch(`${t.url}${path}`, { method: 'POST', headers: key ? { 'x-demo-key': key } : {} });
+    assert.equal((await post('/demo/reset')).status, 403);
+    assert.equal((await post('/demo/reset', 'wrong-key-value')).status, 403);
+    assert.equal((await fetch(`${t.url}/demo`)).status, 200);
+
+    const [req, friend] = [await t.phone('Sayan'), await t.phone('Shivaan')];
+    await pair(friend, req);
+    const { requestId, res } = await request(req, friend);
+    assert.equal(res.firstRequest, true);
+    await friend.call('verify:answer', friend.signAnswer(requestId, 'not_me'));
+
+    assert.equal((await post('/demo/reset', 'sekrit-demo-key')).status, 200);
+    assert.equal((await req.waitFor('demo:reset')).hard, false);
+    const status = await (await fetch(`${t.url}/demo/status`, { headers: { 'x-demo-key': 'sekrit-demo-key' } })).json();
+    assert.equal(status.pairs, 1);
+    assert.equal(status.users.length, 2);
+    assert.equal(status.openRequests, 0);
+    const again = await request(req, friend);               // still paired, and a first request again
+    assert.equal(again.res.ok, true);
+    assert.equal(again.res.firstRequest, true);
+
+    assert.equal((await post('/demo/reset?hard=1', 'sekrit-demo-key')).status, 200);
+    assert.equal((await req.call('circle:list')).friends.length, 0);
+    assert.equal((await req.call('auth:challenge', { userId: req.userId })).error, 'unknown_user');
+  } finally { await t.stop(); }
+});

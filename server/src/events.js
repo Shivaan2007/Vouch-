@@ -15,4 +15,5 @@ export const EV = {
   VERIFY_CONFIRM: 'verify:confirm',
   VERIFY_VERDICT: 'verify:verdict',
   CIRCLE_ALERT: 'circle:alert',
+  DEMO_RESET: 'demo:reset',
 };

@@ -15,6 +15,20 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const TOKEN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no look-alikes, easy to type
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
+const DEMO_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Vouch demo</title>
+<style>body{font:18px system-ui;margin:16px;max-width:420px}input,button{font:inherit;padding:14px;width:100%;margin:6px 0;box-sizing:border-box}
+button{border:0;border-radius:10px;background:#111;color:#fff}button.hard{background:#a00}pre{white-space:pre-wrap;background:#eee;padding:10px;border-radius:8px}</style></head>
+<body><h2>Vouch demo</h2><input id="k" type="password" placeholder="demo key" autocomplete="off">
+<button id="status">Check status</button><button id="reset">Reset demo (keep friends)</button>
+<button id="hard" class="hard">Wipe everything (re-pair phones)</button><pre id="out">ready</pre>
+<script>
+const out=document.getElementById('out'),key=()=>document.getElementById('k').value;
+async function go(path,method){try{const r=await fetch(path,{method,headers:{'x-demo-key':key()}});out.textContent=JSON.stringify(await r.json(),null,1)}catch(e){out.textContent=String(e)}}
+status.onclick=()=>go('/demo/status','GET');reset.onclick=()=>go('/demo/reset','POST');
+hard.onclick=()=>{if(confirm('Delete all users and pairs?'))go('/demo/reset?hard=1','POST')};
+</script></body></html>`;
+
 class ProtocolError extends Error {
   constructor(code) { super(code); this.code = code; }
 }
@@ -33,12 +47,30 @@ export function createVouchServer({
   timeoutMs = cfg.TIMEOUT_MS,
   sweepMs = 1000,
   analyze,
+  demoKey = process.env.DEMO_KEY,
   log = (...a) => console.log(...a),
 } = {}) {
   const db = openDb(dbPath);
   const app = express();
   app.get('/health', (_req, res) => res.json({ ok: true }));
   app.use(express.static(webDir));
+  
+  // ---- demo helpers (disabled unless DEMO_KEY is set) ----
+  const keyOk = (req) => {
+    const given = Buffer.from(String(req.get('x-demo-key') || ''));
+    const want = Buffer.from(String(demoKey || ''));
+    return !!demoKey && given.length === want.length && crypto.timingSafeEqual(given, want);
+  };
+  const demoGuard = (req, res, next) => {
+    if (!demoKey) return res.status(404).end();
+    return keyOk(req) ? next() : res.status(403).json({ ok: false, error: 'bad_key' });
+  };
+  app.get('/demo', (_req, res) => {
+    if (!demoKey) return res.status(404).end();
+    return res.type('html').send(DEMO_PAGE);
+  });
+  app.post('/demo/reset', demoGuard, (req, res) => res.json({ ok: true, ...resetDemo(req.query.hard === '1') }));
+  app.get('/demo/status', demoGuard, (_req, res) => res.json({ ok: true, ...demoStatus() }));
   const httpServer = http.createServer(app);
   const io = new Server(httpServer, { maxHttpBufferSize: 6 * 1024 * 1024 });
 
@@ -392,6 +424,29 @@ export function createVouchServer({
       }
     });
   });
+
+  // Soft reset: clear requests, approvals, alerts and counters. Users, pairs and the circle stay, so the
+  // pre-paired demo phones keep working and the next request is a "first request" again.
+  // Hard reset also deletes users, pairs and circles; every phone must register and pair again.
+  function resetDemo(hard) {
+    db.transaction(() => {
+      for (const t of ['approvals', 'alerts', 'verify_requests', 'pair_tokens']) db.exec(`DELETE FROM ${t}`);
+      if (hard) for (const t of ['pairs', 'circle_members', 'circles', 'users']) db.exec(`DELETE FROM ${t}`);
+    })();
+    rate.clear(); challenges.clear(); analyses.clear();
+    io.emit(EV.DEMO_RESET, { hard });
+    log(`demo reset hard=${hard}`);
+    return { hard, users: db.prepare('SELECT COUNT(*) n FROM users').get().n };
+  }
+
+  function demoStatus() {
+    const users = db.prepare('SELECT user_id, name FROM users ORDER BY created_at').all();
+    return {
+      users: users.map((u) => ({ name: u.name, online: sockets.has(u.user_id), circleId: circleOf(u.user_id) || null })),
+      pairs: db.prepare('SELECT COUNT(*) n FROM pairs').get().n,
+      openRequests: db.prepare("SELECT COUNT(*) n FROM verify_requests WHERE status = 'open'").get().n,
+    };
+  }
 
   // 2 minutes with no answer -> amber "wait". Polling survives restarts and needs no per-request timers.
   function sweep() {
