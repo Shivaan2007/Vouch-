@@ -113,8 +113,10 @@ async function boot() {
     if (S.keys) S.pubs = await pubsOf(S.keys);
     S.friends = await store.listFriends();
   } catch (e) {
-    $app.append(h('p', { class: 'err' }, "This browser is blocking storage, so Vouch can't keep your keys. Turn off private browsing and reload."));
-    return;
+    // Don't dead-end: start fresh and show what actually went wrong.
+    console.warn('Vouch boot:', e && (e.name + ': ' + e.message));
+    S.me = null; S.keys = null; S.pubs = null; S.friends = [];
+    S.bootError = (e && (e.name + ': ' + e.message)) || String(e);
   }
   const m = /pair=([A-Za-z0-9]+)/.exec(location.hash);
   if (m) S.pendingPair = m[1].toUpperCase();
@@ -126,6 +128,12 @@ async function boot() {
   applySize(S.size);
   try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js'); } catch { /* optional */ }
   buildShell();
+  if (!store.isPersistent() || S.bootError) {
+    const why = S.bootError || store.storageProblem();
+    $banners.append(h('div', { class: 'card' },
+      h('p', null, "This browser won't let Vouch save your key, so it can only remember you while this tab stays open. Don't reload or close it during the demo."),
+      h('p', { class: 'muted' }, `Details: ${why}`)));
+  }
   renderMain();
   wireEvents();
   connect({ onChallenge, onStatus });
