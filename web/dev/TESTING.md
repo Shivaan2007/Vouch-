@@ -1,0 +1,38 @@
+# Testing Vouch on two real phones
+
+Needs the server on PROTOCOL v2 (PR #4 description lists the changes). Use two phones: **A** (Sayan) and **B** (a friend). Every phone can do both jobs: *check* a request and *be asked* about one.
+
+## 0. Get an HTTPS link (phones need HTTPS for keys and camera)
+1. On the laptop: `npm start` (port 3000).
+2. In a second terminal: `cloudflared tunnel --url http://localhost:3000` (install once: `winget install Cloudflare.cloudflared`).
+3. Copy the `https://....trycloudflare.com` link. Open it on both phones (iPhone: Safari; Android: Chrome).
+4. First check: open `<link>/dev/crypto-test.html`, tap **Run tests** (all PASS), then **Create + save identity**, reload the page, tap **Reload → load identity and sign** (must PASS). Do this on BOTH phones.
+
+## 1. Pair (2 minutes)
+1. Phone A: open the link, type a name, **Get started**. Phone B: same.
+2. A: tab **My people** → **Add someone: show my code**.
+3. B: **My people** → **Scan a code** (or type the 8 characters) → **Join**.
+4. Both phones show a 6-digit code. Read it out loud. It must match → tap **It matches**.
+
+## 2. Message side (the "someone texted me" demo)
+1. On A: tab **Check a message**, type `60`, pick **Venmo / Cash App / Zelle**, tap **Check now**.
+2. B's phone speaks and shows: "Did you just ask A for $60.00 via Venmo?" Tap **Yes, that was me**. A shows a green **Verified** card (and speaks it).
+3. Repeat, but B taps **Not me**. A gets a full-screen red **STOP. Do not send money.** (spoken, vibrates on Android). Anyone else in the circle gets a warning banner.
+4. Gift cards: pick **Gift cards**, B taps Yes: A should stay amber (high-risk payment) with reasons.
+5. Bigger amount (`100`): B must also retype the amount; A is asked for the shared word (step 3).
+
+## 3. Call side (the "someone is calling me" demo)
+1. Both phones: tab **On a call?**. Both show the **same two words**, changing every minute.
+2. Call each other. A asks "What's our word?". B reads it. A types it into **Check what they said**: **Match**.
+3. Type a wrong word: **No match. Don't trust this call.**
+
+## 4. Android "Share to Vouch" (optional)
+Chrome menu → **Install app** / **Add to Home screen**. Then in Messages, long-press a message → **Share** → **Vouch**: the Check tab opens with the message pasted in. iPhone has no share target; use **Paste the message** instead.
+
+## 5. Accessibility spot checks
+- Tap **A+** twice: text gets much bigger, nothing gets cut off.
+- Turn on VoiceOver / TalkBack: tabs, the prompt and the STOP screen read aloud in order.
+- Phone in dark mode: all text still readable.
+
+## Pass criteria
+Pairing works both ways, Yes → green, Not me → red STOP + circle alert, words match on both phones, reload keeps you signed in, a hard demo reset sends both phones back to setup.
