@@ -33,8 +33,9 @@ A service with a disk redeploys with a short gap, and the pairings survive. With
 ## After the first deploy
 1. Open `https://<name>.onrender.com/health`. Expect `{"ok":true}`. Post the URL in the team chat.
 2. Open the URL on an iPhone and an Android. It must load over HTTPS (WebCrypto and the camera need it).
-3. Open `/demo`, enter `DEMO_KEY`, press Check status. Expect 0 users until phones pair.
-4. Pair the three demo phones once. From now on use Reset (not Wipe) between judges.
+3. Run `npm run smoke -- https://<name>.onrender.com`. It drives a full request (pair, signed Yes -> green, Not me -> red + alert) with fake phones and prints PASS or where it failed. Do this BEFORE pairing the real phones; add `--cleanup` with `DEMO_KEY=...` set to wipe the fake users afterwards.
+4. Open `/demo`, enter `DEMO_KEY`, press Check status. Expect 0 users until phones pair.
+5. Pair the three demo phones once. From now on use Reset (not Wipe) between judges.
 
 ## Custom domain (.tech from the MLH/GoDaddy offer)
 Service > Settings > Custom Domains > Add. Render shows the DNS records. At the registrar:

@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test",
     "start": "node server/src/index.js",
-    "dev": "node --watch server/src/index.js"
+    "dev": "node --watch server/src/index.js",
+    "smoke": "node server/scripts/smoke.js"
   },
   "repository": {
     "type": "git",
