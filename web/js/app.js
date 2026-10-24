@@ -314,7 +314,13 @@ function checkView() {
     who, channel,
     h('label', { for: 'amount' }, 'How much do they want? ($)'), amount,
     h('label', { for: 'method' }, 'How do they want it?'), method,
-    h('label', { for: 'text' }, 'The message'), text, paste, btn, msg,
+    h('label', { for: 'text' }, 'The message'), text, paste,
+    h('button', { class: 'ghost', onclick: () => {
+      Object.assign(F, { amount: '200', method: 'gift_card', channel: 'text',
+        text: "hey it's me, new number! I'm stuck at the store and my card got declined. Can you buy 2 Apple gift cards for me right now? Please don't tell mom, I'll pay you back tonight." });
+      renderMain();
+    } }, 'Try an example scam'),
+    btn, msg,
     h('div', { id: 'result', 'aria-live': 'polite' }));
 }
 
