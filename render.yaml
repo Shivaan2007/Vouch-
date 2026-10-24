@@ -1,0 +1,26 @@
+# Render Blueprint: New + > Blueprint > pick this repo. Secrets (sync: false) are asked for in the dashboard.
+# Starter plan because the free plan has no persistent disk and sleeps when idle (check render.com/pricing).
+services:
+  - type: web
+    name: vouch
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: DB_PATH
+        value: /var/data/vouch.db
+      - key: DEMO_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+    disk:
+      name: vouch-data
+      mountPath: /var/data
+      sizeGB: 1
