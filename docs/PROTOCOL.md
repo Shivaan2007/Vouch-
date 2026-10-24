@@ -56,7 +56,7 @@ deriveKey). Stored in IndexedDB on the phone. Only public keys ever leave the ph
   Errors: `BAD_SIGNATURE`, `ALREADY_ANSWERED`, `NOT_ALLOWED`.
 - Tier 2+: checker's phone checks the word locally, then `verify:wordcheck { requestId, passed:true }`.
 - Tier 3: server picks one other circle member of the claimed person (not the checker) and emits
-  `verify:confirm_prompt { requestId, checkerName, claimedName, amountCents, method }`; they reply
+  `verify:confirm_prompt { requestId, claimedId, checkerName, claimedName, amountCents, method }` (`claimedId` is needed to build `confirmString`); they reply
   `verify:confirm { requestId, answer:"yes"|"no", ts, nonce, sig }` (sig over `confirmString`).
 - Timeout: no answer within 120 s → `confidence.answer = "timeout"`.
 - Server emits `verify:update` (payload §7) to the checker on every change (created, answered, word, confirm, timeout, AI tags ready).
