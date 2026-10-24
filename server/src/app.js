@@ -7,13 +7,20 @@ import { Server } from 'socket.io';
 import * as cfg from './config.js';
 import { EV } from './events.js';
 import { openDb } from './db.js';
-import { verifySig, answerString, loginString, newId, sha256hex } from './sig.js';
+import { verifySig, isP256Spki, newId, sha256hex, normalizeText } from './sig.js';
 import { decide, tierFor } from './decision.js';
 import { analyzeSafe } from './analyze.js';
+import { authString, answerString, confirmString, METHODS } from '../../web/js/lib/canonical.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const TOKEN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no look-alikes, easy to type
-const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const HEX32 = /^[0-9a-f]{32}$/;
+const IMAGE_URL = /^data:image\/(jpeg|png);base64,/;
+const PRE_AUTH = new Set([EV.USER_REGISTER, EV.AUTH_LOGIN]);
+
+class ProtocolError extends Error {
+  constructor(code) { super(code); this.code = code; }
+}
+const fail = (code) => { throw new ProtocolError(code); };
 
 const DEMO_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Vouch demo</title>
@@ -29,18 +36,6 @@ status.onclick=()=>go('/demo/status','GET');reset.onclick=()=>go('/demo/reset','
 hard.onclick=()=>{if(confirm('Delete all users and pairs?'))go('/demo/reset?hard=1','POST')};
 </script></body></html>`;
 
-class ProtocolError extends Error {
-  constructor(code) { super(code); this.code = code; }
-}
-const fail = (code) => { throw new ProtocolError(code); };
-
-function isP256Spki(b64) {
-  try {
-    const key = crypto.createPublicKey({ key: Buffer.from(b64, 'base64'), format: 'der', type: 'spki' });
-    return key.asymmetricKeyType === 'ec' && key.asymmetricKeyDetails?.namedCurve === 'prime256v1';
-  } catch { return false; }
-}
-
 export function createVouchServer({
   dbPath = ':memory:',
   webDir = path.join(here, '..', '..', 'web'),
@@ -53,54 +48,43 @@ export function createVouchServer({
   const db = openDb(dbPath);
   const app = express();
   app.get('/health', (_req, res) => res.json({ ok: true }));
-  app.use(express.static(webDir));
-  
+
   // ---- demo helpers (disabled unless DEMO_KEY is set) ----
-  const keyOk = (req) => {
-    const given = Buffer.from(String(req.get('x-demo-key') || ''));
-    const want = Buffer.from(String(demoKey || ''));
-    return !!demoKey && given.length === want.length && crypto.timingSafeEqual(given, want);
-  };
   const demoGuard = (req, res, next) => {
     if (!demoKey) return res.status(404).end();
-    return keyOk(req) ? next() : res.status(403).json({ ok: false, error: 'bad_key' });
+    const given = Buffer.from(String(req.get('x-demo-key') || ''));
+    const want = Buffer.from(String(demoKey));
+    return given.length === want.length && crypto.timingSafeEqual(given, want)
+      ? next() : res.status(403).json({ ok: false, error: 'bad_key' });
   };
-  app.get('/demo', (_req, res) => {
-    if (!demoKey) return res.status(404).end();
-    return res.type('html').send(DEMO_PAGE);
-  });
+  app.get('/demo', (_req, res) => (demoKey ? res.type('html').send(DEMO_PAGE) : res.status(404).end()));
   app.post('/demo/reset', demoGuard, (req, res) => res.json({ ok: true, ...resetDemo(req.query.hard === '1') }));
   app.get('/demo/status', demoGuard, (_req, res) => res.json({ ok: true, ...demoStatus() }));
+  app.use(express.static(webDir));
+
   const httpServer = http.createServer(app);
   const io = new Server(httpServer, { maxHttpBufferSize: 6 * 1024 * 1024 });
 
-  const sockets = new Map();     // userId -> Set<socket>
-  const challenges = new Map();  // userId -> { challenge, expires }
-  const rate = new Map();        // userId -> [timestamps]
-  const analyses = new Map();    // requestId -> Promise (analysis still running)
+  const rate = new Map();      // checker id -> request timestamps
+  const pairRate = new Map();  // user id -> pair:accept timestamps
+  const analyses = new Map();  // requestId -> Promise while AI analysis is running
 
   const q = {
     user: db.prepare('SELECT * FROM users WHERE user_id = ?'),
     insUser: db.prepare('INSERT INTO users VALUES (?,?,?,?,?)'),
-    setName: db.prepare('UPDATE users SET name = ? WHERE user_id = ?'),
     insToken: db.prepare('INSERT INTO pair_tokens VALUES (?,?,?,0)'),
     token: db.prepare('SELECT * FROM pair_tokens WHERE token = ?'),
     useToken: db.prepare('UPDATE pair_tokens SET used = 1 WHERE token = ? AND used = 0'),
     pair: db.prepare('SELECT * FROM pairs WHERE user_a = ? AND user_b = ?'),
-    insPair: db.prepare('INSERT INTO pairs VALUES (?,?,?,?)'),
-    memberOf: db.prepare('SELECT circle_id FROM circle_members WHERE user_id = ?'),
-    insCircle: db.prepare('INSERT INTO circles VALUES (?,?)'),
-    insMember: db.prepare('INSERT OR IGNORE INTO circle_members VALUES (?,?,?)'),
-    moveMembers: db.prepare('UPDATE circle_members SET circle_id = ? WHERE circle_id = ?'),
-    delCircle: db.prepare('DELETE FROM circles WHERE circle_id = ?'),
-    members: db.prepare(`SELECT u.* FROM circle_members m JOIN users u ON u.user_id = m.user_id
-                         WHERE m.circle_id = ? ORDER BY m.joined_at, u.user_id`),
-    pairedWith: db.prepare('SELECT 1 FROM pairs WHERE user_a = ? AND user_b = ?'),
+    insPair: db.prepare('INSERT INTO pairs VALUES (?,?,?)'),
+    friends: db.prepare(`SELECT u.*, p.created_at AS paired_at FROM pairs p
+      JOIN users u ON u.user_id = CASE WHEN p.user_a = @u THEN p.user_b ELSE p.user_a END
+      WHERE p.user_a = @u OR p.user_b = @u ORDER BY p.created_at, u.user_id`),
     priorReq: db.prepare(`SELECT 1 FROM verify_requests WHERE
-                          (requester_id = ? AND claimed_id = ?) OR (requester_id = ? AND claimed_id = ?) LIMIT 1`),
+      (checker_id = @a AND claimed_id = @b) OR (checker_id = @b AND claimed_id = @a) LIMIT 1`),
     insReq: db.prepare(`INSERT INTO verify_requests
-      (request_id, requester_id, claimed_id, amount, payment_method, tier, first_request, text_hash, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`),
+      (request_id, checker_id, claimed_id, amount_cents, method, channel, tier, tags, payment_risk, first_request, text_hash, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
     req: db.prepare('SELECT * FROM verify_requests WHERE request_id = ?'),
     setAnalysis: db.prepare('UPDATE verify_requests SET tags=?, payment_risk=?, explanation=?, source=? WHERE request_id=?'),
     setStatus: db.prepare('UPDATE verify_requests SET status = ? WHERE request_id = ?'),
@@ -108,332 +92,303 @@ export function createVouchServer({
     setSecond: db.prepare('UPDATE verify_requests SET second_user_id = ? WHERE request_id = ?'),
     insApproval: db.prepare('INSERT INTO approvals (request_id,user_id,role,answer,ts,nonce,sig,created_at) VALUES (?,?,?,?,?,?,?,?)'),
     approval: db.prepare('SELECT * FROM approvals WHERE request_id = ? AND role = ?'),
-    insAlert: db.prepare('INSERT INTO alerts (circle_id,request_id,impersonated_name,ts) VALUES (?,?,?,?)'),
+    insAlert: db.prepare('INSERT INTO alerts (claimed_id,request_id,impersonated_name,ts) VALUES (?,?,?,?)'),
     expired: db.prepare(`SELECT request_id FROM verify_requests WHERE status = 'open' AND created_at <= ?`),
     openFor: db.prepare(`SELECT * FROM verify_requests WHERE claimed_id = ? AND status = 'open' AND created_at > ?`),
     secondFor: db.prepare(`SELECT * FROM verify_requests WHERE second_user_id = ? AND status = 'answered'`),
-    recentBy: db.prepare('SELECT request_id FROM verify_requests WHERE requester_id = ? AND created_at > ?'),
+    recentBy: db.prepare('SELECT request_id FROM verify_requests WHERE checker_id = ? AND created_at > ?'),
   };
 
   const orderedPair = (a, b) => (a < b ? [a, b] : [b, a]);
-  const emitTo = (userId, ev, payload) => sockets.get(userId)?.forEach((s) => s.emit(ev, payload));
-  const publicUser = (u) => ({ userId: u.user_id, name: u.name, signPub: u.sign_pub, ecdhPub: u.ecdh_pub });
-
-  function attach(socket, userId) {
-    socket.data.userId = userId;
-    if (!sockets.has(userId)) sockets.set(userId, new Set());
-    sockets.get(userId).add(socket);
-  }
-
-  function register({ userId, name, signPub, ecdhPub }) {
-    if (!ID_RE.test(userId || '')) fail('bad_user_id');
-    if (typeof name !== 'string' || !name.trim() || name.length > 40) fail('bad_name');
-    if (!isP256Spki(signPub) || !isP256Spki(ecdhPub)) fail('bad_key');
-    q.insUser.run(userId, name.trim(), signPub, ecdhPub, Date.now());
-  }
-
-  function requireAuth(socket) {
-    return socket.data.userId || fail('not_authenticated');
-  }
-
-  // ---- circles ----
-  function joinCircles(a, b) {
-    const ca = q.memberOf.get(a)?.circle_id;
-    const cb = q.memberOf.get(b)?.circle_id;
+  const room = (userId) => `user:${userId}`;
+  const emitTo = (userId, ev, payload) => io.to(room(userId)).emit(ev, payload);
+  const isOnline = (userId) => (io.sockets.adapter.rooms.get(room(userId))?.size || 0) > 0;
+  const pub = (u) => ({ id: u.user_id, name: u.name, signPub: u.sign_pub, exchPub: u.exch_pub });
+  const isPaired = (a, b) => !!q.pair.get(...orderedPair(a, b));
+  const throttle = (map, key, limit) => {
     const now = Date.now();
-    let id = ca || cb;
-    if (!id) { id = newId(8); q.insCircle.run(id, now); }
-    if (ca && cb && ca !== cb) { q.moveMembers.run(ca, cb); q.delCircle.run(cb); }
-    q.insMember.run(a, id, now);
-    q.insMember.run(b, id, now);
-    return id;
+    const hits = (map.get(key) || []).filter((t) => now - t < 60000);
+    if (hits.length >= limit) fail('RATE_LIMITED');
+    hits.push(now);
+    map.set(key, hits);
+  };
+
+  function freshChallenge(socket) {
+    socket.data.nonce = crypto.randomBytes(16).toString('hex');
+    socket.emit(EV.AUTH_CHALLENGE, { nonce: socket.data.nonce });
   }
-  const circleOf = (userId) => q.memberOf.get(userId)?.circle_id;
+  function authed(socket, userId) {
+    socket.data.userId = userId;
+    socket.join(room(userId));
+  }
+  function signedChallenge(socket, signPub, sig) {
+    const nonce = socket.data.nonce;
+    if (!nonce || typeof sig !== 'string') fail('BAD_SIGNATURE');
+    const ok = verifySig(signPub, authString(nonce), sig);
+    if (!ok) fail('BAD_SIGNATURE');
+    freshChallenge(socket); // a nonce is good for one login only
+  }
 
   // ---- verdicts ----
-  function buildVerdict(r) {
-    const requester = q.user.get(r.requester_id);
+  function buildUpdate(r) {
     const claimed = q.user.get(r.claimed_id);
     const a = q.approval.get(r.request_id, 'claimed');
     const s = q.approval.get(r.request_id, 'second');
     const tags = JSON.parse(r.tags);
+    const timedOut = r.status === 'timed_out' && !a;
     const d = decide({
-      answer: a ? a.answer : 'none', tags, paymentRisk: r.payment_risk, amount: r.amount,
-      wordOk: !!r.word_ok, secondConfirms: s?.answer === 'yes' ? 1 : 0, secondNo: s?.answer === 'no',
-      timedOut: r.status === 'timed_out',
+      answer: a ? a.answer : 'none', tags, paymentRisk: r.payment_risk, amountCents: r.amount_cents,
+      wordOk: !!r.word_ok, secondConfirms: s?.answer === 'yes' ? 1 : 0, secondNo: s?.answer === 'no', timedOut,
     });
     const reasons = [...d.reasons];
     if (d.needs.second && a?.answer === 'yes' && !r.second_user_id && d.verdict === 'amber') {
-      reasons.push('No second member available. Add a third member to your circle to approve large amounts.');
+      reasons.push('Add a third member to your circle');
     }
     return {
-      requestId: r.request_id, verdict: d.verdict, reasons, tier: d.tier, needs: d.needs,
+      requestId: r.request_id, checkerId: r.checker_id, claimedId: r.claimed_id,
+      verdict: d.verdict, tier: d.tier, reasons, needs: d.needs,
       stages: {
-        information: { claimedName: claimed.name, requesterName: requester.name, amount: r.amount, paymentMethod: r.payment_method },
+        information: { claimedName: claimed.name, amountCents: r.amount_cents, method: r.method, channel: r.channel },
         understanding: { tags, paymentRisk: r.payment_risk, explanation: r.explanation, firstRequest: !!r.first_request },
         confidence: {
-          answer: a ? a.answer : 'none', wordOk: !!r.word_ok,
+          answer: a ? a.answer : (timedOut ? 'timeout' : 'none'), wordOk: !!r.word_ok,
           approvals: { needed: d.tier === 3 ? 2 : 1, received: (a?.answer === 'yes' ? 1 : 0) + (s?.answer === 'yes' ? 1 : 0) },
-          answerSig: a ? { ts: a.ts, nonce: a.nonce, sig: a.sig } : null,
+          answerSig: a ? { answer: a.answer, ts: a.ts, nonce: a.nonce, sig: a.sig } : null,
         },
       },
     };
   }
 
-  function pushVerdict(requestId) {
+  function pushUpdate(requestId) {
     const r = q.req.get(requestId);
-    if (!r) return null;
-    const v = buildVerdict(r);
-    emitTo(r.requester_id, EV.VERIFY_VERDICT, v);
-    emitTo(r.claimed_id, EV.VERIFY_VERDICT, v);
-    log(`verdict ${requestId.slice(0, 8)} ${v.verdict} tier${v.tier}`);
-    return v;
+    if (!r) return;
+    const u = buildUpdate(r);
+    emitTo(r.checker_id, EV.VERIFY_UPDATE, u);
+    log(`update ${requestId.slice(0, 8)} ${u.verdict} tier${u.tier}`);
   }
 
   const promptFor = (r) => ({
-    requestId: r.request_id, fromName: q.user.get(r.requester_id).name, amount: r.amount,
-    paymentMethod: r.payment_method, tier: r.tier, ts: r.created_at,
+    requestId: r.request_id, checker: { id: r.checker_id, name: q.user.get(r.checker_id).name },
+    amountCents: r.amount_cents, method: r.method, channel: r.channel, tier: r.tier, ts: r.created_at,
+  });
+  const confirmPromptFor = (r) => ({
+    requestId: r.request_id, claimedId: r.claimed_id, checkerName: q.user.get(r.checker_id).name,
+    claimedName: q.user.get(r.claimed_id).name, amountCents: r.amount_cents, method: r.method,
   });
 
+  // The claimed person's other friends (not the checker) can act as the second member.
+  const secondCandidates = (r) => q.friends.all({ u: r.claimed_id }).filter((u) => u.user_id !== r.checker_id);
+
   function promptSecond(r) {
-    const members = q.members.all(circleOf(r.claimed_id)).map((u) => u.user_id)
-      .filter((id) => id !== r.requester_id && id !== r.claimed_id);
-    if (!members.length) return;
-    q.setSecond.run(members[0], r.request_id);
-    emitTo(members[0], EV.VERIFY_CONFIRM_PROMPT, {
-      requestId: r.request_id, fromName: q.user.get(r.requester_id).name,
-      claimedName: q.user.get(r.claimed_id).name, amount: r.amount,
-    });
+    const [pick] = secondCandidates(r);
+    if (!pick) return;
+    q.setSecond.run(pick.user_id, r.request_id);
+    emitTo(pick.user_id, EV.VERIFY_CONFIRM_PROMPT, confirmPromptFor(r));
   }
 
-  // After a reconnect, resend anything still waiting on this user.
+  function alertFriends(r) {
+    const claimed = q.user.get(r.claimed_id);
+    const ts = Date.now();
+    q.insAlert.run(claimed.user_id, r.request_id, claimed.name, ts);
+    for (const f of q.friends.all({ u: claimed.user_id })) {
+      emitTo(f.user_id, EV.CIRCLE_ALERT, { impersonatedName: claimed.name, claimedId: claimed.user_id, requestId: r.request_id, ts });
+    }
+  }
+
+  // After a (re)login, resend anything still waiting on this user.
   function resendPending(userId) {
     const now = Date.now();
     for (const r of q.openFor.all(userId, now - timeoutMs)) emitTo(userId, EV.VERIFY_PROMPT, promptFor(r));
     for (const r of q.secondFor.all(userId)) {
-      if (q.approval.get(r.request_id, 'second')) continue;
-      emitTo(userId, EV.VERIFY_CONFIRM_PROMPT, {
-        requestId: r.request_id, fromName: q.user.get(r.requester_id).name,
-        claimedName: q.user.get(r.claimed_id).name, amount: r.amount,
-      });
+      if (!q.approval.get(r.request_id, 'second')) emitTo(userId, EV.VERIFY_CONFIRM_PROMPT, confirmPromptFor(r));
     }
     for (const { request_id } of q.recentBy.all(userId, now - 10 * 60 * 1000)) {
-      const r = q.req.get(request_id);
-      emitTo(userId, EV.VERIFY_VERDICT, buildVerdict(r));
+      emitTo(userId, EV.VERIFY_UPDATE, buildUpdate(q.req.get(request_id)));
     }
   }
 
-  function checkSigned({ userId, requestId, answer, ts, nonce, sig }) {
-    if (!['yes', 'not_me', 'no'].includes(answer)) fail('bad_answer');
-    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > cfg.MAX_TS_AGE_MS) fail('stale_timestamp');
-    if (typeof nonce !== 'string' || nonce.length < 8 || nonce.length > 64) fail('bad_nonce');
-    if (typeof sig !== 'string') fail('bad_signature');
-    const u = q.user.get(userId);
-    if (!u || !verifySig(u.sign_pub, answerString(requestId, answer, ts, nonce), sig)) fail('bad_signature');
+  function checkNonceTs(ts, nonce) {
+    if (!Number.isInteger(ts) || Math.abs(Date.now() - ts) > cfg.MAX_TS_AGE_MS) fail('BAD_INPUT');
+    if (typeof nonce !== 'string' || !HEX32.test(nonce)) fail('BAD_INPUT');
   }
 
   function storeApproval(r, userId, role, p) {
     try {
       q.insApproval.run(r.request_id, userId, role, p.answer, p.ts, p.nonce, p.sig, Date.now());
-    } catch { fail('replay'); } // same nonce, or this role already answered
+    } catch { // same nonce used before, or this role already answered
+      fail(q.approval.get(r.request_id, role) ? 'ALREADY_ANSWERED' : 'BAD_INPUT');
+    }
   }
 
   // ---- handlers ----
   const handlers = {
     [EV.USER_REGISTER](socket, p) {
-      if (q.user.get(p.userId)) fail('user_exists');
-      register(p);
-      attach(socket, p.userId);
-      return { userId: p.userId };
+      if (typeof p.name !== 'string' || !p.name.trim() || p.name.trim().length > 20) fail('BAD_INPUT');
+      if (!isP256Spki(p.signPub) || !isP256Spki(p.exchPub)) fail('BAD_INPUT');
+      signedChallenge(socket, p.signPub, p.sig); // proves the phone holds the private key
+      const userId = newId();
+      q.insUser.run(userId, p.name.trim(), p.signPub, p.exchPub, Date.now());
+      authed(socket, userId);
+      return { userId };
     },
 
-    [EV.AUTH_CHALLENGE](_socket, { userId }) {
-      if (!q.user.get(userId)) fail('unknown_user'); // phone should user:register again (DB may have been wiped)
-      const challenge = newId(16);
-      challenges.set(userId, { challenge, expires: Date.now() + 60000 });
-      return { challenge };
-    },
-
-    [EV.AUTH_LOGIN](socket, { userId, challenge, sig }) {
-      const u = q.user.get(userId) || fail('unknown_user');
-      const c = challenges.get(userId);
-      challenges.delete(userId); // single use
-      if (!c || c.challenge !== challenge || c.expires < Date.now()) fail('bad_challenge');
-      if (typeof sig !== 'string' || !verifySig(u.sign_pub, loginString(userId, challenge), sig)) fail('bad_signature');
-      attach(socket, userId);
-      setImmediate(() => resendPending(userId));
-      return { userId, name: u.name };
+    [EV.AUTH_LOGIN](socket, p) {
+      const u = (typeof p.userId === 'string' && q.user.get(p.userId)) || fail('UNKNOWN_USER');
+      signedChallenge(socket, u.sign_pub, p.sig);
+      authed(socket, u.user_id);
+      setImmediate(() => resendPending(u.user_id));
+      return { user: { id: u.user_id, name: u.name } };
     },
 
     [EV.CIRCLE_LIST](socket) {
-      const me = requireAuth(socket);
-      const cid = circleOf(me);
-      const friends = cid ? q.members.all(cid).filter((u) => u.user_id !== me).map((u) => ({
-        ...publicUser(u), paired: !!q.pairedWith.get(...orderedPair(me, u.user_id)),
-      })) : [];
-      return { circleId: cid || null, friends };
+      const friends = q.friends.all({ u: socket.data.userId }).map((u) => ({ ...pub(u), pairedAt: u.paired_at }));
+      return { friends };
     },
 
-    [EV.PAIR_START](socket, { userId }) {
-      const me = requireAuth(socket);
-      if (userId !== me) fail('forbidden');
+    [EV.PAIR_OFFER](socket) {
       let token = '';
-      for (const b of crypto.randomBytes(8)) token += TOKEN_ALPHABET[b % TOKEN_ALPHABET.length];
+      for (const b of crypto.randomBytes(8)) token += cfg.TOKEN_ALPHABET[b % cfg.TOKEN_ALPHABET.length];
       const expiresAt = Date.now() + cfg.PAIR_TOKEN_TTL_MS;
-      q.insToken.run(token, me, expiresAt);
+      q.insToken.run(token, socket.data.userId, expiresAt);
       return { token, expiresAt };
     },
 
-    [EV.PAIR_COMPLETE](socket, p) {
-      const { userId, name, signPub, ecdhPub } = p;
-      const t = q.token.get(String(p.token || '').toUpperCase());
-      if (!t) fail('bad_token');
-      if (t.used) fail('token_used');
-      if (t.expires_at < Date.now()) fail('token_expired');
-      if (t.user_id === userId) fail('cannot_pair_self');
-      const existing = q.user.get(userId);
-      if (existing) {
-        if (socket.data.userId !== userId) fail('not_authenticated');
-        if (existing.sign_pub !== signPub || existing.ecdh_pub !== ecdhPub) fail('key_mismatch');
-        if (typeof name === 'string' && name.trim() && name.length <= 40) q.setName.run(name.trim(), userId);
-      } else {
-        register({ userId, name, signPub, ecdhPub });
-        attach(socket, userId);
-      }
-      if (!q.useToken.run(t.token).changes) fail('token_used');
-      const [ua, ub] = orderedPair(t.user_id, userId);
-      let pair = q.pair.get(ua, ub);
-      if (!pair) {
-        pair = { pair_id: newId(8) };
-        q.insPair.run(pair.pair_id, ua, ub, Date.now());
-      }
-      joinCircles(t.user_id, userId);
-      const a = q.user.get(t.user_id);
-      const b = q.user.get(userId);
-      emitTo(t.user_id, EV.PAIR_DONE, { pairId: pair.pair_id, peer: publicUser(b) });
-      emitTo(userId, EV.PAIR_DONE, { pairId: pair.pair_id, peer: publicUser(a) });
-      return { pairId: pair.pair_id, peer: publicUser(a) };
+    [EV.PAIR_ACCEPT](socket, p) {
+      const me = socket.data.userId;
+      throttle(pairRate, me, cfg.PAIR_ATTEMPTS_PER_MIN);
+      const code = String(p.token || '').toUpperCase().replace(/[\s-]/g, '');
+      const t = q.token.get(code);
+      if (!t || t.used || t.expires_at < Date.now()) fail('TOKEN_INVALID');
+      if (t.user_id === me) fail('SELF_PAIR');
+      if (isPaired(t.user_id, me)) fail('ALREADY_PAIRED');
+      if (!q.useToken.run(t.token).changes) fail('TOKEN_INVALID');
+      q.insPair.run(...orderedPair(t.user_id, me), Date.now());
+      emitTo(t.user_id, EV.PAIR_COMPLETED, { peer: pub(q.user.get(me)) });
+      return { peer: pub(q.user.get(t.user_id)) };
     },
 
-    async [EV.VERIFY_REQUEST](socket, p) {
-      const me = requireAuth(socket);
-      const { requestId, claimedUserId, amount, paymentMethod, text, imageBase64, ts } = p;
-      if (!ID_RE.test(requestId || '')) fail('bad_request_id');
-      if (q.req.get(requestId)) fail('duplicate_request');
-      if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0 || amount > cfg.MAX_AMOUNT) fail('bad_amount');
-      if (!Object.hasOwn(cfg.METHOD_RISK, paymentMethod)) fail('bad_payment_method');
-      if (text != null && (typeof text !== 'string' || text.length > 20000)) fail('bad_text');
-      if (imageBase64 != null && (typeof imageBase64 !== 'string' || imageBase64.length > cfg.MAX_IMAGE_BASE64_CHARS)) fail('image_too_large');
-      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > cfg.MAX_TS_AGE_MS) fail('stale_timestamp');
-      if (claimedUserId === me) fail('cannot_verify_self');
-      const claimed = q.user.get(claimedUserId) || fail('unknown_friend');
-      if (!q.pairedWith.get(...orderedPair(me, claimedUserId))) fail('not_paired');
+    [EV.VERIFY_REQUEST](socket, p) {
+      const me = socket.data.userId;
+      const { claimedId, amountCents, method, channel, text, imageDataUrl } = p;
+      if (typeof claimedId !== 'string' || !HEX32.test(claimedId)) fail('BAD_INPUT');
+      if (!Number.isInteger(amountCents) || amountCents < 1 || amountCents > cfg.MAX_AMOUNT_CENTS) fail('BAD_INPUT');
+      if (!METHODS.includes(method) || !cfg.CHANNELS.includes(channel)) fail('BAD_INPUT');
+      if (text != null && (typeof text !== 'string' || text.length > cfg.MAX_TEXT_CHARS)) fail('BAD_INPUT');
+      if (imageDataUrl != null && (typeof imageDataUrl !== 'string' || imageDataUrl.length > cfg.MAX_IMAGE_DATAURL_CHARS
+        || !IMAGE_URL.test(imageDataUrl))) fail('BAD_INPUT');
+      if (!q.user.get(claimedId) || !isPaired(me, claimedId)) fail('NOT_PAIRED');
+      throttle(rate, me, cfg.RATE_LIMIT_PER_MIN);
 
-      const now = Date.now();
-      const hits = (rate.get(me) || []).filter((t) => now - t < 60000);
-      if (hits.length >= cfg.RATE_LIMIT_PER_MIN) fail('rate_limited');
-      hits.push(now);
-      rate.set(me, hits);
-
-      const firstRequest = !q.priorReq.get(me, claimedUserId, claimedUserId, me);
-      const tier = tierFor(amount);
-      q.insReq.run(requestId, me, claimedUserId, amount, paymentMethod, tier, firstRequest ? 1 : 0,
-        text ? sha256hex(text) : null, now);
+      const firstRequest = !q.priorReq.get({ a: me, b: claimedId });
+      const tier = tierFor(amountCents);
+      const requestId = newId();
+      q.insReq.run(requestId, me, claimedId, amountCents, method, channel, tier,
+        JSON.stringify(firstRequest ? ['FIRST_REQUEST'] : []), cfg.METHOD_RISK[method], firstRequest ? 1 : 0,
+        text ? sha256hex(normalizeText(text)) : null, Date.now());
       const r = q.req.get(requestId);
-      emitTo(claimedUserId, EV.VERIFY_PROMPT, promptFor(r));
 
-      // Text and image are used here and dropped. They are never written anywhere.
+      // Text and image are used for analysis here and dropped. They are never written anywhere.
       const job = analyzeSafe({
-        text, imageBase64, amount, paymentMethod, claimedName: claimed.name, firstRequest,
+        text, imageBase64: imageDataUrl ? imageDataUrl.replace(IMAGE_URL, '') : undefined,
+        amount: amountCents / 100, paymentMethod: method, claimedName: q.user.get(claimedId).name, firstRequest,
       }, { analyze }).then((a) => {
         q.setAnalysis.run(JSON.stringify(a.tags), a.paymentRisk, a.explanation, a.source, requestId);
       }).finally(() => analyses.delete(requestId));
       analyses.set(requestId, job);
-      job.then(() => pushVerdict(requestId));
-      return { requestId, tier, needs: { word: tier >= 2, second: tier === 3 }, firstRequest };
+      job.then(() => pushUpdate(requestId));
+
+      // After the ack has gone out, so the phone knows the requestId before the first update.
+      setImmediate(() => { emitTo(claimedId, EV.VERIFY_PROMPT, promptFor(r)); pushUpdate(requestId); });
+      return { requestId };
     },
 
     async [EV.VERIFY_ANSWER](socket, p) {
-      const me = requireAuth(socket);
-      const r = q.req.get(p.requestId) || fail('unknown_request');
-      if (r.claimed_id !== me) fail('forbidden');
-      if (r.status === 'timed_out') fail('expired');
-      if (r.status !== 'open') fail('already_answered');
-      if (!['yes', 'not_me'].includes(p.answer)) fail('bad_answer');
-      checkSigned({ userId: me, ...p });
+      const me = socket.data.userId;
+      const r = (typeof p.requestId === 'string' && q.req.get(p.requestId)) || fail('NOT_FOUND');
+      if (r.claimed_id !== me) fail('NOT_ALLOWED');
+      if (q.approval.get(r.request_id, 'claimed')) fail('ALREADY_ANSWERED');
+      if (r.status !== 'open') fail('NOT_ALLOWED'); // timed out
+      if (!['yes', 'not_me'].includes(p.answer)) fail('BAD_INPUT');
+      checkNonceTs(p.ts, p.nonce);
+      if (r.tier >= 2 && p.retypedCents !== r.amount_cents) fail('AMOUNT_MISMATCH');
+      const signed = answerString({
+        requestId: r.request_id, checkerId: r.checker_id, claimedId: r.claimed_id,
+        amountCents: r.amount_cents, method: r.method, answer: p.answer, ts: p.ts, nonce: p.nonce,
+      });
+      if (typeof p.sig !== 'string' || !verifySig(q.user.get(me).sign_pub, signed, p.sig)) fail('BAD_SIGNATURE');
       storeApproval(r, me, 'claimed', p);
       q.setStatus.run('answered', r.request_id);
-      if (p.answer === 'not_me') {
-        const cid = circleOf(me);
-        const name = q.user.get(me).name;
-        if (cid) {
-          q.insAlert.run(cid, r.request_id, name, Date.now());
-          for (const m of q.members.all(cid)) {
-            emitTo(m.user_id, EV.CIRCLE_ALERT, { impersonatedName: name, requestId: r.request_id, ts: Date.now() });
-          }
-        }
-      } else if (r.tier === 3) {
-        promptSecond(r);
-      }
+      if (p.answer === 'not_me') alertFriends(r);
+      else if (r.tier === 3) promptSecond(r);
       await analyses.get(r.request_id);
-      pushVerdict(r.request_id);
+      pushUpdate(r.request_id);
       return {};
     },
 
-    [EV.VERIFY_WORD](socket, p) {
-      const me = requireAuth(socket);
-      const r = q.req.get(p.requestId) || fail('unknown_request');
-      if (r.requester_id !== me) fail('forbidden');
-      if (r.status === 'timed_out') fail('expired');
-      if (p.ok !== true) fail('bad_word_flag');
+    [EV.VERIFY_WORDCHECK](socket, p) {
+      const r = (typeof p.requestId === 'string' && q.req.get(p.requestId)) || fail('NOT_FOUND');
+      if (r.checker_id !== socket.data.userId) fail('NOT_ALLOWED');
+      if (r.status === 'timed_out') fail('NOT_ALLOWED');
+      if (p.passed !== true) fail('BAD_INPUT');
       q.setWord.run(r.request_id);
-      pushVerdict(r.request_id);
+      pushUpdate(r.request_id);
       return {};
     },
 
     [EV.VERIFY_CONFIRM](socket, p) {
-      const me = requireAuth(socket);
-      const r = q.req.get(p.requestId) || fail('unknown_request');
-      if (r.second_user_id !== me) fail('forbidden');
-      if (!['yes', 'no'].includes(p.answer)) fail('bad_answer');
-      checkSigned({ userId: me, ...p });
+      const me = socket.data.userId;
+      const r = (typeof p.requestId === 'string' && q.req.get(p.requestId)) || fail('NOT_FOUND');
+      if (r.second_user_id !== me) fail('NOT_ALLOWED');
+      if (q.approval.get(r.request_id, 'second')) fail('ALREADY_ANSWERED');
+      if (!['yes', 'no'].includes(p.answer)) fail('BAD_INPUT');
+      checkNonceTs(p.ts, p.nonce);
+      const signed = confirmString({
+        requestId: r.request_id, confirmerId: me, claimedId: r.claimed_id,
+        amountCents: r.amount_cents, answer: p.answer, ts: p.ts, nonce: p.nonce,
+      });
+      if (typeof p.sig !== 'string' || !verifySig(q.user.get(me).sign_pub, signed, p.sig)) fail('BAD_SIGNATURE');
       storeApproval(r, me, 'second', p);
-      pushVerdict(r.request_id);
+      if (p.answer === 'no') alertFriends(r);
+      pushUpdate(r.request_id);
       return {};
     },
   };
 
   io.on('connection', (socket) => {
+    freshChallenge(socket);
     for (const [ev, fn] of Object.entries(handlers)) {
       socket.on(ev, async (payload, ack) => {
         try {
+          if (!PRE_AUTH.has(ev) && !socket.data.userId) fail('UNAUTHENTICATED');
           const result = await fn(socket, payload && typeof payload === 'object' ? payload : {});
           if (typeof ack === 'function') ack({ ok: true, ...result });
         } catch (e) {
-          const code = e instanceof ProtocolError ? e.code : 'server_error';
-          if (code === 'server_error') log(`error in ${ev}: ${e.message}`); // message only, never the payload
+          const code = e instanceof ProtocolError ? e.code : 'SERVER_ERROR';
+          if (code === 'SERVER_ERROR') log(`error in ${ev}: ${e.message}`); // message only, never the payload
           if (typeof ack === 'function') ack({ ok: false, error: code });
         }
       });
     }
-    socket.on('disconnect', () => {
-      const id = socket.data.userId;
-      if (id) {
-        sockets.get(id)?.delete(socket);
-        if (!sockets.get(id)?.size) sockets.delete(id);
-      }
-    });
   });
 
-  // Soft reset: clear requests, approvals, alerts and counters. Users, pairs and the circle stay, so the
-  // pre-paired demo phones keep working and the next request is a "first request" again.
-  // Hard reset also deletes users, pairs and circles; every phone must register and pair again.
+  // 2 minutes with no answer -> amber. Polling survives restarts and needs no per-request timers.
+  function sweep() {
+    for (const { request_id } of q.expired.all(Date.now() - timeoutMs)) {
+      q.setStatus.run('timed_out', request_id);
+      pushUpdate(request_id);
+    }
+  }
+  const sweeper = setInterval(sweep, sweepMs);
+  sweeper.unref();
+
+  // Soft reset: clear requests, approvals, alerts and counters. Users and pairs stay, so the pre-paired demo phones
+  // keep working and the next request is a "first request" again. Hard reset also deletes users and pairs.
   function resetDemo(hard) {
     db.transaction(() => {
       for (const t of ['approvals', 'alerts', 'verify_requests', 'pair_tokens']) db.exec(`DELETE FROM ${t}`);
-      if (hard) for (const t of ['pairs', 'circle_members', 'circles', 'users']) db.exec(`DELETE FROM ${t}`);
+      if (hard) for (const t of ['pairs', 'users']) db.exec(`DELETE FROM ${t}`);
     })();
-    rate.clear(); challenges.clear(); analyses.clear();
+    rate.clear(); pairRate.clear(); analyses.clear();
     io.emit(EV.DEMO_RESET, { hard });
     log(`demo reset hard=${hard}`);
     return { hard, users: db.prepare('SELECT COUNT(*) n FROM users').get().n };
@@ -442,21 +397,11 @@ export function createVouchServer({
   function demoStatus() {
     const users = db.prepare('SELECT user_id, name FROM users ORDER BY created_at').all();
     return {
-      users: users.map((u) => ({ name: u.name, online: sockets.has(u.user_id), circleId: circleOf(u.user_id) || null })),
+      users: users.map((u) => ({ name: u.name, online: isOnline(u.user_id), friends: q.friends.all({ u: u.user_id }).length })),
       pairs: db.prepare('SELECT COUNT(*) n FROM pairs').get().n,
       openRequests: db.prepare("SELECT COUNT(*) n FROM verify_requests WHERE status = 'open'").get().n,
     };
   }
-
-  // 2 minutes with no answer -> amber "wait". Polling survives restarts and needs no per-request timers.
-  function sweep() {
-    for (const { request_id } of q.expired.all(Date.now() - timeoutMs)) {
-      q.setStatus.run('timed_out', request_id);
-      pushVerdict(request_id);
-    }
-  }
-  const sweeper = setInterval(sweep, sweepMs);
-  sweeper.unref();
 
   return {
     httpServer, io, db,

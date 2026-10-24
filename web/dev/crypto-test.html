@@ -1,0 +1,28 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vouch crypto test</title>
+<style>
+  body { font: 20px/1.4 system-ui, sans-serif; margin: 0; padding: 16px; background: #fff; color: #111; }
+  h1 { font-size: 26px; margin: 0 0 12px; }
+  button { font: inherit; padding: 14px 18px; margin: 6px 6px 6px 0; border-radius: 10px; border: 2px solid #111; background: #f3f3f3; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 18px; background: #f7f7f7; padding: 12px; border-radius: 10px; min-height: 2em; }
+  .pass { color: #0a7a2f; font-weight: 700; } .fail { color: #c00; font-weight: 700; }
+  .word { font-size: 34px; font-weight: 800; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Vouch crypto test</h1>
+<p id="env"></p>
+<button id="run">Run tests</button>
+<button id="create">Create + save identity</button>
+<button id="reload">Reload &rarr; load identity and sign</button>
+<button id="reset">Reset</button>
+<pre id="out"></pre>
+<h2>Live shared word</h2>
+<div>Alice &harr; Bob: <div class="word" id="wA">&hellip;</div><div class="word" id="wB">&hellip;</div><div id="left"></div></div>
+<script type="module" src="./crypto-test-page.js"></script>
+</body>
+</html>

@@ -16,32 +16,37 @@ async function run() {
   if (!health.ok) throw new Error('health check failed');
   ok('health');
 
-  const [req, friend, third] = [new Phone(url, 'SmokeA'), new Phone(url, 'SmokeB'), new Phone(url, 'SmokeC')];
+  const [checker, friend, third] = [new Phone(url, 'SmokeA'), new Phone(url, 'SmokeB'), new Phone(url, 'SmokeC')];
   try {
-    await Promise.all([req, friend, third].map((p) => p.connected()));
-    ok('three sockets connected');
-    const paired = await pair(friend, req);
+    await Promise.all([checker, friend, third].map((p) => p.ready()));
+    ok('three sockets connected, login challenge received');
+    for (const p of [checker, friend, third]) {
+      const r = await p.register();
+      if (!r.ok) throw new Error(`register failed: ${r.error}`);
+    }
+    ok('registered with a signed challenge');
+    const paired = await pair(friend, checker);
     if (!paired.ok) throw new Error(`pair failed: ${paired.error}`);
     await pair(friend, third);
     ok('pairing + keys exchanged');
 
-    const a = await request(req, friend);
+    const a = await request(checker, friend);
     if (!a.res.ok) throw new Error(`request failed: ${a.res.error}`);
-    await friend.waitFor('verify:prompt');
+    await friend.waitFor('verify:prompt', (p) => p.requestId === a.requestId);
     ok('prompt delivered');
-    const yes = await friend.call('verify:answer', friend.signAnswer(a.requestId, 'yes'));
+    const yes = await friend.call('verify:answer', friend.signAnswer(a, 'yes'));
     if (!yes.ok) throw new Error(`signed answer rejected: ${yes.error}`);
-    const green = await req.waitFor('verify:verdict', (v) => v.requestId === a.requestId && v.verdict === 'green');
-    if (!green.stages.confidence.answerSig) throw new Error('verdict has no answerSig');
+    const green = await checker.waitFor('verify:update', (v) => v.requestId === a.requestId && v.verdict === 'green');
+    if (!green.stages.confidence.answerSig) throw new Error('update has no answerSig');
     ok('signed Yes -> green');
 
-    const b = await request(req, friend);
-    await friend.call('verify:answer', friend.signAnswer(b.requestId, 'not_me'));
-    await req.waitFor('verify:verdict', (v) => v.requestId === b.requestId && v.verdict === 'red');
-    await third.waitFor('circle:alert');
+    const b = await request(checker, friend);
+    await friend.call('verify:answer', friend.signAnswer(b, 'not_me'));
+    await checker.waitFor('verify:update', (v) => v.requestId === b.requestId && v.verdict === 'red');
+    await third.waitFor('circle:alert', (x) => x.requestId === b.requestId);
     ok('Not me -> red + alert on third phone');
   } finally {
-    [req, friend, third].forEach((p) => p.close());
+    [checker, friend, third].forEach((p) => p.close());
   }
 
   if (cleanup) {

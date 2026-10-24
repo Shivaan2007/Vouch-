@@ -6,15 +6,15 @@ import { sanitize, analyzeSafe } from '../src/analyze.js';
 import { TAG_LIST } from '../src/config.js';
 
 const RISKS = ['low', 'medium', 'high'];
-const AMOUNTS = [0, 5, 25, 25.01, 60, 200, 200.01, 300, 5000, null];
+const AMOUNTS = [1, 500, 2499, 2500, 6000, 20000, 20001, 30000, 500000, null];
 const TAG_SETS = [[], ['URGENCY'], ['URGENCY', 'SECRECY'], TAG_LIST];
 const RANK = { red: 0, amber: 1, green: 2 };
 
 function* allInputs() {
-  for (const answer of ['none', 'yes', 'not_me']) for (const paymentRisk of RISKS) for (const amount of AMOUNTS)
+  for (const answer of ['none', 'yes', 'not_me']) for (const paymentRisk of RISKS) for (const amountCents of AMOUNTS)
     for (const tags of TAG_SETS) for (const wordOk of [false, true]) for (const secondConfirms of [0, 1])
       for (const secondNo of [false, true]) for (const timedOut of [false, true]) {
-        yield { answer, tags, paymentRisk, amount, wordOk, secondConfirms, secondNo, timedOut };
+        yield { answer, tags, paymentRisk, amountCents, wordOk, secondConfirms, secondNo, timedOut };
       }
 }
 
@@ -28,7 +28,7 @@ test('1. no answer, timeout, or Not me is never green', () => {
 test('2. Yes with the tier requirements met and non-high payment risk is green, whatever the tags', () => {
   for (const i of allInputs()) {
     if (i.answer !== 'yes' || i.timedOut || i.secondNo || i.paymentRisk === 'high') continue;
-    const tier = tierFor(i.amount);
+    const tier = tierFor(i.amountCents);
     if (tier >= 2 && !i.wordOk) continue;
     if (tier === 3 && i.secondConfirms < 1) continue;
     assert.equal(decide(i).verdict, 'green', JSON.stringify(i));
@@ -55,11 +55,11 @@ test('4. analyze() output with unknown tags or extra fields is cleaned, and fail
 });
 
 test('tier boundaries and the table rows', () => {
-  assert.deepEqual([25, 25.01, 200, 200.01].map(tierFor), [1, 2, 2, 3]);
-  const v = (o) => decide({ answer: 'yes', amount: 20, ...o });
+  assert.deepEqual([2499, 2500, 20000, 20001].map(tierFor), [1, 2, 2, 3]);
+  const v = (o) => decide({ answer: 'yes', amountCents: 2000, ...o });
   assert.equal(v({ paymentRisk: 'high' }).verdict, 'amber');
-  assert.equal(v({ secondNo: true, amount: 300 }).verdict, 'red');
+  assert.equal(v({ secondNo: true, amountCents: 30000 }).verdict, 'red');
   assert.equal(decide({ answer: 'none', timedOut: true }).verdict, 'amber');
-  assert.match(v({ amount: 60 }).reasons.join(' '), /ask them for your word/);
-  assert.deepEqual(decide({ answer: 'yes', amount: 300 }).needs, { word: true, second: true });
+  assert.match(v({ amountCents: 6000 }).reasons.join(' '), /ask them for your word/);
+  assert.deepEqual(decide({ answer: 'yes', amountCents: 30000 }).needs, { word: true, second: true });
 });
