@@ -1,12 +1,10 @@
-import {
-  TIER1_MAX, TIER2_MAX, HIGH_RISK_TAG_COUNT,
-} from './config.js';
+import { TIER2_MIN_CENTS, TIER3_MIN_CENTS, HIGH_RISK_TAG_COUNT } from './config.js';
 
-export function tierFor(amount) {
-  // Unknown amount is treated as tier 2: never as small money.
-  if (typeof amount !== 'number' || !Number.isFinite(amount)) return 2;
-  if (amount <= TIER1_MAX) return 1;
-  if (amount <= TIER2_MAX) return 2;
+export function tierFor(amountCents) {
+  // An unusable amount is never treated as small money.
+  if (!Number.isFinite(amountCents)) return 2;
+  if (amountCents < TIER2_MIN_CENTS) return 1;
+  if (amountCents < TIER3_MIN_CENTS) return 2;
   return 3;
 }
 
@@ -17,12 +15,12 @@ const TAG_WORDS = {
 };
 
 // Pure function. No database, no AI text in, no AI text out. Rules run top to bottom, first match wins.
-// Tags can add reasons but can never move a verdict toward green.
+// Tags can add reasons but can never move a verdict toward green. "AI can warn, only a person can clear."
 export function decide({
-  answer = 'none', tags = [], paymentRisk = 'low', amount = null,
+  answer = 'none', tags = [], paymentRisk = 'low', amountCents = null,
   wordOk = false, secondConfirms = 0, secondNo = false, timedOut = false,
 } = {}) {
-  const tier = tierFor(amount);
+  const tier = tierFor(amountCents);
   const needs = { word: tier >= 2, second: tier === 3 };
   const tagNote = tags.length >= HIGH_RISK_TAG_COUNT
     ? `${tags.length} warning signs: ${tags.map((t) => TAG_WORDS[t] || t.toLowerCase()).join(', ')}.`
@@ -33,10 +31,10 @@ export function decide({
   if (answer === 'not_me') return out('red', ['Your friend says they did NOT send this request.']);
   if (answer !== 'yes') {
     return timedOut
-      ? out('amber', ['No answer in 2 minutes. Wait. Do not send money until your friend answers.'])
+      ? out('amber', ["No reply. Ask for your word, or don't send."])
       : out('amber', ['Waiting for your friend to answer.']);
   }
-  if (timedOut) return out('amber', ['Wait. This request timed out.']);
+  if (timedOut) return out('amber', ["No reply. Ask for your word, or don't send."]);
 
   // answer === 'yes' from here
   const reasons = [];

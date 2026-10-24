@@ -11,40 +11,41 @@ const t0 = Date.now();
 const lat = [];
 
 const SCENARIOS = [
-  { name: 'tier1 yes', amount: 20, answer: 'yes', want: 'green' },
-  { name: 'not me', amount: 20, answer: 'not_me', want: 'red' },
-  { name: 'gift card yes', amount: 20, method: 'gift_card', answer: 'yes', want: 'amber' },
-  { name: 'tier2 yes + word', amount: 60, answer: 'yes', word: true, want: 'green' },
-  { name: 'tier2 yes, no word', amount: 60, answer: 'yes', want: 'amber' },
+  { name: 'tier1 yes', amount: 2000, answer: 'yes', want: 'green' },
+  { name: 'not me', amount: 2000, answer: 'not_me', want: 'red' },
+  { name: 'gift card yes', amount: 2000, method: 'gift_card', answer: 'yes', want: 'amber' },
+  { name: 'tier2 yes + word', amount: 6000, answer: 'yes', word: true, want: 'green' },
+  { name: 'tier2 yes, no word', amount: 6000, answer: 'yes', want: 'amber' },
 ];
 
 async function circle(url, i) {
-  const [req, friend, third] = ['R', 'F', 'T'].map((n) => new Phone(url, `${n}${i}`));
-  const all = [req, friend, third];
+  const [checker, friend, third] = ['R', 'F', 'T'].map((n) => new Phone(url, `${n}${i}`));
+  const all = [checker, friend, third];
   try {
-    await Promise.all(all.map((p) => p.connected()));
-    await pair(friend, req);
-    await pair(friend, third);
+    await Promise.all(all.map((p) => p.ready()));
+    for (const p of all) if (!(await p.register()).ok) throw new Error('register failed');
+    if (!(await pair(friend, checker)).ok || !(await pair(friend, third)).ok) throw new Error('pairing failed');
     for (const s of SCENARIOS) {
       const started = Date.now();
-      const { requestId, res } = await request(req, friend, { amount: s.amount, paymentMethod: s.method || 'venmo_cashapp_zelle' });
-      if (!res.ok) throw new Error(`${s.name}: request failed ${res.error}`);
-      await friend.waitFor('verify:prompt', (p) => p.requestId === requestId);
-      const ans = await friend.call('verify:answer', friend.signAnswer(requestId, s.answer));
+      const rq = await request(checker, friend, { amountCents: s.amount, method: s.method || 'venmo_cashapp_zelle' });
+      if (!rq.res.ok) throw new Error(`${s.name}: request failed ${rq.res.error}`);
+      await friend.waitFor('verify:prompt', (p) => p.requestId === rq.requestId);
+      const ans = await friend.call('verify:answer', friend.signAnswer(rq, s.answer));
       if (!ans.ok) throw new Error(`${s.name}: answer failed ${ans.error}`);
-      if (s.word) await req.call('verify:word', { requestId, ok: true });
-      const wantStage = (v) => v.requestId === requestId && v.stages.confidence.answer === s.answer && (!s.word || v.stages.confidence.wordOk);
-      const v = await req.waitFor('verify:verdict', wantStage, 8000);
+      if (s.word) await checker.call('verify:wordcheck', { requestId: rq.requestId, passed: true });
+      const wantStage = (v) => v.requestId === rq.requestId && v.stages.confidence.answer === s.answer && (!s.word || v.stages.confidence.wordOk);
+      const v = await checker.waitFor('verify:update', wantStage, 8000);
       if (v.verdict !== s.want) throw new Error(`${s.name}: got ${v.verdict}, wanted ${s.want}`);
       if (s.answer === 'not_me') {
-        const a = await third.waitFor('circle:alert', (x) => x.requestId === requestId, 8000);
+        const a = await third.waitFor('circle:alert', (x) => x.requestId === rq.requestId, 8000);
         if (a.impersonatedName !== `F${i}`) throw new Error('alert named the wrong person');
       }
       lat.push(Date.now() - started);
     }
     // Nobody should ever see another circle's traffic.
-    const foreign = third.events.filter((e) => e.ev === 'verify:verdict');
-    if (foreign.length) throw new Error('third member received a verdict it should not see');
+    if (third.events.some((e) => e.ev === 'verify:update')) throw new Error('third member received an update it should not see');
+    // Every update the checker saw belongs to this checker.
+    if (checker.events.some((e) => e.ev === 'verify:update' && e.payload.checkerId !== checker.userId)) throw new Error('received another circle\'s update');
   } finally {
     all.forEach((p) => p.close());
   }
