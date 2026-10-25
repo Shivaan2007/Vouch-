@@ -13,6 +13,7 @@ const clients = [];
 let url = '';
 const dom = installFakeDom({ makeSocket: () => { const s = ioClient(url, { transports: ['websocket'], reconnection: false }); clients.push(s); return s; } });
 const { appEl, loc, wait, text, btn, find, findAll } = dom;
+const go = async (label) => { const home = btn('Home'); if (home) { await home.fire('click'); await wait(30); } await btn(label).fire('click'); };
 const SHARED = "new number! stuck at the store, buy $200 in Apple gift cards right now, don't tell mom";
 
 before(async () => {
@@ -35,20 +36,44 @@ test('sign-up shows the main app, and a shared scam message triggers the warning
   assert.ok(text().includes('Possible family-emergency scam'), 'full-screen warning names the scam type');
   assert.ok(text().includes('Call your family member on the number you already have'), 'and says what to do');
   assert.ok(text().includes('DO NOT SEND ANYTHING'), 'sticky banner');
+  const bar = find(appEl, (n) => n.className === 'actions');
+  assert.ok(bar && bar.children.some((c) => c.tag === 'button'), 'the way out is in a pinned button bar, not buried in the text');
+  assert.ok(!btn('Quiet for 2 minutes') && !btn('Get our code word'), 'the banner has just the two things to do');
   const clear = btn('I checked it');
   assert.ok(clear && clear.attrs.disabled !== undefined, 'clear is locked by the pause');
-  await btn('Not now').fire('click');
+  await (btn('Close') || btn("OK, I won't send")).fire('click');
   assert.ok(text().includes('DO NOT SEND ANYTHING'), 'banner outlives the overlay');
 });
 
+test('Home is two giant buttons and a smaller one, with one obvious first step when nobody is linked', async () => {
+  const home = btn('Home'); if (home) await home.fire('click');
+  await wait(60);
+  assert.ok(text().includes('Hi Ada'), 'greets by name');
+  for (const label of ['Check a message', 'On a call', 'My people']) assert.ok(btn(label), `${label} is a button on Home`);
+  assert.ok(text().includes('First, add someone you trust.') && btn('Add someone'), 'and says what to do first');
+  assert.ok(!document.querySelector?.('nav'), 'there is no tab bar to confuse');
+});
+
+test('with nobody linked, Check a message still works: paste, see the read, and a clear way to add someone', async () => {
+  await go('Check a message');
+  await wait(80);
+  assert.ok(find(appEl, (n) => n.id === 'text'), 'there is a place to paste');
+  assert.ok(find(appEl, (n) => n.id === 'shot') && btn('Attach a screenshot'), 'with a real Attach button');
+  assert.ok(text().includes('Not saved by Vouch'), 'and an honest privacy line');
+  assert.ok(btn('Add someone'), 'and one obvious next step');
+  await go('On a call');
+  await wait(80);
+  assert.ok(text().includes('Add someone to get a code word') && text().includes('Listen for scams'), 'both halves of the call tab are there');
+});
+
 test('every tab renders and the pairing code appears', async () => {
-  for (const [tab, expect] of [['On a call', 'Watch this call for scams'], ['My people', 'Share a message from any app'], ['Check a message', 'First, link up']]) {
-    await btn(tab).fire('click');
+  for (const [tab, expect] of [['On a call', 'Listen for scams'], ['My people', 'Share a message from any app'], ['Check a message', 'Add someone to ask their phone']]) {
+    await go(tab);
     await wait(80);
     assert.ok(text().includes(expect), `${tab} -> ${expect}`);
   }
   globalThis.qrcode = () => ({ addData() {}, make() {}, getModuleCount: () => 21, isDark: () => true });
-  await btn('My people').fire('click');
+  await go('My people');
   await btn('Add someone').fire('click');
   await wait(400);
   assert.match(text(), /[A-Z0-9]{4}-[A-Z0-9]{4}/);
@@ -75,9 +100,9 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
   assert.ok(text().includes('Linked with Sam'), 'safety-code screen');
   await btn('It matches').fire('click');
 
-  await btn('Check a message').fire('click');
+  await go('Check a message');
   await wait(100);
-  assert.ok(text().includes('Is this request real?'));
+  assert.ok(btn("Ask Sam's phone") && btn('Paste'), 'a message box with one button to ask their phone');
   assert.ok(text().includes('Venmo / Cash App / Zelle') && text().includes('Gift cards'), 'method cards');
   assert.ok(findAll(appEl, (n) => n.className === 'logo').length >= 8, 'brand logos are drawn');
   assert.ok(find(appEl, (n) => n.id === 'shot'), 'screenshot control');
@@ -85,7 +110,7 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
 
   find(appEl, (n) => n.id === 'amount').value = '60';
   await find(appEl, (n) => n.id === 'amount').fire('input');
-  await btn('Check now').fire('click');
+  await btn("Ask Sam's phone").fire('click');
   const p = await prompt;
   assert.equal(p.amountCents, 6000);
   const fields = { requestId: p.requestId, checkerId: p.checker.id, claimedId: sam.id, amountCents: p.amountCents, method: p.method, answer: 'not_me' };
@@ -101,7 +126,7 @@ test('scanner with no camera falls back to typing the code; a mismatched safety 
   const { token } = await tia.call('pair:offer');
   const stop = btn('I understand'); // the red STOP from the previous test is still up
   if (stop) await stop.fire('click');
-  await btn('My people').fire('click');
+  await go('My people');
   await btn('Scan a code').fire('click');
   await wait(100);
   assert.ok(text().includes("can't open the camera"), 'says so plainly instead of crashing');
@@ -118,7 +143,7 @@ test('scanner with no camera falls back to typing the code; a mismatched safety 
 });
 
 test('a bad code from the scanner is explained, not silent', async () => {
-  await btn('My people').fire('click');
+  await go('My people');
   await btn('Scan a code').fire('click');
   await wait(50);
   const typed = find(appEl, (n) => n.attrs && n.attrs['aria-label'] === 'Type the code instead');

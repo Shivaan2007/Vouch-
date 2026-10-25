@@ -9,6 +9,7 @@
 import { pathToFileURL } from 'node:url';
 import { analyzeSafe } from '../server/src/analyze.js';
 import { createCore, createContext, label } from './core.js';
+import { spokenVerdict } from './voice.js';
 
 const INTRO = `I'm Vouch Watch.
 
@@ -23,7 +24,7 @@ I can warn you. Only a Yes from your friend's own phone in Vouch can clear a req
  */
 export function createBot({
   token, fetchImpl = globalThis.fetch, analyze = analyzeSafe, vouchUrl = '', guardians = [], log = () => {},
-  link = null, onFlag = () => {}, onAi = () => {}, track = null, infer,
+  link = null, onFlag = () => {}, onAi = () => {}, track = null, infer, voice = null,
 } = {}) {
   const guardianChats = new Set(guardians.map(String));
   let running = false;
@@ -34,12 +35,69 @@ export function createBot({
     });
     return res.json();
   }
-  const say = (chat_id, text) => api('sendMessage', { chat_id, text, disable_web_page_preview: true });
+  const say = (chat_id, text, extra = {}) => api('sendMessage', { chat_id, text, disable_web_page_preview: true, ...extra });
+  // Under a warning that was sent on its own (not as a reply), one tap opens Vouch. Only a real https address can be a button.
+  const openApp = /^https:\/\//.test(vouchUrl) ? { reply_markup: { inline_keyboard: [[{ text: 'Open Vouch', url: vouchUrl }]] } } : {};
 
   // The channel-neutral engine (shared with the SMS/WhatsApp door): assess text, then word the answer.
   const core = createCore({ analyze, infer, vouchUrl });
   const memory = createContext(); // the last few messages per chat and sender, in memory only, so the AI can follow a scam as it unfolds
-  const assess = (text, context) => core.assess({ text, context });
+  const assess = (text, context, imageBase64) => core.assess({ text, context, imageBase64 });
+
+  // A photo or image file sent to the bot: pick the biggest size, download it from Telegram, and hand the bytes to the AI.
+  const MAX_IMAGE = 3_000_000;
+  function imageRefOf(msg) {
+    if (Array.isArray(msg.photo) && msg.photo.length) { const big = msg.photo[msg.photo.length - 1]; return { file_id: big.file_id, size: big.file_size }; }
+    const d = msg.document;
+    if (d && /^image\/(jpeg|png|webp)$/.test(d.mime_type || '')) return { file_id: d.file_id, size: d.file_size };
+    return null;
+  }
+  async function fetchImage(ref) {
+    try {
+      if (ref.size && ref.size > MAX_IMAGE) return undefined;
+      const f = await api('getFile', { file_id: ref.file_id });
+      const path = f && f.result && f.result.file_path;
+      if (!path) return undefined;
+      const res = await fetchImpl(`https://api.telegram.org/file/bot${token}/${path}`);
+      if (!res || !res.ok) return undefined;
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length <= MAX_IMAGE ? buf.toString('base64') : undefined;
+    } catch { return undefined; }
+  }
+
+  // A voice note (or audio file) sent to the bot: download it, let ElevenLabs Scribe write down what was said, and judge the words
+  // like any other message. The audio is never kept.
+  const MAX_AUDIO = 6_000_000;
+  const audioRefOf = (msg) => {
+    const a = msg.voice || msg.audio || (msg.document && /^audio\//.test(msg.document.mime_type || '') ? msg.document : null);
+    return a ? { file_id: a.file_id, size: a.file_size, mime: a.mime_type || 'audio/ogg' } : null;
+  };
+  async function hear(ref) {
+    if (!voice || !voice.enabled || (ref.size && ref.size > MAX_AUDIO)) return null;
+    try {
+      const f = await api('getFile', { file_id: ref.file_id });
+      const path = f && f.result && f.result.file_path;
+      if (!path) return null;
+      const res = await fetchImpl(`https://api.telegram.org/file/bot${token}/${path}`);
+      if (!res || !res.ok) return null;
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length <= MAX_AUDIO ? await voice.transcribe(buf, ref.mime) : null;
+    } catch { return null; }
+  }
+  // Read the verdict aloud as a voice note (only when the person spoke to us, or asked with /voice).
+  async function sayAloud(chatId, a) {
+    if (!voice || !voice.enabled) return;
+    try {
+      const mp3 = await voice.speak(spokenVerdict(a));
+      if (!mp3) return;
+      const form = new FormData();
+      form.append('chat_id', String(chatId));
+      form.append('voice', new Blob([mp3], { type: 'audio/mpeg' }), 'vouch.mp3');
+      await fetchImpl(`https://api.telegram.org/bot${token}/sendVoice`, { method: 'POST', body: form });
+    } catch (e) { log('voice reply failed:', e.message); }
+  }
+  const tipped = new Set(); // chats already told how to connect, so the tip is said once
+  const voiceChats = new Set(); // chats that asked to hear every answer, kept in memory only
 
   async function alertGuardians(fromChatId, name, tags) {
     const who = String(name || 'Someone you look after').slice(0, 30);
@@ -71,7 +129,7 @@ export function createBot({
     if (!msg || !msg.from || msg.from.is_bot || !msg.chat) return;
     const chatId = msg.chat.id;
     const isPrivate = msg.chat.type === 'private';
-    const text = String(msg.text || msg.caption || '');
+    let text = String(msg.text || msg.caption || '');
     // "/link 123456": tie this chat to a Vouch account, so a flagged message also flashes a warning in the Vouch app.
     // Also "/start link_123456", which is what the one-tap "Open Telegram" button in Vouch sends.
     const lm = /^\/(?:link|start)(?:@\w+)?\s+(?:link_)?(\d{4,8})\b/.exec(text) || (isPrivate && /^link\s+(\d{4,8})\b/i.exec(text));
@@ -96,10 +154,42 @@ export function createBot({
       return;
     }
     if (/^\/stopguardian\b/.test(text)) { guardianChats.delete(String(chatId)); await say(chatId, 'Okay, this chat will no longer get heads-ups.'); return; }
-    if (!text.trim()) {
-      if (isPrivate) await say(chatId, 'Send or forward me the message text and I will check it.');
+    // "/flag" as a reply to a message (or to a forwarded one): remember who sent it, for the Vouch accounts this chat warns.
+    if (/^\/flag\b/.test(text)) {
+      const users = link ? link.lookup('telegram', chatId) : [];
+      if (!users.length) { await say(chatId, 'Connect this chat to your Vouch first (in Vouch: My people, Connect). Then I can remember who to watch for.'); return; }
+      const target = msg.reply_to_message;
+      if (!target) { await say(chatId, 'Reply to the message with /flag. In a private chat, forward the message to me first, then reply to it.'); return; }
+      const who = senderOf(target, isPrivate);
+      if (!target.forward_origin && target.from && msg.from && target.from.id === msg.from.id) { await say(chatId, "That message is yours, so there's no one to flag. Forward theirs to me, then reply with /flag."); return; }
+      if (!who || who.hidden || !track) { await say(chatId, "I can't tell who sent that. Telegram hides the sender when someone turns off forwarding."); return; }
+      track.note(users, 'telegram', who, { level: 2, guide: { title: 'Flagged by you' } });
+      await say(chatId, `Done. I'll treat ${who.handle || who.name || 'them'} as a likely scammer, and you'll see them under Flagged senders in Vouch.`);
       return;
     }
+    if (/^\/voice\b/.test(text)) {
+      if (!voice || !voice.enabled) { await say(chatId, "Spoken answers aren't switched on for this bot yet."); return; }
+      if (voiceChats.has(String(chatId))) { voiceChats.delete(String(chatId)); await say(chatId, 'Okay. I will answer in writing only.'); }
+      else { voiceChats.add(String(chatId)); await say(chatId, 'Okay. I will also read my answers out loud. Send /voice again to turn that off.'); }
+      return;
+    }
+    const audioRef = audioRefOf(msg);
+    let spoken = false;
+    if (audioRef) {
+      if (!voice || !voice.enabled) { if (isPrivate) await say(chatId, "I can't listen to voice notes yet. Type what they said, or send a screenshot."); return; }
+      if (isPrivate) api('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
+      const heard = await hear(audioRef);
+      if (heard === null) { if (isPrivate) await say(chatId, "I couldn't hear that clearly. Try a shorter voice note, or type what was said."); return; }
+      if (!heard.trim()) { if (isPrivate) await say(chatId, 'I could not make out any words in that.'); return; }
+      text = heard; spoken = true;
+    }
+    const imageRef = imageRefOf(msg);
+    if (!text.trim() && !imageRef) {
+      if (isPrivate) await say(chatId, 'Send or forward me a message or a screenshot and I will check it.');
+      return;
+    }
+    const imageBase64 = imageRef ? await fetchImage(imageRef) : undefined;
+    if (imageRef && !imageBase64 && !text.trim()) { if (isPrivate) await say(chatId, "I couldn't open that picture. Try sending it as a photo, under 3 MB."); return; }
     const sender = senderOf(msg, isPrivate);
     const users = link ? link.lookup('telegram', chatId) : [];
     const q = core.quick(text);
@@ -127,6 +217,10 @@ export function createBot({
     const speak = !deferQuiet && (isPrivate || q.level === 2 || (q.level === 1 && q.ask));
     if (deferQuiet) api('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
     const sent = speak ? await say(chatId, core.reply(q, { sender: view })) : null;
+    if (speak && q.level >= 1 && !users.length && link && isPrivate && !tipped.has(String(chatId))) {
+      tipped.add(String(chatId));
+      await say(chatId, 'Tip: this chat is not connected to Vouch, so the warning stays here. In Vouch, open My people and tap Connect next to Telegram, and warnings will flash in the app too.');
+    }
     const alerts = []; // [account, alert id], so the AI's read can be added to the very warning already on screen
     if (q.level >= 1) for (const uid of users) alerts.push([uid, onFlag(uid, q, 'telegram', view)]);
     if (q.level === 2) await alertGuardians(chatId, msg.from.first_name, q.tags);
@@ -135,13 +229,14 @@ export function createBot({
     //    replace the generic ones in the same Telegram message and are filled into the warning already on the app; the app is
     //    alerted again only if the AI found it worse than the instant read did.
     const memKey = `${chatId}:${sender && !sender.hidden ? sender.id : 'me'}`;
-    const full = await assess(text, memory.get(memKey));
+    const full = await assess(text, memory.get(memKey), imageBase64);
     memory.add(memKey, text);
     if (info && info.repeatScam && full.level < 2) full.level = 2;
-    if (deferQuiet && full.level === 0) { await say(chatId, core.reply(full, { sender: view })); return; } // the AI read it: say what it found
+    const aloud = () => (isPrivate && (spoken || voiceChats.has(String(chatId))) ? sayAloud(chatId, full) : null);
+    if (deferQuiet && full.level === 0) { await say(chatId, core.reply(full, { sender: view })); await aloud(); return; } // the AI read it: say what it found
     const raised = full.level > q.level;
     if (!raised && full.ai) for (const [uid, id] of alerts) if (id) onAi(uid, id, full);
-    if (!(raised || (full.ai && q.level >= 1) || (full.level >= 1 && !speak))) return;
+    if (!(raised || (full.ai && q.level >= 1) || (full.level >= 1 && !speak))) { await aloud(); return; }
     if (raised && track && sender && !sender.hidden && users.length) track.raise(users, 'telegram', sender, full);
     const final = core.reply(full, { sender: view });
     const messageId = sent && sent.result && sent.result.message_id;
@@ -149,6 +244,7 @@ export function createBot({
       if (messageId) await api('editMessageText', { chat_id: chatId, message_id: messageId, text: final, disable_web_page_preview: true });
       else if (full.level >= 1 && (isPrivate || full.level === 2 || full.ask)) await say(chatId, final);
     } catch (e) { log('edit failed:', e.message); }
+    await aloud();
     if (raised) {
       for (const uid of users) onFlag(uid, full, 'telegram', view);
       if (full.level === 2) await alertGuardians(chatId, msg.from.first_name, full.tags);
@@ -157,6 +253,12 @@ export function createBot({
 
   async function start() {
     running = true;
+    // The menu next to the message box lists what the bot can do, so nobody has to remember a command.
+    api('setMyCommands', { commands: [
+      { command: 'start', description: 'What I do' }, { command: 'flag', description: 'Reply to a message to flag its sender' },
+      { command: 'voice', description: 'Read my answers out loud' }, { command: 'who', description: 'Who this chat warns' },
+      { command: 'unlink', description: 'Stop warning the Vouch app' }, { command: 'guardian', description: 'Family chat: get heads-ups' },
+    ] }).catch(() => {});
     let offset = 0;
     while (running) {
       try {
@@ -174,7 +276,7 @@ export function createBot({
   }
   const stop = () => { running = false; };
 
-  return { handleUpdate, assess, start, stop, guardianChats, say, alertGuardians };
+  return { handleUpdate, assess, start, stop, guardianChats, say, alertGuardians, openApp };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

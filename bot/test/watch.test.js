@@ -69,7 +69,10 @@ test('the app can see which message doors exist', async () => {
 test('an unlinked chat gets a reply but nothing reaches the app', async () => {
   phone.alerts.length = 0;
   await tg(900, SCAM);
-  assert.match(lastTg().text, /SCAM WARNING/);
+  assert.ok(sent.slice(-3).some((m) => /SCAM WARNING/.test(m.text || '')), 'the chat gets the warning');
+  assert.ok(sent.slice(-3).some((m) => /not connected to Vouch/.test(m.text || '')), 'and is told once how to connect');
+  await tg(900, SCAM);
+  assert.equal(sent.slice(-3).filter((m) => /not connected to Vouch/.test(m.text || '')).length, 1, 'the tip is not repeated');
   await wait(150);
   assert.equal(phone.alerts.length, 0);
 });
@@ -268,7 +271,7 @@ test('instant answer first, then the AI read updates the same message', async ()
   gran.socket.close();
 });
 
-test('the app gets an instant AI read, and a flagged call messages the person and their family directly', async () => {
+test('the app gets an instant AI read, and a flagged call messages only the chats that account linked', async () => {
   const gran = await signedInPhone('CallUser');
   const { code } = await gran.call('watch:link');
   await tgFrom(8400, { id: 8400, first_name: 'Gran' }, `/start link_${code}`, {}, 'private');
@@ -284,10 +287,11 @@ test('the app gets an instant AI read, and a flagged call messages the person an
   assert.equal((await gran.call('watch:read', { text: 'hi' })).error, 'BAD_INPUT');
 
   sent.length = 0;
-  const a = await gran.call('watch:alert', { level: 2, title: 'Gift-card demand' });
+  const a = await gran.call('watch:alert', { level: 2, title: 'Call me CallUser at 555 now, send money to bob' });
   assert.deepEqual({ ok: a.ok, notified: a.notified }, { ok: true, notified: 1 });
-  assert.ok(sent.some((m) => String(m.chat_id) === '8400' && /Vouch flagged your call: Gift-card demand/.test(m.text)), 'the person is messaged directly');
-  assert.ok(sent.some((m) => String(m.chat_id) === '8401' && /CallUser is on a call that looks like a scam/.test(m.text)), 'and so is the family');
+  assert.ok(sent.some((m) => String(m.chat_id) === '8400' && /Vouch flagged your call as a likely scam/.test(m.text)), 'the person is messaged directly');
+  assert.ok(!sent.some((m) => String(m.chat_id) === '8401'), 'a guardian chat that was never linked to this account is NOT messaged');
+  assert.ok(!sent.some((m) => /send money to bob/.test(m.text || '')), 'and text from the client is never relayed');
   gran.socket.close();
 });
 
@@ -327,4 +331,32 @@ test('restarts are safe: starting the service again on the same database file ke
   assert.equal(senders[0].handle, '@bad_guy');
   sock2.close(); await s.close();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('/flag on a reply remembers who sent it, and it shows under flagged senders', async () => {
+  const gran = await signedInPhone('Flagger');
+  const { code } = await gran.call('watch:link');
+  await tgFrom(9100, { id: 9100, first_name: 'Gran' }, `/start link_${code}`, {}, 'private');
+  // not a reply
+  await tgFrom(9100, { id: 9100, first_name: 'Gran' }, '/flag', {}, 'private');
+  assert.match(lastTg().text, /Reply to the message with \/flag/);
+  // a reply to one of their own messages
+  await watch.telegram.handleUpdate({ update_id: 50, message: { chat: { id: 9100, type: 'private' }, from: { id: 9100, first_name: 'Gran', is_bot: false }, text: '/flag', reply_to_message: { from: { id: 9100, first_name: 'Gran' }, text: 'hi' } } });
+  assert.match(lastTg().text, /that message is yours/i);
+  // a reply to a forwarded message from someone with a visible name
+  await watch.telegram.handleUpdate({ update_id: 51, message: { chat: { id: 9100, type: 'private' }, from: { id: 9100, first_name: 'Gran', is_bot: false }, text: '/flag',
+    reply_to_message: { forward_origin: { type: 'user', sender_user: { id: 777, first_name: 'Sketchy', username: 'sketchy_sam' } }, text: 'send gift cards' } } });
+  assert.match(lastTg().text, /Done\. I'll treat @sketchy_sam/);
+  const list = await gran.call('watch:senders');
+  assert.equal(list.senders.length, 1);
+  assert.equal(list.senders[0].handle, '@sketchy_sam');
+  assert.equal(list.senders[0].maxLevel, 2);
+  // a hidden sender can't be flagged
+  await watch.telegram.handleUpdate({ update_id: 52, message: { chat: { id: 9100, type: 'private' }, from: { id: 9100, first_name: 'Gran', is_bot: false }, text: '/flag',
+    reply_to_message: { forward_origin: { type: 'hidden_user', sender_user_name: 'Hidden' }, text: 'x' } } });
+  assert.match(lastTg().text, /can't tell who sent that/);
+  // an unlinked chat is told to connect first
+  await tgFrom(9200, { id: 9200, first_name: 'Nobody' }, '/flag', {}, 'private');
+  assert.match(lastTg().text, /Connect this chat to your Vouch first/);
+  gran.socket.close();
 });
