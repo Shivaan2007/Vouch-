@@ -26,6 +26,14 @@ Grandma and Alex are paired with each other. The scammer's phone is an ordinary 
 
 Then invite the judge to play the scammer from the soundboard and try to talk their way past Vouch.
 
+### Optional 15-second coda: "it is not only about money"
+
+Scams do not always ask for money. After the close, or when a judge asks, the Victim opens **Check a message**, pastes a code request, and Vouch warns on the spot, with no friend check:
+
+> Hi it's your bank. We sent a 6 digit code to your phone. Please read it to me to cancel the fraudulent login.
+
+The screen goes red, **DO NOT ACT ON THIS**, with the guide "Asking for a code" and three plain steps. Other lines that work the same way: a remote-access ask (`Open TeamViewer and let me take control of your computer`), a password ask (`Please confirm your password and card details to keep your account active.`), an ID ask, or a fake delivery link. The friend check is for money requests only; say so if asked. These warnings work offline, and Gemini adds a plain explanation when it is on.
+
 Why it works as a demo: the call beat shows the word that a scammer cannot know. The check beat shows the friend's signed answer. The contrast beat shows Vouch is not just "no".
 
 ## What is real in each beat
@@ -88,6 +96,12 @@ One card per person: `demo/cue-cards.md`.
 - **Does it work with no AI?** Yes. Everything works without Gemini or ElevenLabs; alerts then use the phone's own voice.
 - **Where does ElevenLabs come in?** It speaks the alerts, listens to calls and voice notes, and made the scammer voice. It never decides anything: a person's signed answer does.
 - **Prize numbers or study results?** There is no study to quote. Say so.
+
+## Our own checks (small, re-run on `main` after PR #43; do not call it a study)
+
+- 36 fresh money-scam messages: the phone and server rules flagged 33 (27 got a specific warning tag); with Gemini on, 31 of 36 got the full STOP. 0 false alarms on 20 everyday messages.
+- 8 scams that are not about money (code, remote access, password, ID, fake delivery link, job-ID, hacked-friend link, romance) plus 1 everyday message: Gemini gave 7 of the 8 a STOP-level read with a specific title, and the romance line (no ask yet) a caution. The offline rules on the phone caught the same 7 and not the romance line. The everyday message got "Nothing stands out".
+- Say "our own small test, not a study", and never quote these as accuracy for real users. Known misses: an overpayment-refund scam and a "new payment portal, send rent to this Zelle number" scam, with no pressure words, can slip past the offline rules.
 
 ## Numbers to cite (all "reported")
 
