@@ -151,15 +151,108 @@ export function createBot({
     return { id: String(u.id), name: [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 40), handle: u.username ? `@${u.username}` : '' };
   }
 
+  // ---- Telegram Business: the bot sits on a person's OWN Telegram account (Settings, Telegram Business, Chatbots) ----
+  // Anyone who messages that person is then checked, and the person is warned in their chat with the bot and in the Vouch app.
+  // The bot never answers the sender and never shares the message. Needs Telegram Premium on the connected account and
+  // "Business Mode" switched on for the bot in @BotFather.
+  const connections = new Map(); // business connection id -> { userId, chatId, name }
+  async function ownerOfConnection(id) {
+    if (!id) return null;
+    if (connections.has(id)) return connections.get(id);
+    try {
+      const r = await api('getBusinessConnection', { business_connection_id: id });
+      const bc = r && r.result;
+      if (bc && bc.is_enabled !== false && bc.user) {
+        const owner = { userId: String(bc.user.id), chatId: bc.user_chat_id || bc.user.id, name: bc.user.first_name || 'Someone you look after' };
+        connections.set(id, owner);
+        return owner;
+      }
+    } catch { /* unknown connection: ignore the message */ }
+    return null;
+  }
+  async function onBusinessConnection(bc) {
+    if (!bc || !bc.id || !bc.user) return;
+    const chatId = bc.user_chat_id || bc.user.id;
+    if (bc.is_enabled === false) {
+      connections.delete(bc.id);
+      await say(chatId, "I'm no longer watching your Telegram messages.");
+      return;
+    }
+    connections.set(bc.id, { userId: String(bc.user.id), chatId, name: bc.user.first_name || 'Someone you look after' });
+    const linked = link && link.lookup('telegram', chatId).length;
+    await say(chatId, `I'm now watching your Telegram messages. If someone writes something that looks like a scam, I'll warn you here${linked ? ' and in the Vouch app' : ''}. I never reply to them and I never share what they wrote.${linked ? '' : ' Tip: in Vouch, open My people and tap Connect next to Telegram so warnings also flash in the app.'}`);
+  }
+
+  // ---- an agent, not an alarm: every warning carries buttons, the bot remembers what it did today, and it learns from "it's fine" ----
+  // All in memory, nothing about message text: only the level, the kind of scam and the sender's name or handle.
+  const DAY = 86400000;
+  const actionTokens = new Map(); // short token -> { chatId, sender, at }, so a button knows which sender it is about
+  const muted = new Map();        // chat + sender -> until, set by "It's fine"
+  const today = new Map();        // chat -> { scanned, events: [{ at, level, title, who }] }
+  const log_ = (chatId) => { const k = String(chatId); if (!today.has(k)) today.set(k, { scanned: 0, events: [] }); return today.get(k); };
+  const fresh = (events) => events.filter((e) => Date.now() - e.at < DAY);
+  function actionKeyboard(chatId, sender) {
+    if (!sender || sender.hidden || !sender.id) return {};
+    const token = Math.random().toString(36).slice(2, 10);
+    actionTokens.set(token, { chatId: String(chatId), sender, at: Date.now() });
+    for (const [t, v] of actionTokens) if (Date.now() - v.at > DAY) actionTokens.delete(t);
+    const rows = [[{ text: 'Flag sender', callback_data: `flag:${token}` }, { text: "It's fine", callback_data: `ok:${token}` }]];
+    if (openApp.reply_markup) rows.push(openApp.reply_markup.inline_keyboard[0]);
+    return { reply_markup: { inline_keyboard: rows } };
+  }
+  async function onCallback(cq) {
+    const [action, token] = String(cq.data || '').split(':');
+    const ctx = actionTokens.get(token);
+    const chatId = cq.message && cq.message.chat && cq.message.chat.id;
+    const reply = (text) => api('answerCallbackQuery', { callback_query_id: cq.id, text }).catch(() => {});
+    // Only the person the warning was sent to can press its buttons.
+    if (!ctx || String(chatId) !== ctx.chatId) return reply('That warning has expired.');
+    const users = link ? link.lookup('telegram', chatId) : [];
+    if (action === 'flag') {
+      if (track && users.length) track.note(users, 'telegram', ctx.sender, { level: 2, guide: { title: 'Flagged by you' } });
+      muted.delete(`${ctx.chatId}:${ctx.sender.id}`);
+      await reply(users.length ? "Flagged. I'll treat them as a likely scammer from now on." : 'Noted. Connect this chat to Vouch to keep a list of flagged senders.');
+    } else if (action === 'ok') {
+      muted.set(`${ctx.chatId}:${ctx.sender.id}`, Date.now() + 7 * DAY);
+      await reply("Okay. I won't warn you about them for a week.");
+    } else return reply('Unknown button.');
+    api('editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+  }
+  const DIGEST = /\b(summary|digest|what (did|have) you (catch|caught|block|see|find|do)|anything (new|happen|suspicious)|how('s| is) (it|today) going|status)\b/i;
+  function digestFor(chatId) {
+    const d = log_(chatId);
+    const ev = fresh(d.events);
+    if (!d.scanned && !ev.length) return "Nothing yet today. I'm here, and I'll tell you the moment something looks off.";
+    const stops = ev.filter((e) => e.level === 2);
+    const lines = [`In the last day I checked ${d.scanned} message${d.scanned === 1 ? '' : 's'} and warned you about ${ev.length}.`];
+    for (const e of ev.slice(-5)) lines.push(`• ${e.level === 2 ? 'STOP' : 'Check'}: ${e.title}${e.who ? ` (from ${e.who})` : ''}`);
+    if (stops.length) lines.push('Nothing was sent or cleared by me. Only a person can do that.');
+    return lines.join('\n');
+  }
+
   async function handleUpdate(update) {
-    const msg = update && (update.message || update.edited_message);
+    if (update && update.callback_query) return onCallback(update.callback_query);
+    if (update && update.business_connection) return onBusinessConnection(update.business_connection);
+    let msg = update && (update.message || update.edited_message);
+    let business = false; let owner = null;
+    if (update && update.business_message) {
+      const bm = update.business_message;
+      owner = await ownerOfConnection(bm.business_connection_id);
+      // Only strangers are scanned: not the owner's own messages, not bots. Warnings go to the owner's chat with the bot.
+      if (!owner || !bm.from || bm.from.is_bot || String(bm.from.id) === owner.userId) return;
+      msg = { ...bm, chat: { id: owner.chatId, type: 'business' } };
+      business = true;
+    }
     if (!msg || !msg.from || msg.from.is_bot || !msg.chat) return;
     const chatId = msg.chat.id;
     const isPrivate = msg.chat.type === 'private';
     let text = String(msg.text || msg.caption || '');
+    // Commands are for the owner of a chat. A stranger's message arriving through Business is only ever scanned, so a "/unlink" or
+    // "/start link_123456" typed by a scammer (or a judge) can never change anything.
+    const cmd = business ? '' : text;
     // "/link 123456": tie this chat to a Vouch account, so a flagged message also flashes a warning in the Vouch app.
     // Also "/start link_123456", which is what the one-tap "Open Telegram" button in Vouch sends.
-    const lm = /^\/(?:link|start)(?:@\w+)?\s+(?:link_)?(\d{4,8})\b/.exec(text) || (isPrivate && /^link\s+(\d{4,8})\b/i.exec(text));
+    const lm = /^\/(?:link|start)(?:@\w+)?\s+(?:link_)?(\d{4,8})\b/.exec(cmd) || (isPrivate && /^link\s+(\d{4,8})\b/i.exec(cmd));
     if (lm) {
       if (!link) { await say(chatId, 'Linking is not set up on this server yet.'); return; }
       const who = link.bind('telegram', chatId, lm[1]);
@@ -168,21 +261,21 @@ export function createBot({
         : 'That code is wrong or has expired. In Vouch, open My people and get a new code.');
       return;
     }
-    if (link && /^\/who\b/.test(text)) {
+    if (link && /^\/who\b/.test(cmd)) {
       const names = link.who('telegram', chatId);
       await say(chatId, names.length ? `This chat warns: ${names.join(', ')}.` : 'This chat is not linked to a Vouch account yet. In Vouch, tap Connect next to Telegram.');
       return;
     }
-    if (link && /^\/unlink\b/.test(text)) { link.unbindChat('telegram', chatId); await say(chatId, 'Done. This chat no longer warns anyone in Vouch.'); return; }
-    if (/^\/(start|help)\b/.test(text)) { await say(chatId, INTRO); return; }
-    if (/^\/guardian\b/.test(text)) {
+    if (link && /^\/unlink\b/.test(cmd)) { link.unbindChat('telegram', chatId); await say(chatId, 'Done. This chat no longer warns anyone in Vouch.'); return; }
+    if (/^\/(start|help)\b/.test(cmd)) { await say(chatId, INTRO); return; }
+    if (/^\/guardian\b/.test(cmd)) {
       guardianChats.add(String(chatId));
       await say(chatId, 'Done. This chat will get a heads-up (never the message itself) when someone I watch gets a likely scam.');
       return;
     }
-    if (/^\/stopguardian\b/.test(text)) { guardianChats.delete(String(chatId)); await say(chatId, 'Okay, this chat will no longer get heads-ups.'); return; }
+    if (/^\/stopguardian\b/.test(cmd)) { guardianChats.delete(String(chatId)); await say(chatId, 'Okay, this chat will no longer get heads-ups.'); return; }
     // "/flag" as a reply to a message (or to a forwarded one): remember who sent it, for the Vouch accounts this chat warns.
-    if (/^\/flag\b/.test(text)) {
+    if (/^\/flag\b/.test(cmd)) {
       const users = link ? link.lookup('telegram', chatId) : [];
       if (!users.length) { await say(chatId, 'Connect this chat to your Vouch first (in Vouch: My people, Connect). Then I can remember who to watch for.'); return; }
       const target = msg.reply_to_message;
@@ -194,7 +287,7 @@ export function createBot({
       await say(chatId, `Done. I'll treat ${who.handle || who.name || 'them'} as a likely scammer, and you'll see them under Flagged senders in Vouch.`);
       return;
     }
-    if (/^\/voice\b/.test(text)) {
+    if (/^\/voice\b/.test(cmd)) {
       if (!voice || !voice.enabled) { await say(chatId, "Spoken answers aren't switched on for this bot yet."); return; }
       if (voiceChats.has(String(chatId))) { voiceChats.delete(String(chatId)); await say(chatId, 'Okay. I will answer in writing only.'); }
       else { voiceChats.add(String(chatId)); await say(chatId, 'Okay. I will also read my answers out loud. Send /voice again to turn that off.'); }
@@ -218,8 +311,12 @@ export function createBot({
     const imageBase64 = imageRef ? await fetchImage(imageRef) : undefined;
     if (imageRef && !imageBase64 && !text.trim()) { if (isPrivate) await say(chatId, "I couldn't open that picture. Try sending it as a photo, under 3 MB."); return; }
     const sender = senderOf(msg, isPrivate);
+    // "It's fine" taught me this sender is okay: stay quiet about them for a while. (Still counted as scanned.)
+    if (business && sender && (muted.get(`${chatId}:${sender.id}`) || 0) > Date.now()) { log_(chatId).scanned += 1; return; }
+    if (business) log_(chatId).scanned += 1;
     const users = link ? link.lookup('telegram', chatId) : [];
     const q = core.quick(text);
+    const kb = business && q.level >= 1 ? actionKeyboard(chatId, sender) : {};
 
     // Who said it: remember flagged senders per account, so a repeat offender is called out and treated as worse.
     let info = null;
@@ -228,6 +325,9 @@ export function createBot({
       if (info.repeatScam && q.level < 2) { q.level = 2; q.repeat = true; }
     }
     const view = sender ? { ...sender, count: info ? info.count : 0 } : null;
+
+    // "What did you catch today?" is a question to an assistant, not a message to analyse.
+    if (isPrivate && !sender && DIGEST.test(text) && text.length < 80) { await say(chatId, digestFor(chatId)); return; }
 
     // Someone just talking to the bot ("yo", "thanks", "what do you do?") gets a conversation, not a scam analysis.
     // The AI answers when it can; the plain introduction is only the fallback.
@@ -241,16 +341,17 @@ export function createBot({
     // 1) Instant: the on-phone read answers in a blink, and the app flashes. When nothing obvious stands out in a private chat,
     //    wait for the AI instead of saying something premature.
     const deferQuiet = isPrivate && q.level === 0;
-    const speak = !deferQuiet && (isPrivate || q.level === 2 || (q.level === 1 && q.ask));
+    const speak = !deferQuiet && (isPrivate || q.level === 2 || (q.level === 1 && q.ask) || (business && q.level >= 1));
     if (deferQuiet) api('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
-    const sent = speak ? await say(chatId, core.reply(q, { sender: view })) : null;
+    const sent = speak ? await say(chatId, core.reply(q, { sender: view }), kb) : null;
     if (speak && q.level >= 1 && !users.length && link && isPrivate && !tipped.has(String(chatId))) {
       tipped.add(String(chatId));
       await say(chatId, 'Tip: this chat is not connected to Vouch, so the warning stays here. In Vouch, open My people and tap Connect next to Telegram, and warnings will flash in the app too.');
     }
     const alerts = []; // [account, alert id], so the AI's read can be added to the very warning already on screen
     if (q.level >= 1) for (const uid of users) alerts.push([uid, onFlag(uid, q, 'telegram', view)]);
-    if (q.level === 2) await alertGuardians(chatId, msg.from.first_name, q.tags);
+    const watchedName = owner ? owner.name : msg.from.first_name; // the person being protected, not whoever wrote to them
+    if (q.level === 2) await alertGuardians(chatId, watchedName, q.tags);
 
     // 2) Then the AI read, which INFERS what this is from the message and from what this sender said just before. Its words
     //    replace the generic ones in the same Telegram message and are filled into the warning already on the app; the app is
@@ -259,6 +360,11 @@ export function createBot({
     const full = await assess(text, memory.get(memKey), imageBase64);
     memory.add(memKey, text);
     if (info && info.repeatScam && full.level < 2) full.level = 2;
+    if (business && full.level >= 1) { // for "what did you catch today?": the level, the kind of scam and who, never the text
+      const d = log_(chatId);
+      d.events = fresh(d.events).slice(-49);
+      d.events.push({ at: Date.now(), level: full.level, title: (full.guide && full.guide.title) || 'A message asking for money', who: view ? (view.handle || view.name || '') : '' });
+    }
     const aloud = () => (isPrivate && (spoken || voiceChats.has(String(chatId))) ? sayAloud(chatId, full) : null);
     if (deferQuiet && full.level === 0) { await say(chatId, core.reply(full, { sender: view })); await aloud(); return; } // the AI read it: say what it found
     const raised = full.level > q.level;
@@ -268,8 +374,8 @@ export function createBot({
     const final = core.reply(full, { sender: view });
     const messageId = sent && sent.result && sent.result.message_id;
     try {
-      if (messageId) await api('editMessageText', { chat_id: chatId, message_id: messageId, text: final, disable_web_page_preview: true });
-      else if (full.level >= 1 && (isPrivate || full.level === 2 || full.ask)) await say(chatId, final);
+      if (messageId) await api('editMessageText', { chat_id: chatId, message_id: messageId, text: final, disable_web_page_preview: true, ...kb });
+      else if (full.level >= 1 && (isPrivate || business || full.level === 2 || full.ask)) await say(chatId, final, kb);
     } catch (e) { log('edit failed:', e.message); }
     if (full.level >= 1 && sender && !sender.hidden && sender.id) {
       const hint = await profileHint(sender.id);
@@ -278,7 +384,7 @@ export function createBot({
     await aloud();
     if (raised) {
       for (const uid of users) onFlag(uid, full, 'telegram', view);
-      if (full.level === 2) await alertGuardians(chatId, msg.from.first_name, full.tags);
+      if (full.level === 2) await alertGuardians(chatId, watchedName, full.tags);
     }
   }
 
@@ -293,7 +399,7 @@ export function createBot({
     let offset = 0;
     while (running) {
       try {
-        const res = await api('getUpdates', { offset, timeout: 25, allowed_updates: ['message', 'edited_message'] });
+        const res = await api('getUpdates', { offset, timeout: 25, allowed_updates: ['message', 'edited_message', 'business_connection', 'business_message', 'callback_query'] });
         if (!res.ok) throw new Error(res.description || 'getUpdates failed');
         for (const u of res.result) {
           offset = u.update_id + 1;
