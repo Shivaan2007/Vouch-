@@ -12,7 +12,10 @@ The contract is `docs/PROTOCOL.md` (v2). This file only lists what the server do
 - Tier 3 needs the word AND a second member. The second member is the claimed person's first other friend (not the checker).
   With no other friend the verdict stays amber with "Add a third member to your circle".
 - Unexpected server errors return `SERVER_ERROR` (not in PROTOCOL §9). Limits: 5 requests/min per checker, 10 `pair:accept`/min per user.
-- Auth: each connection gets `auth:challenge { nonce }`; a nonce is good for one successful register/login, after which a new challenge is emitted.
+- Auth: each connection gets exactly one `auth:challenge { nonce }`, good for one successful register/login. No second challenge is sent after success (the phone answers every challenge, so that would loop).
+- `confidence.approvals` counts the **second person only**: `{ needed: 1, received: 0|1 }` at tier 3, `{ needed: 0, received: 0 }` otherwise (the phone hides the line when needed is 0).
+- The retype (`retypedCents`) is required for a **Yes** at tier 2+. A Not me never needs it.
+- `server/test/phone-compat.test.js` runs Sayan's real phone-side code (`web/js/lib`) against this server. `web/test/flow-v2.test.js` runs the same code against his mock server.
 
 ## Demo helpers (only when `DEMO_KEY` is set, otherwise 404)
 - `GET /demo`: one-page UI. `POST /demo/reset` (header `x-demo-key`): clears requests, approvals, alerts, counters; users and pairs stay.

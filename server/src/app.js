@@ -43,10 +43,19 @@ export function createVouchServer({
   sweepMs = 1000,
   analyze,
   demoKey = process.env.DEMO_KEY,
+  registerPerMin = cfg.REGISTER_PER_MIN,
   log = (...a) => console.log(...a),
 } = {}) {
   const db = openDb(dbPath);
   const app = express();
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' });
+    next();
+  });
+  // Background work (follow-up emits, the timeout sweep) runs outside a handler's try/catch. An error there must never
+  // reach the process: on the free plan a crash restarts the server and erases every pairing.
+  const safe = (fn) => { try { return fn(); } catch (e) { log(`background error: ${e.message}`); return undefined; } };
   app.get('/health', (_req, res) => res.json({ ok: true }));
 
   // ---- demo helpers (disabled unless DEMO_KEY is set) ----
@@ -67,6 +76,8 @@ export function createVouchServer({
 
   const rate = new Map();      // checker id -> request timestamps
   const pairRate = new Map();  // user id -> pair:accept timestamps
+  const offerRate = new Map(); // user id -> pair:offer timestamps
+  const regRate = new Map();   // client address -> user:register timestamps
   const analyses = new Map();  // requestId -> Promise while AI analysis is running
 
   const q = {
@@ -113,6 +124,9 @@ export function createVouchServer({
     map.set(key, hits);
   };
 
+  // Behind Render's proxy the real client is the first X-Forwarded-For entry.
+  const clientAddress = (socket) => String(socket.handshake.headers['x-forwarded-for'] || socket.handshake.address || '').split(',')[0].trim();
+
   function freshChallenge(socket) {
     socket.data.nonce = crypto.randomBytes(16).toString('hex');
     socket.emit(EV.AUTH_CHALLENGE, { nonce: socket.data.nonce });
@@ -126,7 +140,9 @@ export function createVouchServer({
     if (!nonce || typeof sig !== 'string') fail('BAD_SIGNATURE');
     const ok = verifySig(signPub, authString(nonce), sig);
     if (!ok) fail('BAD_SIGNATURE');
-    freshChallenge(socket); // a nonce is good for one login only
+    // A nonce is good for one successful login. Do NOT send another auth:challenge here: the phone answers every challenge
+    // with a login, so that would loop. One challenge per connection, as PROTOCOL section 2 says.
+    socket.data.nonce = null;
   }
 
   // ---- verdicts ----
@@ -152,7 +168,8 @@ export function createVouchServer({
         understanding: { tags, paymentRisk: r.payment_risk, explanation: r.explanation, firstRequest: !!r.first_request },
         confidence: {
           answer: a ? a.answer : (timedOut ? 'timeout' : 'none'), wordOk: !!r.word_ok,
-          approvals: { needed: d.tier === 3 ? 2 : 1, received: (a?.answer === 'yes' ? 1 : 0) + (s?.answer === 'yes' ? 1 : 0) },
+          // the second person only: the phone shows "Second person: received of needed" and hides it when needed is 0
+          approvals: { needed: d.needs.second ? 1 : 0, received: s?.answer === 'yes' ? 1 : 0 },
           answerSig: a ? { answer: a.answer, ts: a.ts, nonce: a.nonce, sig: a.sig } : null,
         },
       },
@@ -223,6 +240,7 @@ export function createVouchServer({
   // ---- handlers ----
   const handlers = {
     [EV.USER_REGISTER](socket, p) {
+      throttle(regRate, clientAddress(socket), registerPerMin);
       if (typeof p.name !== 'string' || !p.name.trim() || p.name.trim().length > 20) fail('BAD_INPUT');
       if (!isP256Spki(p.signPub) || !isP256Spki(p.exchPub)) fail('BAD_INPUT');
       signedChallenge(socket, p.signPub, p.sig); // proves the phone holds the private key
@@ -236,7 +254,7 @@ export function createVouchServer({
       const u = (typeof p.userId === 'string' && q.user.get(p.userId)) || fail('UNKNOWN_USER');
       signedChallenge(socket, u.sign_pub, p.sig);
       authed(socket, u.user_id);
-      setImmediate(() => resendPending(u.user_id));
+      setImmediate(() => safe(() => resendPending(u.user_id)));
       return { user: { id: u.user_id, name: u.name } };
     },
 
@@ -246,6 +264,7 @@ export function createVouchServer({
     },
 
     [EV.PAIR_OFFER](socket) {
+      throttle(offerRate, socket.data.userId, cfg.OFFERS_PER_MIN);
       let token = '';
       for (const b of crypto.randomBytes(8)) token += cfg.TOKEN_ALPHABET[b % cfg.TOKEN_ALPHABET.length];
       const expiresAt = Date.now() + cfg.PAIR_TOKEN_TTL_MS;
@@ -295,10 +314,10 @@ export function createVouchServer({
         q.setAnalysis.run(JSON.stringify(a.tags), a.paymentRisk, a.explanation, a.source, requestId);
       }).finally(() => analyses.delete(requestId));
       analyses.set(requestId, job);
-      job.then(() => pushUpdate(requestId));
+      job.then(() => safe(() => pushUpdate(requestId)));
 
       // After the ack has gone out, so the phone knows the requestId before the first update.
-      setImmediate(() => { emitTo(claimedId, EV.VERIFY_PROMPT, promptFor(r)); pushUpdate(requestId); });
+      setImmediate(() => safe(() => { emitTo(claimedId, EV.VERIFY_PROMPT, promptFor(r)); pushUpdate(requestId); }));
       return { requestId };
     },
 
@@ -310,7 +329,8 @@ export function createVouchServer({
       if (r.status !== 'open') fail('NOT_ALLOWED'); // timed out
       if (!['yes', 'not_me'].includes(p.answer)) fail('BAD_INPUT');
       checkNonceTs(p.ts, p.nonce);
-      if (r.tier >= 2 && p.retypedCents !== r.amount_cents) fail('AMOUNT_MISMATCH');
+      // The retype stops a reflex tap on Yes. It must never block a Not me.
+      if (p.answer === 'yes' && r.tier >= 2 && p.retypedCents !== r.amount_cents) fail('AMOUNT_MISMATCH');
       const signed = answerString({
         requestId: r.request_id, checkerId: r.checker_id, claimedId: r.claimed_id,
         amountCents: r.amount_cents, method: r.method, answer: p.answer, ts: p.ts, nonce: p.nonce,
@@ -378,7 +398,7 @@ export function createVouchServer({
       pushUpdate(request_id);
     }
   }
-  const sweeper = setInterval(sweep, sweepMs);
+  const sweeper = setInterval(() => safe(sweep), sweepMs);
   sweeper.unref();
 
   // Soft reset: clear requests, approvals, alerts and counters. Users and pairs stay, so the pre-paired demo phones
@@ -388,7 +408,7 @@ export function createVouchServer({
       for (const t of ['approvals', 'alerts', 'verify_requests', 'pair_tokens']) db.exec(`DELETE FROM ${t}`);
       if (hard) for (const t of ['pairs', 'users']) db.exec(`DELETE FROM ${t}`);
     })();
-    rate.clear(); pairRate.clear(); analyses.clear();
+    rate.clear(); pairRate.clear(); offerRate.clear(); regRate.clear(); analyses.clear();
     io.emit(EV.DEMO_RESET, { hard });
     log(`demo reset hard=${hard}`);
     return { hard, users: db.prepare('SELECT COUNT(*) n FROM users').get().n };

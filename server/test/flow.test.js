@@ -115,7 +115,7 @@ test('tier 1 Yes -> green, and the signature in the update can be re-checked', a
     assert.deepEqual([v.checkerId, v.claimedId, v.tier], [checker.userId, claimed.userId, 1]);
     assert.deepEqual(v.stages.information, { claimedName: 'Shivaan', amountCents: 2000, method: 'venmo_cashapp_zelle', channel: 'text' });
     assert.equal(v.stages.confidence.answer, 'yes');
-    assert.deepEqual(v.stages.confidence.approvals, { needed: 1, received: 1 });
+    assert.deepEqual(v.stages.confidence.approvals, { needed: 0, received: 0 }); // second person only; none needed at tier 1
     assert.deepEqual(v.stages.confidence.answerSig, { answer: 'yes', ts: ans.ts, nonce: ans.nonce, sig: ans.sig });
     assert.equal(v.stages.understanding.firstRequest, true);
 
@@ -226,6 +226,7 @@ test('tier 2: retype required; amber after Yes until the checker confirms the wo
 
     assert.equal((await claimed.call('verify:answer', claimed.signAnswer(rq, 'yes'))).ok, true);
     const amber = await update(checker, rq, (x) => x.stages.confidence.answer === 'yes');
+    assert.deepEqual(amber.stages.confidence.approvals, { needed: 0, received: 0 });
     assert.equal(amber.verdict, 'amber');
     assert.equal(amber.needs.word, true);
     assert.match(amber.reasons.join(' '), /ask them for your word/);
@@ -251,7 +252,7 @@ test('tier 3: needs the word AND a second member; a No turns it red and alerts f
       await checker.call('verify:wordcheck', { requestId: rq.requestId, passed: true });
       const mid = await update(checker, rq, (x) => x.stages.confidence.wordOk);
       assert.equal(mid.verdict, 'amber');
-      assert.equal(mid.stages.confidence.approvals.needed, 2);
+      assert.deepEqual(mid.stages.confidence.approvals, { needed: 1, received: 0 });
 
       assert.equal((await checker.call('verify:confirm', checker.signConfirm(rq, 'yes'))).error, 'NOT_ALLOWED');
       assert.equal((await other.call('verify:confirm', { ...other.signConfirm(rq, 'yes'), answer: 'no' })).error, 'BAD_SIGNATURE');
@@ -259,7 +260,7 @@ test('tier 3: needs the word AND a second member; a No turns it red and alerts f
       assert.equal((await other.call('verify:confirm', other.signConfirm(rq, secondSays))).error, 'ALREADY_ANSWERED');
       const v = await update(checker, rq, (x) => x.verdict !== 'amber');
       assert.equal(v.verdict, secondSays === 'yes' ? 'green' : 'red');
-      if (secondSays === 'yes') assert.equal(v.stages.confidence.approvals.received, 2);
+      if (secondSays === 'yes') assert.deepEqual(v.stages.confidence.approvals, { needed: 1, received: 1 });
       else assert.equal((await checker.waitFor('circle:alert', (a) => a.requestId === rq.requestId)).impersonatedName, 'Shivaan');
     }
   } finally { await t.stop(); }
@@ -400,5 +401,53 @@ test('demo reset: disabled without a key, guarded by it, soft keeps friends, har
     assert.equal((await post('/demo/reset?hard=1', 'sekrit-demo-key')).status, 200);
     assert.equal((await checker.call('circle:list', {})).friends.length, 0);
     assert.equal((await checker.call('verify:request', { claimedId: claimed.userId, amountCents: 100, method: 'other', channel: 'text' })).error, 'NOT_PAIRED');
+  } finally { await t.stop(); }
+});
+
+test('abuse limits: registration per address, pairing codes per user; security headers set', async () => {
+  const t = await startServer({ registerPerMin: 3 });
+  try {
+    const phones = [];
+    for (let i = 0; i < 3; i++) phones.push(await t.phone(`P${i}`));
+    const extra = await t.phone('Extra', { register: false });
+    await extra.ready();
+    assert.equal((await extra.register()).error, 'RATE_LIMITED');
+
+    let last;
+    for (let i = 0; i < 21; i++) last = await phones[0].call('pair:offer', {});
+    assert.equal(last.error, 'RATE_LIMITED');
+
+    const res = await fetch(`${t.url}/health`);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('x-powered-by'), null);
+  } finally { await t.stop(); }
+});
+
+test('Not me never needs the retype, even at tier 2 and 3', async () => {
+  const t = await startServer();
+  try {
+    const { checker, claimed } = await trio(t, { third: false });
+    for (const amountCents of [6000, 30000]) {
+      const rq = await request(checker, claimed, { amountCents });
+      const ans = claimed.signAnswer(rq, 'not_me');
+      delete ans.retypedCents;
+      assert.equal((await claimed.call('verify:answer', ans)).ok, true);
+      assert.equal((await update(checker, rq, (x) => x.verdict === 'red')).stages.confidence.answer, 'not_me');
+    }
+  } finally { await t.stop(); }
+});
+
+test('exactly one auth:challenge per connection, so a phone that answers every challenge cannot loop', async () => {
+  const t = await startServer();
+  try {
+    const a = await t.phone('Loopy');            // connects, gets the challenge, registers
+    const b = await t.phone('Loopy 2', { register: false });
+    b.sign = a.sign; b.exch = a.exch; b.userId = a.userId;
+    await b.ready();
+    assert.equal((await b.login()).ok, true);
+    await new Promise((r) => setTimeout(r, 200));
+    for (const p of [a, b]) assert.equal(p.events.filter((e) => e.ev === 'auth:challenge').length, 1);
+    // the used nonce cannot log in a second time on the same connection
+    assert.equal((await b.login()).error, 'BAD_SIGNATURE');
   } finally { await t.stop(); }
 });
