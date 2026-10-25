@@ -40,7 +40,7 @@ const label = (list, key) => (list.find(([k]) => k === key) || [key, key])[1];
 const ERRORS = {
   OFFLINE: "You're offline. Reconnecting…", TIMEOUT: 'The server took too long. Try again.',
   TOKEN_INVALID: 'That code is invalid or expired.', ALREADY_PAIRED: "You're already linked.",
-  SELF_PAIR: "That's your own code.", NOT_PAIRED: "You aren't linked with them.",
+  SELF_PAIR: "That's your own code.", NOT_PAIRED: 'Not connected to them right now. Link up again in My people. Your code word still works.',
   AMOUNT_MISMATCH: "The amount you typed doesn't match.", BAD_SIGNATURE: "Your signature wasn't accepted.",
   ALREADY_ANSWERED: 'This was already answered.', NOT_FOUND: 'This request is gone.',
   RATE_LIMITED: 'Slow down a little.', BAD_INPUT: 'Check what you entered.',
@@ -104,12 +104,72 @@ const $app = document.getElementById('app');
 let $content, $status, $banners, $overlay, $toast, $conn;
 let toastTimer = null;
 const friendById = (id) => S.friends.find((f) => f.id === id);
+// Is this person known to the server right now? Unknown until the first sync, so assume yes.
+const isLinked = (f) => !S.linked || S.linked.has(f.id);
 
 function toast(msg, kind) {
   if (!$toast) return;
   $toast.replaceChildren(h('p', { class: kind === 'ok' ? 'ok' : 'err' }, msg));
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => $toast.replaceChildren(), 5000);
+}
+
+// ---------- danger state: stays in your face until it is resolved ----------
+// Scams work by rushing people. While something risky is unresolved Vouch keeps a red banner on screen, repeats the
+// warning aloud and as a notification, and makes you wait before you can wave it away.
+
+const PAUSE_SECONDS = 10; // the same cooling-off pause the server config documents
+const REPEAT_MS = 25000;
+const MAX_REPEATS = 8;
+const A = { active: false, level: 0, reason: '', source: '', repeats: 0, mutedUntil: 0 };
+let $sticky;
+
+// A button that stays disabled for a few seconds, so a warning can't be dismissed on reflex.
+function pauseButton(text, seconds, onclick, cls) {
+  const b = h('button', { class: cls || '', disabled: true }, `${text} (${seconds})`);
+  let n = seconds;
+  const t = setInterval(() => {
+    n -= 1;
+    if (!b.isConnected && n < seconds - 1) { clearInterval(t); return; }
+    if (n <= 0) { clearInterval(t); b.disabled = false; b.textContent = text; } else b.textContent = `${text} (${n})`;
+  }, 1000);
+  b.addEventListener('click', onclick);
+  return b;
+}
+
+function raiseAlert(level, reason, source) {
+  const was = A.active;
+  const prev = was ? A.level : 0;
+  if (was && level < prev) return; // never downgrade an active danger
+  const changed = !was || level > prev || source !== A.source;
+  A.active = true; A.level = Math.max(level, prev); A.reason = reason; A.source = source;
+  if (changed) { A.repeats = 0; paintSticky(); }
+}
+
+function clearAlert() {
+  A.active = false; A.level = 0; A.reason = ''; A.source = ''; A.repeats = 0;
+  paintSticky();
+}
+
+function paintSticky() {
+  if (!$sticky) return;
+  if (!A.active) { $sticky.replaceChildren(); return; }
+  const f = friendById(S.wordFriendId) || S.friends[0];
+  $sticky.replaceChildren(h('div', { class: `banner${A.level === 2 ? '' : ' soft'}`, role: 'alert' },
+    h('div', { class: 'bannerhead' }, A.level === 2 ? 'DO NOT SEND ANYTHING' : 'WAIT. CHECK FIRST.'),
+    h('p', null, A.reason),
+    f ? h('button', { onclick: () => { S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
+    f ? h('button', { onclick: () => { if (A.source === 'call') askAboutCall(); else setTab('check'); } }, `Check with ${f.name}'s phone`) : null,
+    pauseButton('I checked it. Clear this', PAUSE_SECONDS, clearAlert, 'ghost'),
+    h('button', { class: 'ghost', onclick: () => { A.mutedUntil = Date.now() + 120000; toast('Quiet for 2 minutes. The banner stays.', 'ok'); } }, 'Quiet for 2 minutes')));
+}
+
+function repeatAlert() {
+  if (!A.active || Date.now() < A.mutedUntil || A.repeats >= MAX_REPEATS) return;
+  A.repeats += 1;
+  const line = A.level === 2 ? 'Still no confirmation. Do not send money.' : 'Reminder. Make sure it is really them before you send anything.';
+  attention(line, A.level === 2 ? [400, 150, 400] : [250, 120, 250]);
+  notify(A.level === 2 ? 'Vouch: do NOT send money' : 'Vouch: check first', A.reason, 'repeat');
 }
 
 // ---------- boot + auth ----------
@@ -150,6 +210,7 @@ async function boot() {
   wireEvents();
   connect({ onChallenge, onStatus });
   setInterval(tickWord, 1000);
+  setInterval(repeatAlert, REPEAT_MS);
   flashIfRisky(); // a message shared into Vouch is warned about straight away
 }
 
@@ -218,12 +279,15 @@ async function syncFriends() {
   try {
     const { friends } = await call('circle:list');
     const local = await store.listFriends();
-    for (const l of local) if (!friends.some((f) => f.id === l.id)) await store.deleteFriend(l.id);
+    S.linked = new Set(friends.map((f) => f.id));
+    // Links live on this phone until the person removes them: never delete one just because the server forgot it.
     for (const f of friends) {
-      if (!local.some((l) => l.id === f.id)) {
-        const wordKey = await deriveWordKey(S.keys.exchKeyPair.privateKey, f.exchPub);
-        await store.saveFriend({ ...f, wordKey });
-      }
+      // The same person can come back under a new id (the server was wiped). Match by key and update, never duplicate.
+      const same = local.filter((l) => l.id === f.id || l.signPub === f.signPub);
+      const keep = same.find((l) => l.wordKey && l.exchPub === f.exchPub);
+      for (const l of same) if (l.id !== f.id) await store.deleteFriend(l.id);
+      const wordKey = keep ? keep.wordKey : await deriveWordKey(S.keys.exchKeyPair.privateKey, f.exchPub);
+      await store.saveFriend({ ...f, wordKey, pairedAt: (same[0] && same[0].pairedAt) || f.pairedAt || Date.now() });
     }
     S.friends = await store.listFriends();
   } catch (e) { toast(friendly(e)); }
@@ -234,6 +298,7 @@ async function syncFriends() {
 function buildShell() {
   $status = h('span', { class: 'pill off', role: 'status' }, 'Offline');
   $conn = h('div', { role: 'status', 'aria-live': 'polite' });
+  $sticky = h('div');
   $banners = h('div', { role: 'alert' });
   $toast = h('div', { role: 'status', 'aria-live': 'polite' });
   $content = h('main');
@@ -246,7 +311,7 @@ function buildShell() {
     applySize(S.size);
     saveSize(S.size);
   } }, 'A+');
-  $app.replaceChildren(h('header', null, h('h1', null, 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $banners, $toast, $content, nav, $overlay);
+  $app.replaceChildren(h('header', null, h('h1', null, 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $sticky, $banners, $toast, $content, nav, $overlay);
   paintStatus();
 }
 
@@ -310,6 +375,7 @@ function flashIfRisky() {
   if (!text || !riskyEnough(tags) || S.flashedFor === text) return;
   S.flashedFor = text;
   S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags } });
+  raiseAlert(2, 'This message has scam warning signs. Check it before you send anything.', 'message');
   attention('Warning. This message looks like a scam. Do not send anything yet.', [400, 150, 400, 150, 400]);
   notify('Vouch: this message looks like a scam', 'Do not send anything yet. Open Vouch to check it.', 'local-scam');
   renderOverlay();
@@ -321,6 +387,7 @@ async function submitCheck() {
   const cents = parseCents(F.amount);
   if (!cents) throw new Error('NEED_AMOUNT');
   if (!F.friendId || !friendById(F.friendId)) throw new Error('NEED_FRIEND');
+  if (!isLinked(friendById(F.friendId))) throw new Error('NOT_PAIRED');
   const body = { claimedId: F.friendId, amountCents: cents, method: F.method, channel: F.channel };
   const sent = F.text.trim();
   if (sent) body.text = sent;
@@ -427,14 +494,19 @@ function announce(u) {
   const name = u.stages.information.claimedName;
   if (u.verdict === 'red') {
     S.queue.push({ kind: 'alert', data: { u, soft: false } });
+    raiseAlert(2, conf.answer === 'not_me' ? `${name} says this was NOT them.` : 'Something does not add up.', `req-${u.requestId}`);
     const line = `Stop. Do not send money. ${conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.'}`;
     attention(line, [400, 150, 400, 150, 400]);
     notify('Vouch: do not send money', conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.', `res-${u.requestId}`);
   } else if (u.verdict === 'amber' && conf.answer === 'timeout') {
     S.queue.push({ kind: 'alert', data: { u, soft: true } });
+    raiseAlert(1, `${name} has not answered. Do not send yet.`, `req-${u.requestId}`);
     attention(`Wait. ${name} has not answered. Do not send money yet.`, [300, 150, 300]);
     notify('Vouch: wait', `${name} has not answered yet.`, `res-${u.requestId}`);
+  } else if (u.verdict === 'amber') {
+    raiseAlert(1, (u.reasons && u.reasons[0]) || 'Wait for confirmation before you send anything.', `req-${u.requestId}`);
   } else if (u.verdict === 'green') {
+    clearAlert();
     attention(`Verified. ${name} confirmed this on their own phone.`, 80);
     notify('Vouch: verified', `${name} confirmed this on their own phone.`, `res-${u.requestId}`);
   }
@@ -635,6 +707,7 @@ function stopListening() {
   S.listening = false;
   try { if (S.rec) S.rec.stop(); } catch { /* already stopped */ }
   S.rec = null; S.heard = ''; S.cur = '';
+  if (A.source === 'call') clearAlert();
   paintStatus();
   renderMain();
 }
@@ -645,6 +718,7 @@ function scanCall() {
   if (r.level <= (S.callLevel || 0)) return;
   S.callLevel = r.level;
   S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags } });
+  raiseAlert(r.level, r.level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
   attention(r.level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
     r.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
   notify(r.level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
@@ -682,7 +756,15 @@ function requestAlerts() {
 
 function friendsView() {
   const list = S.friends.length
-    ? h('div', { class: 'card' }, S.friends.map((f) => h('div', { class: 'friend' }, h('span', null, f.name), h('span', { class: 'muted' }, 'Linked'))))
+    ? h('div', { class: 'card' }, S.friends.map((f) => h('div', null,
+      h('div', { class: 'friend' }, h('span', null, f.name),
+        h('span', { class: isLinked(f) ? 'muted' : 'err' }, isLinked(f) ? 'Linked' : 'Not connected')),
+      isLinked(f) ? null : h('p', { class: 'muted' }, 'The server lost this link. Your code word still works. Tap Add someone and link up again.'),
+      S.removeAsk === f.id
+        ? h('div', { class: 'row' },
+          h('button', { class: 'no', onclick: async () => { await store.deleteFriend(f.id); S.friends = await store.listFriends(); S.removeAsk = null; renderMain(); } }, `Remove ${f.name}`),
+          h('button', { class: 'ghost', onclick: () => { S.removeAsk = null; renderMain(); } }, 'Keep'))
+        : h('button', { class: 'ghost', onclick: () => { S.removeAsk = f.id; renderMain(); } }, `Remove ${f.name}`))))
     : h('p', { class: 'muted' }, 'Nobody yet.');
   const input = h('input', { id: 'code', placeholder: 'XXXX-XXXX', autocapitalize: 'characters', autocomplete: 'off' });
   const forget = S.forgetAsk
@@ -731,6 +813,11 @@ async function acceptToken(token) {
 
 async function onPeerPaired(peer) {
   const wordKey = await deriveWordKey(S.keys.exchKeyPair.privateKey, peer.exchPub);
+  // Linking again with someone already on this phone replaces their old entry instead of adding a second one.
+  for (const e of await store.listFriends()) {
+    if (e.id === peer.id || e.signPub === peer.signPub || (e.name === peer.name && !isLinked(e))) await store.deleteFriend(e.id);
+  }
+  if (S.linked) S.linked.add(peer.id);
   await store.saveFriend({ id: peer.id, name: peer.name, signPub: peer.signPub, exchPub: peer.exchPub, wordKey, pairedAt: Date.now() });
   S.friends = await store.listFriends();
   S.codeView = null;
@@ -875,7 +962,7 @@ function alertOverlay({ u, soft }) {
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, headline), h('p', { class: 'big' }, why), reasons,
       h('p', null, 'Call them on a number you already know, or ask a family member.'),
-      h('button', { onclick: dismiss }, 'I understand')));
+      soft ? h('button', { onclick: dismiss }, 'I understand') : pauseButton('I understand', PAUSE_SECONDS, dismiss)));
 }
 
 function codeOverlay(token) {

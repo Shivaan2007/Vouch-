@@ -79,6 +79,9 @@ nav button { margin: 0; border: 0; border-radius: 0; background: transparent; co
 nav button.on { color: var(--ink); box-shadow: inset 0 -3px 0 var(--ink); }
 
 .banner { background: var(--red); color: var(--red-bg); border-radius: 12px; padding: 0.8rem 1rem; margin: 0.6rem 0; font-weight: 600; }
+.banner.soft { background: var(--amber); color: var(--amber-bg); }
+.bannerhead { font-size: 1.3rem; font-weight: 800; letter-spacing: 0.02em; }
+.banner p { font-weight: 600; margin: 0.3rem 0; }
 .banner button { background: transparent; border-color: var(--red-bg); color: var(--red-bg); margin-top: 0.5rem; min-height: 2.75rem; }
 
 .overlay { position: fixed; inset: 0; z-index: 10; background: var(--bg); padding: 1.5rem 1.2rem; padding-top: calc(1.5rem + env(safe-area-inset-top, 0px)); overflow: auto; }
