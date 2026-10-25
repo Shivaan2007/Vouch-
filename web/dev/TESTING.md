@@ -61,3 +61,10 @@ Failure modes to rehearse: tap Paste with an empty clipboard (it says what to do
 - **Android:** install Vouch (browser menu -> Install app). Press and hold a message -> **Share** -> **Vouch**. The message opens in Vouch and warns at once.
 - **iPhone Share sheet (optional):** the steps are in the app under **My people -> Send messages to Vouch**. They build a Shortcut that opens `<link>/?text=<message>`.
 - Quick check without any setup: open `<link>/?text=new%20number%20buy%20%24200%20gift%20cards%20don%27t%20tell%20mom` on a signed-in phone. The warning should appear on load.
+
+## 10. Message bot and live call flagging (needs the Watch service: `node --env-file=.env bot/serve.js`)
+- **My people -> Message bot** lists only the doors the server really has (Telegram, text, WhatsApp). With none configured it says so plainly.
+- **Link a chat**: Vouch shows a 6-digit code. Send `/link 123456` to the Telegram bot (or `link 123456` as a text or WhatsApp message). Then forward the bot a scam message: you get the answer there and a full-screen warning appears in Vouch with the scam type and steps, plus the red banner.
+- **On a call -> Start watching**: it says which engine it is using, shows a live transcript and (in server mode) a microphone level bar, and tells you in words if it can't hear anything. If the browser can't listen, it switches to listening through the Vouch server (needs `GEMINI_API_KEY`).
+- **Typed fallback**: type or paste what the caller says into the box under it: the same live guide and full-screen warning, with no microphone at all. Try: "please buy some apple gift cards and read me the numbers".
+- Some phones block the microphone during a real call. Put Vouch on a second phone or tablet next to the call, or use the typed box.

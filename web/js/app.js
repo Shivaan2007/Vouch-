@@ -9,6 +9,7 @@ import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
 import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify } from './lib/scan.js';
+import { chunkToWav } from './lib/audio.js';
 
 // ---------- helpers ----------
 
@@ -146,6 +147,7 @@ const S = {
 const $app = document.getElementById('app');
 let $content, $status, $banners, $overlay, $toast, $conn;
 let toastTimer = null;
+const SOURCE_NAMES = { telegram: 'Telegram', sms: 'a text message', whatsapp: 'WhatsApp' };
 const friendById = (id) => S.friends.find((f) => f.id === id);
 // Is this person known to the server right now? Unknown until the first sync, so assume yes.
 const isLinked = (f) => !S.linked || S.linked.has(f.id);
@@ -318,6 +320,7 @@ async function afterAuth() {
   S.authed = true;
   paintStatus();
   await syncFriends();
+  loadWatch().then(() => { if (S.tab === 'friends' || S.tab === 'word') renderMain(); }); // not awaited: a server without Watch just says nothing
   if (S.pendingPair) {
     const token = S.pendingPair;
     S.pendingPair = null;
@@ -706,8 +709,11 @@ function paintWordArea() {
 
 function wordView() {
   if (!S.friends.length) {
-    return h('section', null, h('h2', null, 'On a call'), h('p', null, 'Link up with someone first to get a word only you two know.'),
-      h('button', { onclick: () => setTab('friends') }, 'Add someone'));
+    // Watching a call needs no friend; only the shared code word does.
+    return h('section', null, h('h2', null, 'On a call'),
+      listenCard(),
+      h('p', null, 'Link up with someone first to get a code word only you two know.'),
+      h('button', { class: 'ghost', onclick: () => setTab('friends') }, 'Add someone'));
   }
   if (!S.wordFriendId || !friendById(S.wordFriendId)) S.wordFriendId = S.friends[0].id;
   const who = S.friends.length > 1
@@ -737,58 +743,215 @@ async function tickWord() {
 }
 
 // ---------- watch a call ----------
-// Uses the browser's own speech recognition on the speakerphone. The words are checked on this phone, then dropped:
-// nothing is recorded, saved or sent by Vouch. (The browser's speech service may process the audio to make text.)
+// Live flagging of a call that is on speaker. Two engines, so it is never a dead end:
+//   1. the browser's own speech recognition, or
+//   2. short audio chunks sent to the Vouch server over the signed-in socket and turned into words there (Gemini).
+// Either way the words are scanned on this phone and nothing is saved. A typed box works everywhere.
+
+const speechCtor = () => globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+
+function paintListen() {
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  const L = S.listen || {};
+  set('listenstatus', L.status || '');
+  const heard = `${S.heard || ''} ${S.cur || ''}`.trim();
+  set('transcript', heard ? heard.slice(-260) : '…');
+  const bar = document.getElementById('micbar');
+  if (bar) bar.style.width = `${Math.round((L.level || 0) * 100)}%`;
+  const g = document.getElementById('listenguide');
+  if (g) {
+    const c = classify(heard);
+    g.replaceChildren(...(c ? [guideCard(c)] : (L.mode && L.mode !== 'off' ? [h('p', { class: 'muted' }, 'Nothing suspicious heard yet.')] : [])));
+  }
+}
 
 function listenCard() {
-  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
-  if (S.listening) {
-    return h('div', { class: 'card' }, h('b', null, 'Watching this call'),
-      h('p', { class: 'muted', id: 'transcript' }, (S.cur || S.heard || '').slice(-200) || 'Listening…'),
+  const L = S.listen || (S.listen = { mode: 'off', status: '', level: 0, words: 0, hint: '' });
+  const on = !!S.listening;
+  const typed = h('textarea', { id: 'callsays', placeholder: 'Or type or paste what the caller is saying', 'aria-label': 'What the caller is saying',
+    oninput: () => {
+      if (S.listening) return;
+      S.heard = typed.value; S.cur = '';
+      if (!typed.value.trim()) S.callLevel = 0;
+      S.listen.mode = typed.value.trim() ? 'typed' : 'off';
+      paintListen();
+      scanCall();
+    } });
+  if (!on) typed.value = S.heard || '';
+  const canServer = !!(S.watch && S.watch.listen);
+  const kids = [h('b', null, 'Watch this call for scams')];
+  if (on) {
+    kids.push(
+      h('p', { id: 'listenstatus', role: 'status', 'aria-live': 'polite' }, L.status),
+      L.mode === 'server' ? h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'micbar' })) : null,
+      h('p', { class: 'muted', id: 'transcript', 'aria-live': 'off' }, (S.cur || S.heard || '').slice(-260) || '…'),
+      h('div', { id: 'listenguide' }),
+      L.hint === 'switch' && canServer && L.mode === 'browser'
+        ? h('button', { onclick: () => { stopEngine(); startServerListening(); } }, 'Try listening through Vouch instead') : null,
       h('button', { class: 'ghost', onclick: stopListening }, 'Stop watching'));
+  } else {
+    kids.push(
+      h('p', null, 'Put the call on speaker, then start. Vouch listens for requests for money and warns you the moment it hears one. It does not record or save the call.'),
+      h('p', { class: 'muted' }, canServer ? "Your browser's speech service, or the Vouch server, may process the audio. Tell the other person you're using it."
+        : "Your browser's speech service may process the audio. Tell the other person you're using it."),
+      L.status ? h('p', { class: 'err', role: 'alert' }, L.status) : null,
+      h('button', { onclick: startListening }, 'Start watching'),
+      h('div', { id: 'listenguide' }),
+      typed,
+      h('p', { class: 'muted' }, 'Some phones block the microphone during a call. If yours does, put Vouch on a second phone or tablet next to the call, or type what you hear.'));
   }
-  return h('div', { class: 'card' }, h('b', null, 'Watch this call for scams'),
-    h('p', null, 'Put the call on speaker, then start. Vouch warns you the moment someone asks for money. Vouch does not record or save the call.'),
-    h('p', { class: 'muted' }, "Your browser's speech service may process the audio. Tell the other person you're using it."),
-    SR ? h('button', { onclick: startListening }, 'Start watching')
-      : h('p', { class: 'muted' }, "This browser can't listen. Use Check a message instead."),
-    h('p', { class: 'muted' }, 'Some phones block the microphone during a call. If yours does, put Vouch on a second phone or tablet next to the call.'));
+  return h('div', { class: 'card' }, ...kids.filter(Boolean));
 }
 
 function startListening() {
-  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
-  if (!SR) return;
+  Object.assign(S, { heard: '', cur: '', callLevel: 0 });
+  S.listen = { mode: 'off', status: '', level: 0, words: 0, hint: '' };
+  if (speechCtor()) startBrowserListening();
+  else if (S.watch && S.watch.listen) startServerListening();
+  else {
+    S.listen.status = "This browser can't listen to speech, and the Vouch server has no speech key. Type what the caller says in the box.";
+    renderMain();
+  }
+}
+
+function startBrowserListening() {
+  const SR = speechCtor();
   const rec = new SR();
-  rec.lang = 'en-US';
+  rec.lang = navigator.language || 'en-US';
   rec.continuous = true;
   rec.interimResults = true;
-  S.listening = true; S.heard = ''; S.cur = ''; S.callLevel = 0; S.rec = rec;
+  S.listening = true; S.rec = rec;
+  S.listen = { mode: 'browser', status: 'Listening with your browser. Put the call on speaker, close to the phone.', level: 0, words: 0, hint: '' };
   rec.onresult = (e) => {
     let text = '';
     for (let i = 0; i < e.results.length; i++) text += `${e.results[i][0].transcript} `;
     S.cur = text.slice(-1500);
-    const t = document.getElementById('transcript');
-    if (t) t.textContent = S.cur.slice(-200);
+    S.listen.words = `${S.heard} ${S.cur}`.trim().split(/\s+/).filter(Boolean).length;
+    S.listen.status = `Listening. Heard ${S.listen.words} words.`;
+    S.listen.hint = '';
+    paintListen();
     scanCall();
   };
   rec.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { stopListening(); toast('The microphone is blocked. Allow it in your browser settings.'); }
-    else if (e.error === 'audio-capture') { stopListening(); toast("Couldn't use the microphone. Some phones block it during a call; use a second phone next to the call."); }
+    const code = e && e.error;
+    if (code === 'no-speech') { S.listen.status = "I'm not hearing anyone. Put the call on speaker, close to the phone."; paintListen(); return; }
+    if (code === 'aborted') return;
+    if (code === 'not-allowed') { fail('The microphone is blocked. Allow it in your browser settings, then start again.'); return; }
+    if (S.watch && S.watch.listen && ['network', 'service-not-allowed', 'audio-capture', 'language-not-supported'].includes(code)) {
+      S.listen.status = "The browser can't listen here. Switching to listening through Vouch…";
+      paintListen();
+      stopEngine();
+      startServerListening();
+      return;
+    }
+    fail(code === 'network' ? "The browser's speech service can't be reached. Type what the caller says in the box."
+      : (code === 'audio-capture' ? "Couldn't use the microphone. Some phones block it during a call; use a second phone next to the call, or type what you hear."
+        : `Listening stopped (${code || 'unknown'}). Type what the caller says in the box.`));
   };
   rec.onend = () => { // browsers end a session after a pause; start again while the person is still watching
-    if (!S.listening) return;
+    if (!S.listening || S.listen.mode !== 'browser') return;
     S.heard = `${S.heard} ${S.cur}`.slice(-1500); S.cur = '';
     try { rec.start(); } catch { /* already starting */ }
   };
-  try { rec.start(); } catch (e) { S.listening = false; toast("Couldn't start listening."); }
+  try { rec.start(); } catch (err) { fail("Couldn't start listening. Type what the caller says in the box."); return; }
+  S.listen.timer = setTimeout(() => { // say so when nothing is coming through, instead of staying quiet
+    if (S.listening && S.listen.mode === 'browser' && S.listen.words === 0) {
+      S.listen.hint = 'switch';
+      S.listen.status = "Still not hearing any words. Make sure the call is on speaker and the volume is up.";
+      if (S.tab === 'word') renderMain();
+    }
+  }, 12000);
+  paintStatus();
+  renderMain();
+}
+
+async function startServerListening() {
+  S.listening = true;
+  S.listen = { mode: 'server', status: 'Starting the microphone…', level: 0, words: 0, hint: '' };
+  paintStatus();
+  renderMain();
+  const md = navigator.mediaDevices;
+  const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!md || !md.getUserMedia || !Ctx) { fail("This browser can't use the microphone here. Type what the caller says in the box."); return; }
+  let stream;
+  try { stream = await md.getUserMedia({ audio: { noiseSuppression: true, autoGainControl: true } }); } catch (err) {
+    fail(err && err.name === 'NotAllowedError' ? 'The microphone is blocked. Allow it in your browser settings, then start again.'
+      : (err && err.name === 'NotFoundError' ? 'No microphone found. Type what the caller says in the box.' : "Couldn't use the microphone. Type what the caller says in the box."));
+    return;
+  }
+  if (!S.listening) { stream.getTracks().forEach((t) => t.stop()); return; }
+  const ctx = new Ctx();
+  try { if (ctx.resume) await ctx.resume(); } catch { /* fine */ }
+  if (!ctx.createScriptProcessor) { stream.getTracks().forEach((t) => t.stop()); fail("This browser can't capture audio. Type what the caller says in the box."); return; }
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  let chunks = []; let samples = 0; let sending = false;
+  const flush = async () => {
+    const mine = chunks; chunks = []; samples = 0;
+    const { wav, rms } = chunkToWav(mine, ctx.sampleRate);
+    if (rms < 0.004) { S.listen.status = 'No sound picked up yet. Is the call on speaker, with the volume up?'; paintListen(); return; }
+    if (sending) return;
+    sending = true;
+    try {
+      const { text } = await call('watch:listen', { wav }, 15000);
+      S.listen.status = text ? 'Listening through Vouch.' : 'Listening through Vouch. Waiting for words…';
+      if (text) {
+        S.heard = `${S.heard} ${text}`.trim().slice(-1500);
+        S.listen.words = S.heard.split(/\s+/).filter(Boolean).length;
+        S.listen.status = `Listening through Vouch. Heard ${S.listen.words} words.`;
+        scanCall();
+      }
+    } catch (err) {
+      const c = err && err.message;
+      if (c === 'NO_STT') fail('The Vouch server has no speech key, so it can\'t listen. Type what the caller says in the box.');
+      else if (c === 'RATE_LIMITED') S.listen.status = 'Catching up. One moment…';
+      else if (c === 'OFFLINE') S.listen.status = "You're offline. Reconnecting…";
+      else S.listen.status = "Couldn't turn that into words. Still listening.";
+    } finally { sending = false; paintListen(); }
+  };
+  proc.onaudioprocess = (e) => {
+    const d = new Float32Array(e.inputBuffer.getChannelData(0));
+    chunks.push(d); samples += d.length;
+    let sum = 0;
+    for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    S.listen.level = Math.min(1, Math.sqrt(sum / d.length) * 8);
+    const bar = document.getElementById('micbar');
+    if (bar) bar.style.width = `${Math.round(S.listen.level * 100)}%`;
+    if (samples >= ctx.sampleRate * 6) flush();
+  };
+  src.connect(proc);
+  proc.connect(ctx.destination);
+  S.audio = { stream, ctx, proc, src };
+  S.listen.status = 'Listening through Vouch. Put the call on speaker.';
+  paintListen();
+}
+
+function stopEngine() {
+  if (S.listen && S.listen.timer) clearTimeout(S.listen.timer);
+  const rec = S.rec; S.rec = null;
+  try { if (rec) { rec.onend = null; rec.stop(); } } catch { /* already stopped */ }
+  const a = S.audio; S.audio = null;
+  if (a) {
+    try { a.proc.disconnect(); a.src.disconnect(); } catch { /* fine */ }
+    try { a.stream.getTracks().forEach((t) => t.stop()); } catch { /* fine */ }
+    try { a.ctx.close(); } catch { /* fine */ }
+  }
+}
+
+function fail(message) {
+  stopEngine();
+  S.listening = false;
+  S.listen = { mode: 'off', status: message, level: 0, words: 0, hint: '' };
+  if (A.source === 'call') clearAlert();
   paintStatus();
   renderMain();
 }
 
 function stopListening() {
+  stopEngine();
   S.listening = false;
-  try { if (S.rec) S.rec.stop(); } catch { /* already stopped */ }
-  S.rec = null; S.heard = ''; S.cur = '';
+  S.heard = ''; S.cur = '';
+  S.listen = { mode: 'off', status: '', level: 0, words: 0, hint: '' };
   if (A.source === 'call') clearAlert();
   paintStatus();
   renderMain();
@@ -831,6 +994,36 @@ function installCard() {
   if (!ios || standalone) return null;
   return h('div', { class: 'card' }, h('b', null, 'Keep Vouch on this iPhone'),
     h('p', null, 'Safari can erase the saved keys of a website you have not opened for a while. An app on your Home Screen is kept. Tap Share, then Add to Home Screen, and open Vouch from there.'));
+}
+
+// The message bot: forward any message from any app, get the answer there, and a warning flashes in this app.
+async function loadWatch() {
+  try { S.watch = await call('watch:status', {}, 3000); } catch { S.watch = null; } // null: this server has no Watch service
+}
+async function makeLinkCode() {
+  try { S.linkCode = await call('watch:link', {}, 5000); renderMain(); } catch (e) { toast(friendly(e)); }
+}
+function botCard() {
+  const W = S.watch;
+  if (W === undefined) return h('p', { class: 'muted' }, 'Checking…');
+  if (!W || !W.channels || !W.channels.length) {
+    return h('div', null, h('p', null, 'No message bot is set up on this server yet.'),
+      h('p', { class: 'muted' }, 'A bot lets you forward any message from any app to Vouch and get a warning in that chat and here. Whoever runs this server adds a Telegram, text or WhatsApp number (see bot/README.md).'));
+  }
+  const kids = [h('p', null, 'Forward any suspicious message from any app to one of these. You get the answer in that chat, and a warning flashes here.')];
+  for (const c of W.channels) {
+    const linked = (W.linked || []).includes(c.id);
+    kids.push(h('div', { class: 'friend' }, h('span', null, `${c.name}: ${c.handle}`), h('span', { class: linked ? 'ok' : 'muted' }, linked ? 'Linked' : 'Not linked')));
+    if (linked) kids.push(h('button', { class: 'ghost', onclick: async () => { try { await call('watch:unlink', { channel: c.id }); await loadWatch(); renderMain(); } catch (e) { toast(friendly(e)); } } }, `Unlink ${c.name}`));
+  }
+  if (S.linkCode) {
+    const L = S.linkCode;
+    kids.push(h('div', { class: 'card' }, h('b', null, 'Your link code'), h('div', { class: 'code' }, L.code),
+      h('p', null, 'Send this to the bot from the chat you want linked. It works once, for 10 minutes:'),
+      ...L.channels.map((c) => h('p', { class: 'muted' }, c.id === 'telegram' ? `Telegram ${c.handle}: /link ${L.code}` : `${c.name} ${c.handle}: link ${L.code}`))));
+  }
+  kids.push(h('button', { onclick: makeLinkCode }, S.linkCode ? 'Get a new code' : 'Link a chat'));
+  return h('div', null, ...kids);
 }
 
 function alertsCard() {
@@ -890,6 +1083,7 @@ function friendsView() {
     h('div', { class: 'row' },
       h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join'),
       h('button', { class: 'ghost', onclick: openScanner }, 'Scan a code')),
+    h('h2', null, 'Message bot'), h('div', { class: 'card' }, botCard()),
     h('h2', null, 'Send messages to Vouch'), h('div', { class: 'card' }, shareCard()),
     h('h2', null, 'Alerts'), h('div', { class: 'card' }, alertsCard()),
     h('h2', null, 'Your privacy'),
@@ -1058,18 +1252,21 @@ function overlayFor(item) {
 }
 
 // Shown the instant a risky message is pasted or shared.
-function scamOverlay({ tags, institution }) {
+function scamOverlay({ tags, institution, guide: given, source }) {
   const F = S.form;
-  const guide = classify(F.text);
+  const guide = given || classify(F.text);
   const friend = friendById(F.friendId) || S.friends[0];
   // An impostor "institution" isn't someone you can pair with, so the advice is to hang up and call a number you trust.
+  // A message that arrived through a bot isn't in the form, so there we open the Check screen instead of sending it.
   const go = friend && !institution ? h('button', { onclick: async () => {
     dismiss();
     setTab('check');
+    if (source) return;
     try { await submitCheck(); renderMain(); document.getElementById('result')?.scrollIntoView({ block: 'start' }); } catch (e) { toast(friendly(e)); }
-  } }, `Ask ${friend.name}'s phone now`) : null;
+  } }, source ? `Check it with ${friend.name}'s phone` : `Ask ${friend.name}'s phone now`) : null;
   return h('div', { class: 'overlay alert', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
     h('div', { class: 'inner' },
+      source ? h('p', { class: 'muted' }, `Sent to Vouch from ${SOURCE_NAMES[source] || 'a message'}`) : null,
       h('div', { class: 'stop' }, guide ? guide.title : 'This looks like a scam.'),
       h('p', { class: 'big' }, guide ? guide.why : 'Do not send anything yet.'),
       guide ? h('ol', { class: 'steps big' }, guide.steps.map((s) => h('li', null, s)))
@@ -1237,6 +1434,17 @@ function wireEvents() {
     renderOverlay();
   });
   on('pair:completed', (msg) => { if (msg && msg.peer) onPeerPaired(msg.peer); });
+  // A message bot (Telegram, text, WhatsApp) flagged something sent to a chat linked to this account.
+  on('scam:alert', (a) => {
+    if (!a) return;
+    const id = `bot-${a.ts || Date.now()}`;
+    const guide = { title: a.title, why: a.why, steps: a.steps || [] };
+    S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source } });
+    raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);
+    attention(a.level === 2 ? `Warning. ${a.title}. Do not send anything.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+    notify(a.level === 2 ? 'Vouch: this message looks like a scam' : 'Vouch: this message asks for money', a.title, `bot-${a.source}`);
+    renderOverlay();
+  });
   on('circle:alert', (a) => {
     const box = h('div', { class: 'banner' }, `Warning: someone may be pretending to be ${a.impersonatedName}. Don't send money.`);
     box.append(h('button', { onclick: () => box.remove() }, 'Dismiss'));

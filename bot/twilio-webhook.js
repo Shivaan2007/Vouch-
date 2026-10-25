@@ -26,6 +26,7 @@ const twiml = (text) => `<?xml version="1.0" encoding="UTF-8"?><Response>${text 
  */
 export function createTwilioHandler({
   authToken, accountSid, fromNumber = '', whatsappFrom = '', publicUrl, analyze, vouchUrl = '', guardians = [], fetchImpl = globalThis.fetch, log = () => {},
+  link = null, onFlag = () => {}, path = '/twilio',
 }) {
   const core = createCore({ analyze, vouchUrl });
   const basic = `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`;
@@ -61,7 +62,19 @@ export function createTwilioHandler({
     if (!text.trim() && !imageBase64) {
       return twiml('Forward me a suspicious message or send a screenshot and I will check it. I can warn you; only a Yes from their own phone in Vouch can clear a request.');
     }
+    // "link 123456": tie this number to a Vouch account, so a flagged message also flashes a warning in the Vouch app.
+    const lm = /^\s*\/?link\s+(\d{4,8})\b/i.exec(text);
+    if (lm) {
+      if (!link) return twiml('Linking is not set up on this server yet.');
+      const who = link.bind(whatsapp ? 'whatsapp' : 'sms', from, lm[1]);
+      return twiml(who ? `Linked to ${who.name}'s Vouch. I'll warn you here, and a warning will flash in the Vouch app.`
+        : 'That code is wrong or has expired. In Vouch, open My people and get a new code.');
+    }
     const a = await core.assess({ text, imageBase64 });
+    if (link && a.level >= 1) {
+      const uid = link.lookup(whatsapp ? 'whatsapp' : 'sms', from);
+      if (uid) onFlag(uid, a, whatsapp ? 'whatsapp' : 'sms');
+    }
     if (a.level === 2) {
       const who = from.replace(/^whatsapp:/, '').replace(/\d(?=\d{2})/g, '*'); // masked: the heads-up names a number, never the message
       for (const g of guardians) {
@@ -75,11 +88,11 @@ export function createTwilioHandler({
   /** The HTTP entry: verifies Twilio's signature, then answers. */
   async function handleRequest(req, res) {
     if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return; }
-    if (req.method !== 'POST' || req.url.split('?')[0] !== '/twilio') { res.writeHead(404); res.end(); return; }
+    if (req.method !== 'POST' || req.url.split('?')[0] !== path) { res.writeHead(404); res.end(); return; }
     let raw = '';
     for await (const chunk of req) { raw += chunk; if (raw.length > MAX_BODY) { res.writeHead(413); res.end(); return; } }
     const params = Object.fromEntries(new URLSearchParams(raw));
-    const want = Buffer.from(twilioSignature(authToken, `${publicUrl}/twilio`, params));
+    const want = Buffer.from(twilioSignature(authToken, `${publicUrl}${path}`, params));
     const got = Buffer.from(String(req.headers['x-twilio-signature'] || ''));
     if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) { res.writeHead(403); res.end(); return; }
     try {

@@ -10,7 +10,40 @@ It only warns. Only a signed Yes from the friend's own phone in Vouch can clear 
 
 It uses the same risk layer as the server (`server/src/analyze.js`: rules, plus Gemini when `GEMINI_API_KEY` is set) and the same instant hints as the phone app (`web/js/lib/scan.js`). No new dependencies; Node 20+.
 
-## Set it up (about 3 minutes)
+## Run it inside Vouch (recommended)
+
+`bot/serve.js` starts the normal Vouch server with the Watch service attached. It is `npm start` plus Watch, and it changes no server file:
+
+```
+node --env-file=.env bot/serve.js
+```
+
+What that gives the main app, on one web address:
+
+- **Message bot linked to the app.** In Vouch, open **My people**, then **Message bot**, then **Link a chat**. Send `/link 123456` (Telegram) or `link 123456` (text or WhatsApp) from the chat you want linked. From then on, any message flagged in that chat gets the answer in the chat **and** flashes a full-screen warning in the Vouch app, with the scam type and steps (never the message itself).
+- **Text and WhatsApp on the same address.** Point Twilio's webhook at `PUBLIC_URL/watch/twilio`. No second tunnel.
+- **Live call listening for any browser.** If the browser can't turn speech into words (iPhone Safari often can't) or fails, the app streams short audio chunks over its signed-in socket and the server turns them into words with Gemini. Needs `GEMINI_API_KEY`. Without it the app still has the browser engine and a typed box.
+
+Environment (`.env`, never committed):
+
+```
+BOT_TOKEN=            # Telegram, from @BotFather
+GEMINI_API_KEY=       # free from Google AI Studio: risk AI and server-side call listening
+TWILIO_ACCOUNT_SID=   # optional: SMS and WhatsApp
+TWILIO_AUTH_TOKEN=
+PUBLIC_URL=           # the public https address of this server, no trailing slash
+TWILIO_FROM=          # your Twilio SMS number
+TWILIO_WHATSAPP_FROM= # e.g. whatsapp:+14155238886 for the sandbox
+GUARDIAN_CHAT_IDS=    # optional
+GUARDIAN_NUMBERS=     # optional
+VOUCH_URL=            # optional: added to replies
+```
+
+The app reads which doors exist from the server, so **Message bot** only lists what is really set up.
+
+## Set it up on its own (about 3 minutes)
+
+The files below also run standalone. Prefer `bot/serve.js` above, which is what connects them to the app.
 
 1. In Telegram, message **@BotFather**, send `/newbot`, pick a name. Copy the token it gives you. Keep it private.
 2. For group chats: send BotFather `/setprivacy`, choose your bot, choose **Disable** (so it can read the group's messages).

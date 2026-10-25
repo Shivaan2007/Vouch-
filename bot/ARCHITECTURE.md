@@ -16,6 +16,18 @@ Scams win on speed and borrowed trust. Vouch does not try to out-guess the scamm
                   verdict (server AND this phone verify the signature)  ->  circle alert on Not me
 ```
 
+## How it fits together
+
+```
+ Telegram ──┐                                  ┌─ answer in the same chat (plain-words guide)
+ Text/SMS ──┼─► bot/core.js  (rules + Gemini) ─┤
+ WhatsApp ──┘   one engine, every door         └─ io.to(user).emit('scam:alert')  ──►  Vouch app: full-screen warning + banner
+                         ▲                                                                   ▲
+ linked by a one-time code (watch:link)                              typed words / browser speech / server listening
+                                                                       (watch:listen: audio → Gemini → words → scan.js)
+ all of it attached to the running Vouch server by bot/serve.js (bot/watch.js); no server file is edited
+```
+
 ## What is real today
 
 | Piece | Status |

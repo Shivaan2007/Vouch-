@@ -21,7 +21,10 @@ I can warn you. Only a Yes from your friend's own phone in Vouch can clear a req
 /**
  * @param {{token: string, fetchImpl?: typeof fetch, analyze?: Function, vouchUrl?: string, guardians?: Array<string|number>, log?: Function}} opts
  */
-export function createBot({ token, fetchImpl = globalThis.fetch, analyze = analyzeSafe, vouchUrl = '', guardians = [], log = () => {} } = {}) {
+export function createBot({
+  token, fetchImpl = globalThis.fetch, analyze = analyzeSafe, vouchUrl = '', guardians = [], log = () => {},
+  link = null, onFlag = () => {},
+} = {}) {
   const guardianChats = new Set(guardians.map(String));
   let running = false;
 
@@ -52,6 +55,16 @@ export function createBot({ token, fetchImpl = globalThis.fetch, analyze = analy
     const chatId = msg.chat.id;
     const isPrivate = msg.chat.type === 'private';
     const text = String(msg.text || msg.caption || '');
+    // "/link 123456": tie this chat to a Vouch account, so a flagged message also flashes a warning in the Vouch app.
+    const lm = /^\/link(?:@\w+)?\s+(\d{4,8})\b/.exec(text) || (isPrivate && /^link\s+(\d{4,8})\b/i.exec(text));
+    if (lm) {
+      if (!link) { await say(chatId, 'Linking is not set up on this server yet.'); return; }
+      const who = link.bind('telegram', chatId, lm[1]);
+      await say(chatId, who
+        ? `Linked to ${who.name}'s Vouch. I'll warn you here, and a warning will flash in the Vouch app.`
+        : 'That code is wrong or has expired. In Vouch, open My people and get a new code.');
+      return;
+    }
     if (/^\/(start|help)\b/.test(text)) { await say(chatId, INTRO); return; }
     if (/^\/guardian\b/.test(text)) {
       guardianChats.add(String(chatId));
@@ -64,6 +77,10 @@ export function createBot({ token, fetchImpl = globalThis.fetch, analyze = analy
       return;
     }
     const a = await assess(text);
+    if (link && a.level >= 1) { // a linked chat: flash it in that person's Vouch app too (never the message itself)
+      const uid = link.lookup('telegram', chatId);
+      if (uid) onFlag(uid, a, 'telegram');
+    }
     if (isPrivate || a.level === 2 || (a.level === 1 && a.ask)) await say(chatId, warning(a));
     if (a.level === 2) await alertGuardians(chatId, msg.from.first_name, a.tags);
   }
