@@ -144,3 +144,28 @@ test('POST and other methods are not accepted on the phrase route', async () => 
     assert.notEqual(r.status, 200);
   } finally { await t.stop(); }
 });
+
+test('a key or voice id pasted with spaces, a newline or quotes still works', async () => {
+  const fake = fakeEleven();
+  const t = await startServer({ ttsOptions: { apiKey: `  "${KEY}"\n`, voiceId: ` '${VOICE}' `, fetchImpl: fake.fetchImpl } });
+  try {
+    assert.equal((await get(t, '/tts/stop')).status, 200);
+    assert.equal(fake.calls[0].init.headers['xi-api-key'], KEY);
+    assert.ok(fake.calls[0].url.includes(`/text-to-speech/${VOICE}?`));
+  } finally { await t.stop(); }
+});
+
+test('a failure says why (status and ElevenLabs code), never the key', async () => {
+  const body = JSON.stringify({ detail: { status: 'invalid_api_key', message: `your key ${KEY} is bad` } });
+  const fake = fakeEleven(() => new Response(body, { status: 401 }));
+  const t = await withTts({ fetchImpl: fake.fetchImpl, cooldownMs: 60000 });
+  try {
+    const first = await (await get(t, '/tts/stop')).json();
+    assert.equal(first.error, 'TTS_FAILED');
+    assert.equal(first.detail, 'ElevenLabs answered 401 (invalid_api_key)');
+    const second = await (await get(t, '/tts/stop')).json();
+    assert.equal(second.error, 'TTS_COOLING_DOWN');
+    assert.equal(second.detail, first.detail);
+    assert.ok(!JSON.stringify([first, second]).includes(KEY));
+  } finally { await t.stop(); }
+});
