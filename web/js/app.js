@@ -1073,7 +1073,7 @@ async function tickWord() {
 // The words are scanned on this phone and nothing is saved. The phone never speaks during a call (its own voice would be heard).
 
 const speechCtor = () => globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
-const RISK_TEXT = ['Nothing suspicious so far', 'Someone is asking for money', 'STOP. Scam signs'];
+const RISK_TEXT = ['Listening. Nothing suspicious so far', 'Noticing something. Be careful', 'STOP. This looks like a scam'];
 
 function paintListen() {
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
@@ -1442,6 +1442,13 @@ function escalateCall(level, tags, institution, ai) {
     call('watch:alert', { level, title: g ? g.title : 'a call' }, 4000).catch(() => {});
   }
   if (ai) S.callAi = ai;
+  // The moment a call turns suspicious, the code word is already on screen for the person it is about: ask the caller for it.
+  const who = likelyFriend();
+  if (S.listening && who && level >= 1 && !S.wordShown) {
+    S.callWith = who.id; S.wordFriendId = who.id;
+    revealWord();
+    $overlay.dataset.key = ''; // rebuild the call screen so the word area is part of it
+  }
   paintListen();
   renderOverlay();
 }

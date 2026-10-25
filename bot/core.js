@@ -81,16 +81,19 @@ export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl 
 
     if (ai) {
       const tags = [...new Set([...local.tags, ...ai.tags])];
-      const level = Math.max(levelOf(local.tags, METHOD_RISK_OF[ai.paymentMethod] || 'low', local), aiLevel(ai), withLinkFloor(words, 0, null).level);
+      // A picture the AI thinks was computer-generated is worth a "check" on its own (a fake profile, a fake invoice, a fake
+      // person), but only as a hint: it is never a STOP by itself, because AI is not reliable at telling real photos from made ones.
+      const aiImg = !!(ai.image && ai.image.aiGenerated === 'likely');
+      const level = Math.max(levelOf(local.tags, METHOD_RISK_OF[ai.paymentMethod] || 'low', local), aiLevel(ai), withLinkFloor(words, 0, null).level, aiImg ? 1 : 0);
       // The AI names it in its own words. If it only sees an ordinary-looking request for money, the honest headline is that
       // someone is asking, and that you cannot tell who is behind it. A deceptive link or picture gets its own headline.
       const plain = !ai.scamType || /^(ordinary|unclear|normal|nothing)/i.test(ai.scamType);
       const badLink = ai.links.some((l) => l.risk === 'high' || l.risk === 'medium');
       const badImage = !!(ai.image && (ai.image.risk === 'high' || ai.image.risk === 'medium'));
-      const title = plain ? (badLink ? 'Suspicious link' : badImage ? 'Suspicious image' : ai.moneyRequest ? 'Someone is asking you for money' : 'Nothing stands out') : ai.scamType;
+      const title = plain ? (badLink ? 'Suspicious link' : badImage ? 'Suspicious image' : aiImg ? 'Possibly an AI-made picture' : ai.moneyRequest ? 'Someone is asking you for money' : 'Nothing stands out') : ai.scamType;
       const fallbackSteps = ruleGuide ? ruleGuide.steps : badLink ? LINK_GUIDE.steps : badImage ? ['Do not trust or act on this picture.', 'Check with the person on a number you already know.'] : [];
-      const guide = ai.why || ai.steps.length || badLink || badImage
-        ? { id: 'ai', title, why: ai.why || (badLink ? LINK_GUIDE.why : badImage ? 'This picture may be used to deceive you.' : ''), steps: ai.steps.length ? ai.steps : fallbackSteps }
+      const guide = ai.why || ai.steps.length || badLink || badImage || aiImg
+        ? { id: 'ai', title, why: ai.why || (badLink ? LINK_GUIDE.why : badImage ? 'This picture may be used to deceive you.' : aiImg ? 'This picture looks computer-generated. That is only a hint, and AI can be wrong.' : ''), steps: ai.steps.length ? ai.steps : (fallbackSteps.length ? fallbackSteps : aiImg ? ['Do not trust a person or an offer just because of this picture.', 'Check who sent it another way.'] : []) }
         : ruleGuide;
       return {
         tags, level, ask: local.ask || ai.moneyRequest, guide, explanation: ai.why, signals: ai.signals, impersonating: ai.impersonating, links: ai.links, image: ai.image,
