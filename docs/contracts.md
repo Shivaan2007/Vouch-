@@ -9,7 +9,7 @@ Short reference for the pieces C (`server/src/risk/`) shares with A (server) and
 
 - Source of truth in code: `TAG_LIST` in `server/src/config.js`. Anything else is dropped.
 - `FIRST_REQUEST` comes only from the server's `firstRequest` flag (no earlier request between the two people), never from the text.
-- Gemini may only return tags from this list. Final tags = rules tags UNION Gemini tags. Gemini can never remove a tag.
+- Gemini may only return tags from this list. Final tags = rules tags UNION Gemini tags. Gemini can never remove a tag. If Gemini returns GIFT_CARD, WIRE or CRYPTO (for example from a screenshot, which the phrase rules cannot read), payment risk becomes "high". That is the only thing Gemini can change besides tags and the explanation, and it only makes a verdict more cautious.
 
 ## Payment method and risk
 

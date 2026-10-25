@@ -51,4 +51,5 @@ Wait for the green check, then test HTTPS on a phone, before the expo.
 
 ## Expo day
 - Warm the server. Do not use Wipe on `/demo`; use Reset.
+- Keep `DEMO_KEY=... npm run watch -- https://<name>.onrender.com` open on the laptop: it shows who is online, pairs and open requests. Before each judge, `... --reset --once` clears requests and keeps the paired phones.
 - Revert a bad deploy: press Revert on the last PR on GitHub, or Render > Events > Rollback.

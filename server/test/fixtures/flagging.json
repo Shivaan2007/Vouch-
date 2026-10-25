@@ -1,0 +1,27 @@
+{
+  "scams": [
+    { "text": "mom its me i got arrested need bail money $800 please dont call dad", "expectTags": ["URGENCY", "SECRECY"] },
+    { "text": "hey i'm in the hospital can you send $300 to this account asap", "expectTags": ["URGENCY"] },
+    { "text": "it's your grandson. i was in a car accident. need money for the lawyer, please keep this between us", "expectTags": ["URGENCY", "SECRECY"] },
+    { "text": "i'm texting from my sister's phone, mine broke, can you venmo $90", "expectTags": ["NEW_NUMBER"] },
+    { "text": "pls help, I'm stranded, send $40 to this cashapp", "expectTags": ["URGENCY"] },
+    { "text": "your daughter is kidnapped, send ransom by wire now, do not call police", "expectTags": ["URGENCY", "SECRECY", "WIRE"] },
+    { "text": "Chase fraud alert: suspicious $900 charge. reply YES or call 555-0100 to verify your account", "expectTags": ["URGENCY"] },
+    { "text": "your account has been locked. confirm your password and ssn here", "expectTags": ["URGENCY"] },
+    { "text": "Netflix payment failed, update your card within 24 hours", "expectTags": ["URGENCY"] },
+    { "text": "you're hired! send $300 for equipment, we will reimburse you with your first check", "expectTags": ["PAYBACK_PROMISE"] },
+    { "text": "act now or your account will be closed. send $75 today", "expectTags": ["URGENCY"] },
+    { "text": "boss here, need you to purchase gift cards for clients, discreet please", "expectTags": ["SECRECY", "GIFT_CARD"] },
+    { "text": "this is officer Davis, there is a warrant for your arrest, pay the fine at a bitcoin atm", "expectTags": ["URGENCY", "CRYPTO"] }
+  ],
+  "normal": [
+    { "text": "my mom is in the hospital, can you pick up the kids?", "expectTags": [] },
+    { "text": "Chase: your statement is ready to view in the app", "expectTags": [] },
+    { "text": "your verification code is 482913. do not share it", "expectTags": [] },
+    { "text": "UPS: your package was delivered to the front door", "expectTags": [] },
+    { "text": "I paid for gas, you owe me $20 whenever", "expectTags": [] },
+    { "text": "my phone is at 5% so I'll text you later", "expectTags": [] },
+    { "text": "the plumber charges $150, I'll pay him in cash tomorrow", "expectTags": [] },
+    { "text": "my sister's phone is dead, she'll call you tonight", "expectTags": [] }
+  ]
+}

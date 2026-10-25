@@ -28,7 +28,7 @@ npm test
 
 Phones need HTTPS for keys and camera, so test on real phones with `cloudflared tunnel --url http://localhost:3000` or the deployed URL. Step-by-step phone testing: [web/dev/TESTING.md](web/dev/TESTING.md). Deploying: [server/DEPLOY.md](server/DEPLOY.md). Server details: [server/API.md](server/API.md).
 
-Without `GEMINI_API_KEY` the risk layer runs on rules only and the verdicts are the same.
+Without `GEMINI_API_KEY` the risk layer runs on rules only. Verdicts can only differ in one direction: Gemini may make a verdict more cautious (for example by spotting a gift-card request inside a screenshot, which the phrase rules cannot read), never less, and it can never clear a request.
 
 ## Where things are
 
@@ -39,19 +39,27 @@ Without `GEMINI_API_KEY` the risk layer runs on rules only and the verdicts are 
 | `server/src/` | Express + Socket.io + SQLite server; `decision.js` turns answers into red, amber or green |
 | `server/src/risk/` | `rules.js` (phrase and payment rules) and `gemini.js` (optional AI tags and explanation) |
 | `web/` | The phone app: plain ES modules, no build step |
-| `bot/` | Optional Telegram message-watch bot (Vouch Watch); see [bot/README.md](bot/README.md) |
+| `bot/` | Optional Vouch Watch: Telegram, SMS and WhatsApp (via Twilio) and live-call listening, started with `node bot/serve.js`; see [bot/README.md](bot/README.md) |
 | `demo/` | Demo cue cards, clip lines and the voice-consent template (the audio files are git-ignored) |
 | [docs/DEMO.md](docs/DEMO.md) | The 80-second demo script |
 
 ## Privacy
 
-The server never stores or logs message text or screenshots, only a SHA-256 of the normalized text. When a Gemini key is set, the pasted text (and a screenshot, if one is sent) is sent to Google's Gemini API for analysis. It is not stored by Vouch.
+The server never stores or logs message text, audio or screenshots. For each request it keeps a SHA-256 of the normalized text, the amount, method, tags and the one-line AI summary (not the message). When a Gemini key is set, pasted text, an attached screenshot and, in some modes, call words or call audio are sent to Google's Gemini API for analysis. Vouch does not store them. Gemini can only add warnings or make a verdict more cautious; it can never clear a request.
 
-**Check screen.** The scam hints that flash on the phone run on the phone itself. The pasted text only leaves the phone when you tap Check now, and then only as described above.
+**Check screen.** The scam hints that flash on the phone run on the phone itself. If the server runs the Watch service with a Gemini key (`node bot/serve.js`), the app also sends what you type or paste (12 characters or more) to the Vouch server a moment after you stop typing, for an instant AI read: it goes to Gemini and is not stored. Otherwise text only leaves the phone when you tap Check now. If you use Android Share or the iPhone Shortcut instead, the message arrives in the web address (`/?text=...`): the app clears it from the browser right away and the Vouch server does not log web addresses, but the web host or tunnel in front of it may see it in its own request logs. Copy and paste avoids that.
 
-**Call watcher (optional, off until you tap Start watching).** It uses your browser's built-in speech recognition on the microphone while a call is on speaker. Vouch looks for scam phrases in the words on the phone and keeps nothing: the words are not saved and are never sent to the Vouch server. The browser's own speech service may process the audio on its provider's servers to turn it into text, which depends on the browser and phone. Tell the other person on the call that you are using it; rules about listening to calls differ by place. Some phones block the microphone during a call.
+**Call watcher (optional, off until you tap Start watching).** It works on a call that is on speaker, and turns speech into words in one of two ways. (1) Your browser's built-in speech recognition: the browser's own speech service may process the audio on its provider's servers, which depends on the browser and phone. (2) Listening through Vouch, used when the browser cannot listen, stops working, or you tap "Try listening through Vouch instead" (needs a server running Watch with a Gemini key): the phone sends short audio clips of about 6 seconds to the Vouch server, which passes them to Google's Gemini to get the words and sends back only the words. In both ways, on a server running Watch, the app also sends the most recent words heard (up to about 900 characters) to the Vouch server every few seconds for an AI read; those words go to Gemini and are not stored. A recording you pick to analyze ("Or analyze a recording") is sent the same way as live call audio. The Vouch server does not store or log the audio or the words, but Google receives them. Vouch does not record or save the call. Tell the other person on the call that you are using it; rules about listening to calls differ by place. Some phones block the microphone during a call.
 
-**Message bot (optional, a separate program in `bot/`).** Messages sent to it pass through Telegram, then through the same checks as the server, and are dropped: nothing is stored or logged. If a Gemini key is set the text goes to Gemini as above. Once its privacy mode is off the bot can read every message in a group it has joined, so tell everyone in the group. Family heads-up alerts name the person and the warning signs, never the message. Keep the bot token private.
+**Message bot (optional, runs with `node bot/serve.js`).** Messages sent to the Telegram, SMS or WhatsApp doors pass through Telegram or Twilio, are read by the same checks and by Gemini, and are dropped: the message text is never stored or logged. To follow a scam as it unfolds, the bot keeps the last 5 messages (up to 400 characters each) from each sender in memory for 15 minutes and sends them to Gemini together with the new message. They are never written to disk and are lost when the server restarts. A screenshot sent to the bot goes to Gemini the same way. SMS and WhatsApp (through Twilio) have only been tested against a mock Twilio. Once its privacy mode is off, the Telegram bot can read every message in a group it has joined, so tell everyone in the group. Keep the bot token and Twilio credentials private.
+
+**What the Watch service keeps in the server's database** (only when you link an app):
+
+- **Your linked chat or number.** The Telegram chat ID or phone number you linked is stored **in plain text**, together with a salted hash of it, so the alert bot can message you back directly. Unlinking an app deletes it. The salt defaults to a public value in the code, so set `WATCH_SALT` on any real deployment.
+- **One-time link codes.** Six digits, valid for 10 minutes, deleted when used.
+- **Flagged senders.** When a flagged message reaches a linked chat, Vouch records who sent it (a username or name when the app shows one, plus a hashed id), how many times they were flagged, the highest warning level and the kind of scam. Never the message. These are people who are not Vouch users, and the record comes from an automatic guess that can be wrong. It has no automatic expiry yet. You can remove a sender under My people, Flagged senders. A sender who hides their name when forwarding cannot be tracked.
+
+**Alerts to family (optional).** A heads-up to a guardian chat names the person and the kind of warning, never the message (a masked number on SMS and WhatsApp). Known issue: a call alert from the app currently goes to every guardian chat registered on that server, not only to that person's own family, so only register guardians on a server you control until this is fixed.
 
 **Demo soundboard.** It only plays audio files you add yourself to a git-ignored folder. A cloned voice is used only with the speaker's written consent.
 
@@ -62,7 +70,8 @@ The server never stores or logs message text or screenshots, only a SHA-256 of t
 - Tier thresholds and the number of warning signs are placeholders until a larger study gives real numbers.
 - The warning tags come from phrase rules plus an optional model, so they can miss new scam wording. They only add caution; they cannot make a request look safe.
 - The phone's instant hints (`web/js/lib/scan.js`) are a separate, simpler copy of the phrase rules, so they can show slightly different tags than the server for the same message. The result screen shows both together.
-- The call watcher needs a browser with speech recognition and a microphone that the phone lets you use during a call; the message bot works only in Telegram.
+- The call watcher needs a browser with speech recognition, or a Watch server with a Gemini key to listen through Vouch, and a microphone the phone lets you use during a call. The message bot has not yet been tried end to end with real chats.
+- SMS and WhatsApp warnings have only been tested against a mock Twilio, and web push alerts are not set up. The Telegram door and the in-app warnings are the ones to rely on.
 
 ## Credits
 
@@ -76,5 +85,6 @@ Open-source code and data used in Vouch:
 | [Socket.IO](https://socket.io) (server and client) | Live connection between phones and server | MIT |
 | [Express](https://expressjs.com) | HTTP server for the app and health check | MIT |
 | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | The server's database | MIT |
+| [Simple Icons](https://simpleicons.org) (v16.35.0) | The payment-app and channel logos in `web/img/brands/`. The names and logos are trademarks of their owners and are shown only to identify what a message mentions; Vouch is not affiliated with them | CC0 1.0 |
 
-Services: [Google Gemini API](https://ai.google.dev) for the optional tag and explanation step. Browser features used: Web Crypto, IndexedDB, service workers, speech synthesis.
+Services: [Google Gemini API](https://ai.google.dev) for the optional tag, explanation and speech-to-text steps; Twilio (optional) for SMS and WhatsApp; the Telegram Bot API (optional). Browser features used: Web Crypto, IndexedDB, service workers, speech synthesis and speech recognition.
