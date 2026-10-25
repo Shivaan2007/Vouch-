@@ -148,6 +148,7 @@ const $app = document.getElementById('app');
 let $content, $status, $banners, $overlay, $toast, $conn;
 let toastTimer = null;
 const SOURCE_NAMES = { telegram: 'Telegram', sms: 'a text message', whatsapp: 'WhatsApp' };
+const SOURCE_APP = { telegram: 'Telegram', sms: 'Text messages', whatsapp: 'WhatsApp' };
 const friendById = (id) => S.friends.find((f) => f.id === id);
 // Is this person known to the server right now? Unknown until the first sync, so assume yes.
 const isLinked = (f) => !S.linked || S.linked.has(f.id);
@@ -1000,32 +1001,51 @@ function installCard() {
 async function loadWatch() {
   try { S.watch = await call('watch:status', {}, 3000); } catch { S.watch = null; } // null: this server has no Watch service
 }
-async function makeLinkCode() {
-  try { S.linkCode = await call('watch:link', {}, 5000); renderMain(); } catch (e) { toast(friendly(e)); }
-}
-function botCard() {
-  const W = S.watch;
-  if (W === undefined) return h('p', { class: 'muted' }, 'Checking…');
-  if (!W || !W.channels || !W.channels.length) {
-    return h('div', null, h('p', null, 'No message bot is set up on this server yet.'),
-      h('p', { class: 'muted' }, 'A bot lets you forward any message from any app to Vouch and get a warning in that chat and here. Whoever runs this server adds a Telegram, text or WhatsApp number (see bot/README.md).'));
-  }
-  const kids = [h('p', null, 'Forward any suspicious message from any app to one of these. You get the answer in that chat, and a warning flashes here.')];
-  for (const c of W.channels) {
-    const linked = (W.linked || []).includes(c.id);
-    kids.push(h('div', { class: 'friend' }, h('span', null, `${c.name}: ${c.handle}`), h('span', { class: linked ? 'ok' : 'muted' }, linked ? 'Linked' : 'Not linked')));
-    if (linked) kids.push(h('button', { class: 'ghost', onclick: async () => { try { await call('watch:unlink', { channel: c.id }); await loadWatch(); renderMain(); } catch (e) { toast(friendly(e)); } } }, `Unlink ${c.name}`));
-  }
-  if (S.linkCode) {
-    const L = S.linkCode;
-    kids.push(h('div', { class: 'card' }, h('b', null, 'Your link code'), h('div', { class: 'code' }, L.code),
-      h('p', null, 'Send this to the bot from the chat you want linked. It works once, for 10 minutes:'),
-      ...L.channels.map((c) => h('p', { class: 'muted' }, c.id === 'telegram' ? `Telegram ${c.handle}: /link ${L.code}` : `${c.name} ${c.handle}: link ${L.code}`))));
-  }
-  kids.push(h('button', { onclick: makeLinkCode }, S.linkCode ? 'Get a new code' : 'Link a chat'));
-  return h('div', null, ...kids);
+const APP_LOGOS = { telegram: ['telegram'], sms: ['imessage', 'googlemessages'], whatsapp: ['whatsapp'] };
+
+// One tap to connect: each link opens the app with the right chat and the code already filled in.
+function connectLink(c, code) {
+  const num = String(c.handle).replace(/[^\d+]/g, '');
+  if (c.id === 'telegram') return { href: `https://t.me/${String(c.handle).replace('@', '')}?start=link_${code}`, label: 'Open Telegram', manual: `/link ${code}` };
+  if (c.id === 'whatsapp') return { href: `https://wa.me/${num.replace('+', '')}?text=${encodeURIComponent(`link ${code}`)}`, label: 'Open WhatsApp', manual: `link ${code}` };
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+  return { href: `sms:${num}${ios ? '&' : '?'}body=${encodeURIComponent(`link ${code}`)}`, label: 'Open Messages', manual: `link ${code}` };
 }
 
+async function connectApp(c) {
+  try { S.linkCode = { ...(await call('watch:link', {}, 5000)), channel: c.id }; renderMain(); } catch (e) { toast(friendly(e)); }
+}
+
+function connectPanel(c) {
+  const l = connectLink(c, S.linkCode.code);
+  return h('div', { class: 'connect' },
+    h('p', null, `Tap below, then press ${c.id === 'telegram' ? 'Start' : 'Send'} in ${c.name}.`),
+    h('a', { class: 'btnlink', href: l.href, target: '_blank', rel: 'noopener' }, l.label),
+    h('p', { class: 'muted' }, `Or send this yourself: ${l.manual}`),
+    h('p', { class: 'muted' }, 'This code works once, for 10 minutes.'));
+}
+
+// The apps this server is really connected to. Forward a suspicious message from any app and the warning comes back here.
+function appsCard() {
+  const W = S.watch;
+  if (W === undefined) return h('div', { class: 'card' }, h('p', { class: 'muted' }, 'Checking…'));
+  if (!W || !W.channels || !W.channels.length) {
+    return h('div', { class: 'card' }, h('p', null, 'Messaging apps are not connected on this server yet.'),
+      h('p', { class: 'muted' }, 'Once they are, forward any suspicious message from any app and Vouch warns you here.'));
+  }
+  return h('div', { class: 'card' }, ...W.channels.map((c) => {
+    const linked = (W.linked || []).includes(c.id);
+    const panel = !linked && S.linkCode && S.linkCode.channel === c.id ? connectPanel(c) : null;
+    return h('div', { class: 'approw' },
+      h('div', { class: 'apphead' }, logos(APP_LOGOS[c.id]),
+        h('div', { class: 'appname' }, h('b', null, c.name), h('span', { class: 'muted' }, c.handle)),
+        h('span', { class: linked ? 'ok' : 'muted' }, linked ? 'Connected' : 'Not connected')),
+      panel,
+      linked
+        ? h('button', { class: 'ghost', onclick: async () => { try { await call('watch:unlink', { channel: c.id }); await loadWatch(); renderMain(); } catch (e) { toast(friendly(e)); } } }, 'Disconnect')
+        : (panel ? null : h('button', { onclick: () => connectApp(c) }, 'Connect')));
+  }));
+}
 function alertsCard() {
   if (!('Notification' in globalThis)) return h('p', { class: 'muted' }, 'This browser cannot show alerts. Keep Vouch open.');
   const p = Notification.permission;
@@ -1083,11 +1103,10 @@ function friendsView() {
     h('div', { class: 'row' },
       h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join'),
       h('button', { class: 'ghost', onclick: openScanner }, 'Scan a code')),
-    h('h2', null, 'Message bot'), h('div', { class: 'card' }, botCard()),
-    h('h2', null, 'Send messages to Vouch'), h('div', { class: 'card' }, shareCard()),
-    h('h2', null, 'Alerts'), h('div', { class: 'card' }, alertsCard()),
-    h('h2', null, 'Your privacy'),
-    h('div', { class: 'card' },
+    h('h2', null, 'Connected apps'), appsCard(),
+    h('details', { class: 'more' }, h('summary', null, 'Share a message from any app'), shareCard()),
+    h('details', { class: 'more' }, h('summary', null, 'Notifications'), alertsCard()),
+    h('details', { class: 'more' }, h('summary', null, 'Privacy'),
       h('p', null, 'Your private key stays on this phone. It cannot be copied out.'),
       h('p', null, 'Messages you check are never saved. Only the answer is.'),
       h('p', null, 'Only people you linked with can ever be asked.')),
@@ -1434,6 +1453,13 @@ function wireEvents() {
     renderOverlay();
   });
   on('pair:completed', (msg) => { if (msg && msg.peer) onPeerPaired(msg.peer); });
+  // The bot just linked a chat to this account (the person tapped Start / Send in the other app).
+  on('watch:linked', async (m) => {
+    S.linkCode = null;
+    await loadWatch();
+    toast(`${SOURCE_APP[m && m.channel] || 'That app'} is connected. Forward it a suspicious message to try it.`, 'ok');
+    if (S.tab === 'friends') renderMain();
+  });
   // A message bot (Telegram, text, WhatsApp) flagged something sent to a chat linked to this account.
   on('scam:alert', (a) => {
     if (!a) return;

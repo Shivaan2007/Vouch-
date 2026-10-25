@@ -155,6 +155,20 @@ canvas.qr { display: block; width: 100%; height: auto; image-rendering: pixelate
 .scanbottom button { background: #fff; color: #000; }
 .scanbottom button.ghost { background: rgba(255, 255, 255, 0.18); color: #fff; }
 
+/* connected apps */
+.approw { padding: 0.85rem 0; border-top: 1px solid var(--line); }
+.approw:first-child { border-top: 0; padding-top: 0; } .approw:last-child { padding-bottom: 0; }
+.apphead { display: flex; align-items: center; gap: 0.8rem; }
+.apphead .logos { flex: 0 0 3rem; justify-content: center; }
+.apphead .logo { width: 1.6rem; height: 1.6rem; }
+.appname { flex: 1; display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.appname .muted { font-size: 0.85rem; overflow-wrap: anywhere; }
+.btnlink { display: block; text-align: center; text-decoration: none; background: var(--accent); color: var(--accent-ink); border-radius: var(--radius-sm); padding: 0.85rem 1rem; min-height: 3.25rem; line-height: 1.6; font-weight: 600; margin-top: 0.6rem; }
+.connect { margin-top: 0.4rem; }
+details.more { background: var(--surface); border-radius: var(--radius); padding: 0.2rem 1.1rem; margin: 0.6rem 0; }
+details.more[open] { padding-bottom: 0.9rem; }
+details.more summary { padding: 0.8rem 0; }
+
 /* lists and messages */
 .friend { display: flex; align-items: center; justify-content: space-between; padding: 0.65rem 0; border-top: 1px solid var(--line); font-weight: 600; }
 .friend:first-child { border-top: 0; }

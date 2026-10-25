@@ -46,6 +46,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
       if (!row || row.expires_at < Date.now()) return null;
       q.bind.run(channel, hashRef(channel, id), row.user_id, Date.now());
       q.delCode.run(row.code);
+      io.to(room(row.user_id)).emit('watch:linked', { channel }); // so the app flips to "Connected" by itself
       const u = q.userName.get(row.user_id);
       return { userId: row.user_id, name: (u && u.name) || 'you' };
     },
@@ -69,10 +70,15 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
       token: env.BOT_TOKEN, fetchImpl, analyze, vouchUrl: env.VOUCH_URL || '', link, onFlag: pushAlert, log,
       guardians: (env.GUARDIAN_CHAT_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
     });
+    // Only start listening once Telegram accepts the token, so a wrong or revoked token is one clear log line, not a retry loop.
     Promise.resolve(fetchImpl(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`)).then((r) => r.json())
-      .then((j) => { if (j && j.ok && j.result) telegramUser = j.result.username || ''; })
-      .catch(() => {});
-    if (startTelegram) telegram.start();
+      .then((j) => {
+        if (j && j.ok && j.result) {
+          telegramUser = j.result.username || '';
+          if (startTelegram) telegram.start();
+        } else log('Telegram rejected BOT_TOKEN. Get a fresh token from @BotFather (/token) and update .env. The Telegram door is off.');
+      })
+      .catch(() => log("Couldn't reach Telegram. The Telegram door is off."));
   }
   let twilio = null;
   if (env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.PUBLIC_URL) {

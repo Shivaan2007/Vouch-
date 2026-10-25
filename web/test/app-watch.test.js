@@ -47,18 +47,25 @@ test('sign up, then the message-bot card shows Telegram and a one-time link code
   await wait(1000);
   await btn('My people').fire('click');
   await wait(100);
-  assert.ok(text().includes('Message bot'));
-  assert.ok(text().includes('Telegram: @vouch_test_bot'), 'the door the server really has');
-  assert.ok(text().includes('Not linked'));
-  await btn('Link a chat').fire('click');
+  assert.ok(text().includes('Connected apps'));
+  assert.ok(text().includes('@vouch_test_bot'), 'the door the server really has');
+  assert.ok(text().includes('Not connected'));
+  assert.ok(dom.findAll(appEl, (n) => n.className === 'logo').length >= 1, 'with its logo');
+  await btn('Connect').fire('click');
   await wait(300);
-  assert.match(text(), /Telegram @vouch_test_bot: \/link \d{6}/);
+  assert.match(text(), /Open Telegram/);
+  const open = dom.find(appEl, (n) => n.tag === 'a' && /Open Telegram/.test(n.textContent));
+  assert.match(open.attrs.href, /^https:\/\/t\.me\/vouch_test_bot\?start=link_\d{6}$/, 'one tap opens the bot with the code filled in');
+  assert.match(text(), /Or send this yourself: \/link \d{6}/);
 });
 
 test('a message forwarded to the linked bot chat flashes a warning in the app', async () => {
-  const code = /\/link (\d{6})/.exec(text())[1];
-  await tg(7001, `/link ${code}`);
+  const code = /start=link_(\d{6})/.exec(dom.find(appEl, (n) => n.tag === 'a' && /Open Telegram/.test(n.textContent)).attrs.href)[1];
+  await tg(7001, `/start link_${code}`); // exactly what Telegram sends when the person taps Start
   assert.match(sent[sent.length - 1].text, /Linked to Gran/);
+  await wait(400);
+  assert.ok(text().includes('Telegram is connected'), 'the app notices by itself');
+  assert.ok(dom.find(appEl, (n) => n.tag === 'button' && n.textContent.trim() === 'Disconnect'), 'and the row now says Connected');
   await tg(7001, SCAM);
   await wait(400);
   assert.ok(text().includes('Sent to Vouch from Telegram'), 'says where it came from');
