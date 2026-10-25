@@ -39,10 +39,21 @@ Without `GEMINI_API_KEY` the risk layer runs on rules only and the verdicts are 
 | `server/src/` | Express + Socket.io + SQLite server; `decision.js` turns answers into red, amber or green |
 | `server/src/risk/` | `rules.js` (phrase and payment rules) and `gemini.js` (optional AI tags and explanation) |
 | `web/` | The phone app: plain ES modules, no build step |
+| `bot/` | Optional Telegram message-watch bot (Vouch Watch); see [bot/README.md](bot/README.md) |
+| `demo/` | Demo cue cards, clip lines and the voice-consent template (the audio files are git-ignored) |
+| [docs/DEMO.md](docs/DEMO.md) | The 80-second demo script |
 
 ## Privacy
 
 The server never stores or logs message text or screenshots, only a SHA-256 of the normalized text. When a Gemini key is set, the pasted text (and a screenshot, if one is sent) is sent to Google's Gemini API for analysis. It is not stored by Vouch.
+
+**Check screen.** The scam hints that flash on the phone run on the phone itself. The pasted text only leaves the phone when you tap Check now, and then only as described above.
+
+**Call watcher (optional, off until you tap Start watching).** It uses your browser's built-in speech recognition on the microphone while a call is on speaker. Vouch looks for scam phrases in the words on the phone and keeps nothing: the words are not saved and are never sent to the Vouch server. The browser's own speech service may process the audio on its provider's servers to turn it into text, which depends on the browser and phone. Tell the other person on the call that you are using it; rules about listening to calls differ by place. Some phones block the microphone during a call.
+
+**Message bot (optional, a separate program in `bot/`).** Messages sent to it pass through Telegram, then through the same checks as the server, and are dropped: nothing is stored or logged. If a Gemini key is set the text goes to Gemini as above. Once its privacy mode is off the bot can read every message in a group it has joined, so tell everyone in the group. Family heads-up alerts name the person and the warning signs, never the message. Keep the bot token private.
+
+**Demo soundboard.** It only plays audio files you add yourself to a git-ignored folder. A cloned voice is used only with the speaker's written consent.
 
 ## Limitations
 
@@ -50,6 +61,8 @@ The server never stores or logs message text or screenshots, only a SHA-256 of t
 - The free hosting plan erases the database when the server sleeps, restarts or redeploys, which loses every pairing (phones keep their keys but must pair again).
 - Tier thresholds and the number of warning signs are placeholders until a larger study gives real numbers.
 - The warning tags come from phrase rules plus an optional model, so they can miss new scam wording. They only add caution; they cannot make a request look safe.
+- The phone's instant hints (`web/js/lib/scan.js`) are a separate, simpler copy of the phrase rules, so they can show slightly different tags than the server for the same message. The result screen shows both together.
+- The call watcher needs a browser with speech recognition and a microphone that the phone lets you use during a call; the message bot works only in Telegram.
 
 ## Credits
 
