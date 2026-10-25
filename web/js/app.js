@@ -8,6 +8,7 @@ import {
 import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
+import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk } from './lib/scan.js';
 
 // ---------- helpers ----------
 
@@ -36,44 +37,16 @@ const METHODS = [
 ];
 const CHANNELS = [['text', 'Text'], ['call', 'Call'], ['dm', 'App / DM'], ['email', 'Email']];
 const label = (list, key) => (list.find(([k]) => k === key) || [key, key])[1];
-const TAGS = {
-  URGENCY: 'Pressure to act fast', SECRECY: 'Asks you to keep it secret', NEW_NUMBER: 'New number',
-  GIFT_CARD: 'Gift cards', WIRE: 'Wire transfer', CRYPTO: 'Crypto', PAYBACK_PROMISE: 'Promises to pay back',
-  FIRST_REQUEST: "First time they've asked",
-};
 const ERRORS = {
   OFFLINE: "You're offline. Reconnecting…", TIMEOUT: 'The server took too long. Try again.',
   TOKEN_INVALID: 'That code is invalid or expired.', ALREADY_PAIRED: "You're already linked.",
-  SELF_PAIR: "That's your own code.", NOT_PAIRED: "You aren't linked with them.",
+  SELF_PAIR: "That's your own code.", NOT_PAIRED: 'Not connected to them right now. Link up again in My people. Your code word still works.',
   AMOUNT_MISMATCH: "The amount you typed doesn't match.", BAD_SIGNATURE: "Your signature wasn't accepted.",
   ALREADY_ANSWERED: 'This was already answered.', NOT_FOUND: 'This request is gone.',
   RATE_LIMITED: 'Slow down a little.', BAD_INPUT: 'Check what you entered.',
+  NEED_AMOUNT: 'Please type how much they asked for, like 60 or 60.50.', NEED_FRIEND: 'Link up with someone you trust first.',
 };
 const friendly = (e) => ERRORS[e && e.message] || `Something went wrong (${e && e.message})`;
-
-// Instant, on-phone hints while reading a message. These only WARN and pre-fill the form;
-// they never clear anything. Only the friend's signed answer can make a request green.
-const RULES = [
-  [/gift\s*card|itunes|apple card|google play|steam card/i, 'GIFT_CARD'],
-  [/\bwire\b|western union|moneygram/i, 'WIRE'],
-  [/bitcoin|\bbtc\b|crypto|ethereum|usdt/i, 'CRYPTO'],
-  [/urgent|right now|asap|immediately|hurry|emergency|stuck|stranded|today only/i, 'URGENCY'],
-  [/don'?t tell|do not tell|keep (this|it)( a)? secret|between us|tell no one|don'?t say anything/i, 'SECRECY'],
-  [/new number|lost my phone|changed my number|my new (phone|number)/i, 'NEW_NUMBER'],
-  [/pay (you )?back|repay|reimburse|i'?ll (send|give) it back/i, 'PAYBACK_PROMISE'],
-];
-function suggest(text) {
-  const tags = RULES.filter(([re]) => re.test(text)).map(([, t]) => t);
-  const m = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/.exec(text) || /(\d{1,6})\s*(?:dollars|bucks|usd)/i.exec(text);
-  let amount = '';
-  if (m) amount = m[1].replace(/,/g, '') + (m[2] !== undefined ? `.${m[2]}` : '');
-  let method = null;
-  if (tags.includes('GIFT_CARD')) method = 'gift_card';
-  else if (tags.includes('WIRE')) method = 'wire';
-  else if (tags.includes('CRYPTO')) method = 'crypto';
-  else if (/venmo|zelle|cash\s?app/i.test(text)) method = 'venmo_cashapp_zelle';
-  return { tags, amount, method };
-}
 
 // Big radio cards (native inputs, so screen readers and keyboards work).
 let choiceSeq = 0;
@@ -128,15 +101,75 @@ const S = {
   form: { friendId: '', method: 'venmo_cashapp_zelle', channel: 'text', amount: '', text: '', amountTouched: false, methodTouched: false },
 };
 const $app = document.getElementById('app');
-let $content, $status, $banners, $overlay, $toast;
+let $content, $status, $banners, $overlay, $toast, $conn;
 let toastTimer = null;
 const friendById = (id) => S.friends.find((f) => f.id === id);
+// Is this person known to the server right now? Unknown until the first sync, so assume yes.
+const isLinked = (f) => !S.linked || S.linked.has(f.id);
 
 function toast(msg, kind) {
   if (!$toast) return;
   $toast.replaceChildren(h('p', { class: kind === 'ok' ? 'ok' : 'err' }, msg));
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => $toast.replaceChildren(), 5000);
+}
+
+// ---------- danger state: stays in your face until it is resolved ----------
+// Scams work by rushing people. While something risky is unresolved Vouch keeps a red banner on screen, repeats the
+// warning aloud and as a notification, and makes you wait before you can wave it away.
+
+const PAUSE_SECONDS = 10; // the same cooling-off pause the server config documents
+const REPEAT_MS = 25000;
+const MAX_REPEATS = 8;
+const A = { active: false, level: 0, reason: '', source: '', repeats: 0, mutedUntil: 0 };
+let $sticky;
+
+// A button that stays disabled for a few seconds, so a warning can't be dismissed on reflex.
+function pauseButton(text, seconds, onclick, cls) {
+  const b = h('button', { class: cls || '', disabled: true }, `${text} (${seconds})`);
+  let n = seconds;
+  const t = setInterval(() => {
+    n -= 1;
+    if (!b.isConnected && n < seconds - 1) { clearInterval(t); return; }
+    if (n <= 0) { clearInterval(t); b.disabled = false; b.textContent = text; } else b.textContent = `${text} (${n})`;
+  }, 1000);
+  b.addEventListener('click', onclick);
+  return b;
+}
+
+function raiseAlert(level, reason, source) {
+  const was = A.active;
+  const prev = was ? A.level : 0;
+  if (was && level < prev) return; // never downgrade an active danger
+  const changed = !was || level > prev || source !== A.source;
+  A.active = true; A.level = Math.max(level, prev); A.reason = reason; A.source = source;
+  if (changed) { A.repeats = 0; paintSticky(); }
+}
+
+function clearAlert() {
+  A.active = false; A.level = 0; A.reason = ''; A.source = ''; A.repeats = 0;
+  paintSticky();
+}
+
+function paintSticky() {
+  if (!$sticky) return;
+  if (!A.active) { $sticky.replaceChildren(); return; }
+  const f = friendById(S.wordFriendId) || S.friends[0];
+  $sticky.replaceChildren(h('div', { class: `banner${A.level === 2 ? '' : ' soft'}`, role: 'alert' },
+    h('div', { class: 'bannerhead' }, A.level === 2 ? 'DO NOT SEND ANYTHING' : 'WAIT. CHECK FIRST.'),
+    h('p', null, A.reason),
+    f ? h('button', { onclick: () => { S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
+    f ? h('button', { onclick: () => { if (A.source === 'call') askAboutCall(); else setTab('check'); } }, `Check with ${f.name}'s phone`) : null,
+    pauseButton('I checked it. Clear this', PAUSE_SECONDS, clearAlert, 'ghost'),
+    h('button', { class: 'ghost', onclick: () => { A.mutedUntil = Date.now() + 120000; toast('Quiet for 2 minutes. The banner stays.', 'ok'); } }, 'Quiet for 2 minutes')));
+}
+
+function repeatAlert() {
+  if (!A.active || Date.now() < A.mutedUntil || A.repeats >= MAX_REPEATS) return;
+  A.repeats += 1;
+  const line = A.level === 2 ? 'Still no confirmation. Do not send money.' : 'Reminder. Make sure it is really them before you send anything.';
+  attention(line, A.level === 2 ? [400, 150, 400] : [250, 120, 250]);
+  notify(A.level === 2 ? 'Vouch: do NOT send money' : 'Vouch: check first', A.reason, 'repeat');
 }
 
 // ---------- boot + auth ----------
@@ -177,6 +210,8 @@ async function boot() {
   wireEvents();
   connect({ onChallenge, onStatus });
   setInterval(tickWord, 1000);
+  setInterval(repeatAlert, REPEAT_MS);
+  flashIfRisky(); // a message shared into Vouch is warned about straight away
 }
 
 async function pubsOf(keys) {
@@ -185,6 +220,7 @@ async function pubsOf(keys) {
 
 function onStatus(online) {
   S.online = online;
+  if (online) S.everConnected = true;
   if (!online) S.authed = false;
   paintStatus();
 }
@@ -236,18 +272,22 @@ async function afterAuth() {
     await acceptToken(token);
   }
   renderMain();
+  flashIfRisky();
 }
 
 async function syncFriends() {
   try {
     const { friends } = await call('circle:list');
     const local = await store.listFriends();
-    for (const l of local) if (!friends.some((f) => f.id === l.id)) await store.deleteFriend(l.id);
+    S.linked = new Set(friends.map((f) => f.id));
+    // Links live on this phone until the person removes them: never delete one just because the server forgot it.
     for (const f of friends) {
-      if (!local.some((l) => l.id === f.id)) {
-        const wordKey = await deriveWordKey(S.keys.exchKeyPair.privateKey, f.exchPub);
-        await store.saveFriend({ ...f, wordKey });
-      }
+      // The same person can come back under a new id (the server was wiped). Match by key and update, never duplicate.
+      const same = local.filter((l) => l.id === f.id || l.signPub === f.signPub);
+      const keep = same.find((l) => l.wordKey && l.exchPub === f.exchPub);
+      for (const l of same) if (l.id !== f.id) await store.deleteFriend(l.id);
+      const wordKey = keep ? keep.wordKey : await deriveWordKey(S.keys.exchKeyPair.privateKey, f.exchPub);
+      await store.saveFriend({ ...f, wordKey, pairedAt: (same[0] && same[0].pairedAt) || f.pairedAt || Date.now() });
     }
     S.friends = await store.listFriends();
   } catch (e) { toast(friendly(e)); }
@@ -257,6 +297,8 @@ async function syncFriends() {
 
 function buildShell() {
   $status = h('span', { class: 'pill off', role: 'status' }, 'Offline');
+  $conn = h('div', { role: 'status', 'aria-live': 'polite' });
+  $sticky = h('div');
   $banners = h('div', { role: 'alert' });
   $toast = h('div', { role: 'status', 'aria-live': 'polite' });
   $content = h('main');
@@ -269,14 +311,20 @@ function buildShell() {
     applySize(S.size);
     saveSize(S.size);
   } }, 'A+');
-  $app.replaceChildren(h('header', null, h('h1', null, 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $banners, $toast, $content, nav, $overlay);
+  $app.replaceChildren(h('header', null, h('h1', null, 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $sticky, $banners, $toast, $content, nav, $overlay);
   paintStatus();
 }
 
 function paintStatus() {
   if (!$status) return;
-  $status.textContent = S.online ? (S.authed ? 'Online' : 'Signing in…') : 'Offline';
+  $status.textContent = (S.listening ? 'Watching call · ' : '') + (S.online ? (S.authed ? 'Online' : 'Signing in…') : 'Offline');
   $status.className = 'pill' + (S.online && S.authed ? '' : ' off');
+  // Only warn once we've been connected before, so the first second of loading isn't an error.
+  if (!S.online && S.everConnected) {
+    $conn.replaceChildren(h('div', { class: 'card' },
+      h('p', { class: 'err' }, 'No connection.'),
+      h('p', null, "Vouch is trying to reconnect. Checks and prompts need a connection. Warnings about messages still work on this phone.")));
+  } else $conn.replaceChildren();
 }
 
 function setTab(tab) {
@@ -318,6 +366,38 @@ function setupView() {
 
 // ---------- check a message ----------
 
+// The moment a risky message lands (pasted or shared), warn right away, aloud, before anyone has to ask.
+// This is an on-phone warning only; it never clears anything.
+function flashIfRisky() {
+  if (!S.me) return;
+  const text = S.form.text;
+  const { tags } = suggest(text);
+  if (!text || !riskyEnough(tags) || S.flashedFor === text) return;
+  S.flashedFor = text;
+  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags } });
+  raiseAlert(2, 'This message has scam warning signs. Check it before you send anything.', 'message');
+  attention('Warning. This message looks like a scam. Do not send anything yet.', [400, 150, 400, 150, 400]);
+  notify('Vouch: this message looks like a scam', 'Do not send anything yet. Open Vouch to check it.', 'local-scam');
+  renderOverlay();
+}
+
+// Sends the check for whatever is in the form. Throws Error(code) so callers can show friendly().
+async function submitCheck() {
+  const F = S.form;
+  const cents = parseCents(F.amount);
+  if (!cents) throw new Error('NEED_AMOUNT');
+  if (!F.friendId || !friendById(F.friendId)) throw new Error('NEED_FRIEND');
+  if (!isLinked(friendById(F.friendId))) throw new Error('NOT_PAIRED');
+  const body = { claimedId: F.friendId, amountCents: cents, method: F.method, channel: F.channel };
+  const sent = F.text.trim();
+  if (sent) body.text = sent;
+  const { requestId } = await call('verify:request', body);
+  if (sent) S.texts.set(requestId, sent); // kept in this tab's memory only
+  S.current = requestId;
+  Object.assign(F, { text: '', amount: '', amountTouched: false, methodTouched: false });
+  return requestId;
+}
+
 function checkView() {
   if (!S.friends.length) {
     return h('section', null, h('h2', null, 'Check a message'),
@@ -329,8 +409,10 @@ function checkView() {
 
   const flags = h('div', { class: 'flagbar', 'aria-live': 'polite' });
   const paintFlags = () => {
-    const tags = suggest(F.text).tags;
-    flags.replaceChildren(...(tags.length ? [h('span', null, 'Looks risky:'), ...tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))] : []));
+    const s = suggest(F.text);
+    if (s.tags.length) flags.replaceChildren(h('span', null, 'Looks risky:'), ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t])));
+    else if (s.ask) flags.replaceChildren(h('span', null, 'This asks for money. Check who it is before you send anything.'));
+    else flags.replaceChildren();
   };
   const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
   const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; } });
@@ -352,8 +434,11 @@ function checkView() {
   const channel = choice('How did they reach you?', CHANNELS, F.channel, (v) => { F.channel = v; }, 'two');
   const msg = h('div', { role: 'alert' });
   const paste = h('button', { class: 'ghost', onclick: async () => {
-    try { text.value = (await navigator.clipboard.readText()).slice(0, 2000); onText(); msg.replaceChildren(); }
-    catch { msg.replaceChildren(h('p', { class: 'err' }, 'Press and hold in the box, then tap Paste.')); }
+    try {
+      const clip = (await navigator.clipboard.readText()).slice(0, 2000);
+      if (!clip.trim()) { msg.replaceChildren(h('p', { class: 'err' }, 'Nothing copied yet. Copy the message first, then tap Paste.')); return; }
+      text.value = clip; onText(); msg.replaceChildren(); flashIfRisky();
+    } catch { msg.replaceChildren(h('p', { class: 'err' }, 'Your phone blocked that. Press and hold in the box, then tap Paste.')); }
   } }, 'Paste the message');
   const example = h('button', { class: 'ghost', onclick: () => {
     Object.assign(F, { channel: 'text', amountTouched: false, methodTouched: false, amount: '', method: 'venmo_cashapp_zelle',
@@ -364,22 +449,14 @@ function checkView() {
     const s = suggest(F.text);
     F.amount = s.amount; if (s.method) F.method = s.method;
     renderMain();
+    flashIfRisky();
   }
   const btn = h('button', { onclick: async () => {
-    const cents = parseCents(F.amount);
-    if (!cents) { msg.replaceChildren(h('p', { class: 'err' }, 'Please type how much they asked for, like 60 or 60.50.')); return; }
     btn.disabled = true;
     msg.replaceChildren();
     try {
-      const body = { claimedId: F.friendId, amountCents: cents, method: F.method, channel: F.channel };
-      const sent = F.text.trim();
-      if (sent) body.text = sent;
-      const { requestId } = await call('verify:request', body);
-      if (sent) S.texts.set(requestId, sent); // kept in this tab's memory only
-      S.current = requestId;
-      Object.assign(F, { text: '', amount: '', amountTouched: false, methodTouched: false });
-      text.value = ''; amount.value = ''; paintFlags();
-      renderResult();
+      await submitCheck();
+      renderMain();
       document.getElementById('result')?.scrollIntoView({ block: 'start' });
     } catch (e) { msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
     btn.disabled = false;
@@ -417,14 +494,19 @@ function announce(u) {
   const name = u.stages.information.claimedName;
   if (u.verdict === 'red') {
     S.queue.push({ kind: 'alert', data: { u, soft: false } });
+    raiseAlert(2, conf.answer === 'not_me' ? `${name} says this was NOT them.` : 'Something does not add up.', `req-${u.requestId}`);
     const line = `Stop. Do not send money. ${conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.'}`;
     attention(line, [400, 150, 400, 150, 400]);
     notify('Vouch: do not send money', conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.', `res-${u.requestId}`);
   } else if (u.verdict === 'amber' && conf.answer === 'timeout') {
     S.queue.push({ kind: 'alert', data: { u, soft: true } });
+    raiseAlert(1, `${name} has not answered. Do not send yet.`, `req-${u.requestId}`);
     attention(`Wait. ${name} has not answered. Do not send money yet.`, [300, 150, 300]);
     notify('Vouch: wait', `${name} has not answered yet.`, `res-${u.requestId}`);
+  } else if (u.verdict === 'amber') {
+    raiseAlert(1, (u.reasons && u.reasons[0]) || 'Wait for confirmation before you send anything.', `req-${u.requestId}`);
   } else if (u.verdict === 'green') {
+    clearAlert();
     attention(`Verified. ${name} confirmed this on their own phone.`, 80);
     notify('Vouch: verified', `${name} confirmed this on their own phone.`, `res-${u.requestId}`);
   }
@@ -452,10 +534,12 @@ function renderResult() {
   const card = h('div', { class: 'card' },
     h('div', { class: 'stage' }, h('b', null, '1 · What they asked'),
       h('p', null, `${name} · ${fmt(info.amountCents)} · ${label(METHODS, info.method)} · ${label(CHANNELS, info.channel)}`)),
-    h('div', { class: 'stage' }, h('b', null, '2 · What looks suspicious'),
+    h('div', { class: 'stage' }, h('b', null, '2 · AI check'),
+      und.explanation ? h('p', null, und.explanation) : null,
       tags.length ? tags.map((t) => h('span', { class: 'chip' }, TAGS[t] || t)) : h('p', null, 'Nothing stands out.'),
       und.paymentRisk ? h('p', null, `Payment risk: ${und.paymentRisk}`) : null,
-      und.explanation ? h('p', { class: 'muted' }, und.explanation) : null),
+      und.firstRequest ? h('p', null, `This is the first time ${name} has asked you for money.`) : null,
+      h('p', { class: 'muted' }, `AI can warn. Only ${name}'s own phone can clear a request.`)),
     h('div', { class: 'stage' }, h('b', null, '3 · Did they confirm?'),
       h('p', null, answerText),
       u.needs && u.needs.word ? h('p', null, conf.wordOk ? 'Shared word matched.' : 'Shared word still needed.') : null,
@@ -484,6 +568,61 @@ function wordBox(u, name) {
 
 // ---------- on a call ----------
 
+// The code word is generated on demand, like an authenticator app: tap to see it, it expires with the minute.
+function revealWord() {
+  S.wordShown = true;
+  S.wordExpired = false;
+  S.wordMinute = Math.floor(Date.now() / 60000);
+  paintWordArea();
+  tickWord();
+}
+
+function callResult(ok) {
+  const f = friendById(S.wordFriendId);
+  if (!f) return;
+  S.queue.push({ kind: 'call', data: { requestId: `call-${Date.now()}`, ok, name: f.name } });
+  attention(ok ? `That's really ${f.name}.` : `No match. This is not ${f.name}. Hang up.`, ok ? 80 : [400, 150, 400, 150, 400]);
+  notify(ok ? 'Vouch: word matched' : 'Vouch: NO MATCH', ok ? `That's really ${f.name}.` : `This is not ${f.name}. Hang up.`, 'call-check');
+  renderOverlay();
+}
+
+// They're asking for money on the call: open the check, already set up for a call.
+function askAboutCall() {
+  S.form.channel = 'call';
+  const amt = callRisk(`${S.heard || ''} ${S.cur || ''}`).amount;
+  if (amt && !S.form.amountTouched) S.form.amount = amt;
+  setTab('check');
+}
+
+function paintWordArea() {
+  const box = document.getElementById('wordarea');
+  const f = friendById(S.wordFriendId);
+  if (!box || !f) return;
+  if (!S.wordShown) {
+    box.replaceChildren(
+      h('p', { class: S.wordExpired ? 'err' : 'muted' }, S.wordExpired ? 'That word expired. Get a new one.' : `Tap to see the code word you and ${f.name} share right now.`),
+      h('button', { onclick: revealWord }, 'Get our code word'));
+    return;
+  }
+  const said = h('input', { id: 'said', placeholder: 'The two words they said', autocapitalize: 'none', autocomplete: 'off' });
+  const typedMsg = h('div', { role: 'alert' });
+  box.replaceChildren(
+    h('div', { class: 'bigword', id: 'bigword' }, '…'),
+    h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'wordbar' })),
+    h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
+    h('p', null, 'Ask them: "What\'s our word?" Let them say it first. Never read it out first.'),
+    h('div', { class: 'row' },
+      h('button', { class: 'yes', onclick: () => callResult(true) }, 'It matches'),
+      h('button', { class: 'no', onclick: () => callResult(false) }, "It doesn't match")),
+    h('details', null, h('summary', null, 'Type what they said instead'),
+      h('label', { for: 'said' }, 'The two words'), said,
+      h('button', { class: 'ghost', onclick: async () => {
+        if (!said.value.trim()) { typedMsg.replaceChildren(h('p', { class: 'err' }, 'Type the two words they said.')); return; }
+        callResult(await checkWord(f.wordKey, said.value));
+      } }, 'Check it'), typedMsg),
+    h('button', { class: 'ghost', onclick: () => { S.wordShown = false; paintWordArea(); } }, 'Hide the word'));
+}
+
 function wordView() {
   if (!S.friends.length) {
     return h('section', null, h('h2', null, 'On a call'), h('p', null, 'Link up with someone first to get a word only you two know.'),
@@ -491,33 +630,112 @@ function wordView() {
   }
   if (!S.wordFriendId || !friendById(S.wordFriendId)) S.wordFriendId = S.friends[0].id;
   const who = S.friends.length > 1
-    ? choice('Who is calling?', S.friends.map((f) => [f.id, f.name]), S.wordFriendId, (v) => { S.wordFriendId = v; tickWord(); })
+    ? choice('Who is calling?', S.friends.map((f) => [f.id, f.name]), S.wordFriendId, (v) => { S.wordFriendId = v; S.wordShown = false; S.wordExpired = false; paintWordArea(); })
     : null;
-  const input = h('input', { id: 'said', placeholder: 'The two words they said', autocapitalize: 'none', autocomplete: 'off' });
-  const res = h('div', { role: 'alert' });
-  const btn = h('button', { onclick: async () => {
-    const f = friendById(S.wordFriendId);
-    const ok = f && await checkWord(f.wordKey, input.value);
-    res.replaceChildren(h('p', { class: ok ? 'ok' : 'err' }, ok ? 'Match. This is really them.' : "No match. Don't trust this call."));
-    if (!ok) attention("No match. Don't trust this call.", [400, 150, 400]);
-  } }, 'Check what they said');
-  queueMicrotask(tickWord);
+  queueMicrotask(() => { paintWordArea(); tickWord(); });
   return h('section', null, h('h2', null, 'On a call'),
-    h('p', null, 'Ask them: "What\'s our word?" Let them say it first. Never read it out first.'),
-    who, h('p', { class: 'muted', style: 'margin-top:1rem' }, 'Your shared word right now:'),
-    h('div', { class: 'bigword', id: 'bigword' }, '…'), h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
-    h('label', { for: 'said' }, 'Check what they said'), input, btn, res);
+    h('p', null, 'Not sure who is really calling? Get your code word and ask them for it.'),
+    who, h('div', { id: 'wordarea' }),
+    listenCard(),
+    h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money"));
 }
 
 async function tickWord() {
-  const big = document.getElementById('bigword');
-  if (!big || S.tab !== 'word') return;
+  if (S.tab !== 'word' || !S.wordShown) return;
   const f = friendById(S.wordFriendId);
   if (!f) return;
-  const { word, secondsLeft } = await currentWord(f.wordKey);
+  const { word, minute, secondsLeft } = await currentWord(f.wordKey);
+  if (minute !== S.wordMinute) { S.wordShown = false; S.wordExpired = true; paintWordArea(); return; }
+  const big = document.getElementById('bigword');
+  if (!big) return;
   big.textContent = word;
   const left = document.getElementById('wordleft');
-  if (left) left.textContent = `changes in ${secondsLeft}s`;
+  if (left) left.textContent = `expires in ${secondsLeft}s`;
+  const bar = document.getElementById('wordbar');
+  if (bar) bar.style.width = `${(secondsLeft / 60) * 100}%`;
+}
+
+// ---------- watch a call ----------
+// Uses the browser's own speech recognition on the speakerphone. The words are checked on this phone, then dropped:
+// nothing is recorded, saved or sent by Vouch. (The browser's speech service may process the audio to make text.)
+
+function listenCard() {
+  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+  if (S.listening) {
+    return h('div', { class: 'card' }, h('b', null, 'Watching this call'),
+      h('p', { class: 'muted', id: 'transcript' }, (S.cur || S.heard || '').slice(-200) || 'Listening…'),
+      h('button', { class: 'ghost', onclick: stopListening }, 'Stop watching'));
+  }
+  return h('div', { class: 'card' }, h('b', null, 'Watch this call for scams'),
+    h('p', null, 'Put the call on speaker, then start. Vouch warns you the moment someone asks for money. Nothing is recorded or saved.'),
+    SR ? h('button', { onclick: startListening }, 'Start watching')
+      : h('p', { class: 'muted' }, "This browser can't listen. Use Check a message instead."),
+    h('p', { class: 'muted' }, 'Some phones block the microphone during a call. If yours does, put Vouch on a second phone or tablet next to the call.'));
+}
+
+function startListening() {
+  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+  if (!SR) return;
+  const rec = new SR();
+  rec.lang = 'en-US';
+  rec.continuous = true;
+  rec.interimResults = true;
+  S.listening = true; S.heard = ''; S.cur = ''; S.callLevel = 0; S.rec = rec;
+  rec.onresult = (e) => {
+    let text = '';
+    for (let i = 0; i < e.results.length; i++) text += `${e.results[i][0].transcript} `;
+    S.cur = text.slice(-1500);
+    const t = document.getElementById('transcript');
+    if (t) t.textContent = S.cur.slice(-200);
+    scanCall();
+  };
+  rec.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { stopListening(); toast('The microphone is blocked. Allow it in your browser settings.'); }
+    else if (e.error === 'audio-capture') { stopListening(); toast("Couldn't use the microphone. Some phones block it during a call; use a second phone next to the call."); }
+  };
+  rec.onend = () => { // browsers end a session after a pause; start again while the person is still watching
+    if (!S.listening) return;
+    S.heard = `${S.heard} ${S.cur}`.slice(-1500); S.cur = '';
+    try { rec.start(); } catch { /* already starting */ }
+  };
+  try { rec.start(); } catch (e) { S.listening = false; toast("Couldn't start listening."); }
+  paintStatus();
+  renderMain();
+}
+
+function stopListening() {
+  S.listening = false;
+  try { if (S.rec) S.rec.stop(); } catch { /* already stopped */ }
+  S.rec = null; S.heard = ''; S.cur = '';
+  if (A.source === 'call') clearAlert();
+  paintStatus();
+  renderMain();
+}
+
+// 0 = nothing; 1 = someone is asking for money (check who it is); 2 = asking for money with scam warning signs.
+function scanCall() {
+  const r = callRisk(`${S.heard || ''} ${S.cur || ''}`);
+  if (r.level <= (S.callLevel || 0)) return;
+  S.callLevel = r.level;
+  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags } });
+  raiseAlert(r.level, r.level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
+  attention(r.level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
+    r.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+  notify(r.level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
+  renderOverlay();
+}
+
+function callScamOverlay({ level, tags }) {
+  const f = friendById(S.wordFriendId) || S.friends[0];
+  const hard = level === 2;
+  return h('div', { class: `overlay alert${hard ? '' : ' soft'}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Scam warning' },
+    h('div', { class: 'inner' },
+      h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
+      h('p', { class: 'big' }, hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.'),
+      tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null,
+      f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
+      f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
+      h('button', { class: 'ghost', onclick: dismiss }, 'Keep listening')));
 }
 
 // ---------- my people + pairing ----------
@@ -538,7 +756,15 @@ function requestAlerts() {
 
 function friendsView() {
   const list = S.friends.length
-    ? h('div', { class: 'card' }, S.friends.map((f) => h('div', { class: 'friend' }, h('span', null, f.name), h('span', { class: 'muted' }, 'Linked'))))
+    ? h('div', { class: 'card' }, S.friends.map((f) => h('div', null,
+      h('div', { class: 'friend' }, h('span', null, f.name),
+        h('span', { class: isLinked(f) ? 'muted' : 'err' }, isLinked(f) ? 'Linked' : 'Not connected')),
+      isLinked(f) ? null : h('p', { class: 'muted' }, 'The server lost this link. Your code word still works. Tap Add someone and link up again.'),
+      S.removeAsk === f.id
+        ? h('div', { class: 'row' },
+          h('button', { class: 'no', onclick: async () => { await store.deleteFriend(f.id); S.friends = await store.listFriends(); S.removeAsk = null; renderMain(); } }, `Remove ${f.name}`),
+          h('button', { class: 'ghost', onclick: () => { S.removeAsk = null; renderMain(); } }, 'Keep'))
+        : h('button', { class: 'ghost', onclick: () => { S.removeAsk = f.id; renderMain(); } }, `Remove ${f.name}`))))
     : h('p', { class: 'muted' }, 'Nobody yet.');
   const input = h('input', { id: 'code', placeholder: 'XXXX-XXXX', autocapitalize: 'characters', autocomplete: 'off' });
   const forget = S.forgetAsk
@@ -587,6 +813,11 @@ async function acceptToken(token) {
 
 async function onPeerPaired(peer) {
   const wordKey = await deriveWordKey(S.keys.exchKeyPair.privateKey, peer.exchPub);
+  // Linking again with someone already on this phone replaces their old entry instead of adding a second one.
+  for (const e of await store.listFriends()) {
+    if (e.id === peer.id || e.signPub === peer.signPub || (e.name === peer.name && !isLinked(e))) await store.deleteFriend(e.id);
+  }
+  if (S.linked) S.linked.add(peer.id);
   await store.saveFriend({ id: peer.id, name: peer.name, signPub: peer.signPub, exchPub: peer.exchPub, wordKey, pairedAt: Date.now() });
   S.friends = await store.listFriends();
   S.codeView = null;
@@ -685,7 +916,39 @@ function overlayFor(item) {
   if (item.kind === 'prompt') return promptOverlay(item.data);
   if (item.kind === 'confirm') return confirmOverlay(item.data);
   if (item.kind === 'alert') return alertOverlay(item.data);
+  if (item.kind === 'scam') return scamOverlay(item.data);
+  if (item.kind === 'call') return callOverlay(item.data);
+  if (item.kind === 'callscam') return callScamOverlay(item.data);
   return pairedOverlay(item);
+}
+
+// Shown the instant a risky message is pasted or shared.
+function scamOverlay({ tags }) {
+  const F = S.form;
+  const friend = friendById(F.friendId) || S.friends[0];
+  const go = friend ? h('button', { onclick: async () => {
+    dismiss();
+    setTab('check');
+    try { await submitCheck(); renderMain(); document.getElementById('result')?.scrollIntoView({ block: 'start' }); } catch (e) { toast(friendly(e)); }
+  } }, `Ask ${friend.name}'s phone now`) : null;
+  return h('div', { class: 'overlay alert', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
+    h('div', { class: 'inner' },
+      h('div', { class: 'stop' }, 'This looks like a scam.'),
+      h('p', { class: 'big' }, 'Do not send anything yet.'),
+      h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))),
+      h('p', null, 'Check it with someone you trust. It takes a few seconds.'),
+      go, h('button', { class: 'ghost', onclick: dismiss }, 'Not now')));
+}
+
+// Full-screen result of the live-call word check.
+function callOverlay({ ok, name }) {
+  const headline = ok ? `That's really ${name}.` : `NO MATCH. This is NOT ${name}.`;
+  return h('div', { class: `overlay ${ok ? 'good' : 'alert'}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': headline },
+    h('div', { class: 'inner' },
+      h('div', { class: 'stop' }, headline),
+      ok ? h('p', { class: 'big' }, 'The shared word matched. Still never send gift cards.')
+        : [h('p', { class: 'big' }, 'Hang up.'), h('p', null, `Call ${name} back on a number you already know.`)],
+      h('button', { onclick: dismiss }, 'OK')));
 }
 
 function alertOverlay({ u, soft }) {
@@ -699,7 +962,7 @@ function alertOverlay({ u, soft }) {
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, headline), h('p', { class: 'big' }, why), reasons,
       h('p', null, 'Call them on a number you already know, or ask a family member.'),
-      h('button', { onclick: dismiss }, 'I understand')));
+      soft ? h('button', { onclick: dismiss }, 'I understand') : pauseButton('I understand', PAUSE_SECONDS, dismiss)));
 }
 
 function codeOverlay(token) {

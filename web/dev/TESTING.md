@@ -40,3 +40,18 @@ Pairing works both ways, Yes → green, Not me → red STOP + circle alert, word
 ## 6. Alerts and camera
 - **My people** -> **Turn on alerts** (iPhone: Add to Home Screen first). Put Vouch in the background, then ask from the other phone: a notification should arrive.
 - **Scan a code** opens a full-screen camera with a square frame. It only needs permission the first time.
+
+## 7. The demo script (3 phones, about 2 minutes)
+Roles: **Victim** (Vouch open, linked to Family), **Family** (Vouch open), **Scammer** (a normal phone + `/dev/soundboard.html` with the ElevenLabs clips in `web/dev/audio/`).
+
+1. **Text.** Scammer texts the Victim a real message ("new number, stuck at the store, buy $200 in gift cards, don't tell mom"). Victim copies it, opens Vouch, taps **Paste the message**. The whole screen flashes **This looks like a scam**, speaks it, and vibrates. Victim taps **Ask Family's phone now**.
+2. **Family's phone** speaks and shows "Did you just ask Victim for $200.00 via Gift cards?" Family taps **Not me**. Victim gets a full-screen red **STOP**; Family's circle gets a warning.
+3. **Call.** Scammer calls the Victim and plays clips 1 and 2 from the soundboard. Victim opens **On a call**, says "What's our word?". Scammer plays clip 3 (dodges). Victim types a guess: full-screen **NO MATCH. Hang up.**
+4. **The real one.** Family calls and says the word from their own **On a call** screen. Victim types it: **That's really Family.**
+
+Failure modes to rehearse: tap Paste with an empty clipboard (it says what to do); deny the camera (it says to type the code); switch the phone to airplane mode (a **No connection** notice appears and clears itself on reconnect); restart the server (phones sign back in by themselves).
+
+## 8. Code word on demand, call watcher, message bot
+- **On a call -> Get our code word.** Tap it on both phones: the same two words, a countdown bar, and it hides itself when the minute ends. Tap again for a new one. **It matches / It doesn't match** gives a full-screen answer.
+- **On a call -> Start watching** (call on speaker, allow the microphone). Say, near the phone: "Grandma it's me, I need $200 in gift cards, don't tell mom". A full-screen STOP appears, spoken and vibrating, with buttons for the code word and for checking with the friend's phone. Say "I need some money for the bus": the softer "Someone is asking for money" appears first. Works in Chrome on Android and desktop; iPhone Safari support varies. Some phones block the microphone during a call: put Vouch on a second phone or tablet next to it.
+- **Message bot:** see `bot/README.md` (3 minutes). Message the bot a scam; the warning arrives as a real Telegram notification. Add it to a group with a "scammer" and watch it speak up. Send `/guardian` in a family chat to get heads-ups.
