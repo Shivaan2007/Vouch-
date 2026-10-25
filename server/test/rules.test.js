@@ -71,9 +71,17 @@ test('payment risk: selector, inference, and the higher of the two', () => {
   assert.equal(paymentRiskFor('cash_in_person', 'actually bitcoin'), 'high');   // text beats a low selector
   assert.equal(paymentRiskFor('gift_card', 'venmo is fine'), 'high');           // selector beats a lower text hint
   assert.equal(paymentRiskFor('not-a-method', 'hi'), 'low');
-  for (const w of ['apple card', 'steam', 'google play', 'bitcoin', 'cash app', 'venmo']) {
+  for (const w of ['an apple gift card', 'steam cards', 'google play cards', 'bitcoin', 'cash app', 'venmo']) {
     assert.ok(inferPaymentRisk(`pay with ${w}`), w);
   }
+  // Bare words in an ordinary sentence must not raise the risk (a Yes would turn amber for no reason).
+  for (const t of ['can you pay me $40 to steam clean the couch', 'I am on google play', 'the wire in my lamp broke',
+    'the target near me', 'apple pie tonight?']) {
+    assert.equal(inferPaymentRisk(t), null, t);
+    assert.ok(!detectTags(t).some((x) => ['GIFT_CARD', 'WIRE', 'CRYPTO'].includes(x)), t);
+  }
+  assert.equal(inferPaymentRisk('wire me the money'), 'high');
+  assert.equal(inferPaymentRisk('send it by wire'), 'high');
 });
 
 test('analyze(): ignores bad input and never throws', async () => {
