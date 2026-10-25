@@ -8,7 +8,7 @@ import {
 import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
-import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify, highlight, callInit, callStep, callWhy } from './lib/scan.js';
+import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify, highlight, callInit, callStep, callWhy, callCoach } from './lib/scan.js';
 import { chunkToWav } from './lib/audio.js';
 
 // ---------- helpers ----------
@@ -836,7 +836,33 @@ function checkView() {
     ...ask,
     h('div', { id: 'result', 'aria-live': 'polite' }),
     h('p', { class: 'muted' }, S.watch && S.watch.listen ? "Not saved by Vouch. If AI is on, the message is read by Google's Gemini." : 'Not saved by Vouch.'),
-    example);
+    example, telegramCard());
+}
+
+// Telegram, as a connected app: the real logo, whether it is connected, one button to connect it, who has been flagged, and when the
+// last warning came in. All of it is live (the server's real status and the real flagged-senders list), nothing here is a placeholder.
+const ago = (ms) => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 45 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
+function telegramCard() {
+  const W = S.watch;
+  const c = W && W.channels && W.channels.find((x) => x.id === 'telegram');
+  if (!c) return null;
+  const linked = (W.linked || []).includes('telegram');
+  const flagged = (S.senders || []).filter((s) => s.channel === 'telegram');
+  const panel = !linked && S.linkCode && S.linkCode.channel === 'telegram' ? connectPanel(c) : null;
+  return h('div', { class: 'card tgcard', id: 'tgcard' },
+    h('div', { class: 'apphead' },
+      h('span', { class: 'applogo tg', 'aria-hidden': 'true' }, h('span', { class: 'logo', style: '--src:url(/img/brands/telegram.svg)' })),
+      h('div', { class: 'appname' }, h('b', null, 'Telegram'), h('span', { class: 'muted' }, c.handle)),
+      h('span', { class: linked ? 'ok' : 'muted' }, linked ? '\u2713 Connected' : 'Not connected')),
+    panel,
+    !linked && !panel ? h('button', { onclick: () => connectApp(c) }, 'Connect Telegram') : null,
+    linked ? h('p', { class: 'muted' }, S.lastTg ? `Last warning: ${S.lastTg.title}${S.lastTg.who ? ` from ${S.lastTg.who}` : ''}, ${ago(S.lastTg.at)}.` : `Nothing flagged yet. Forward a message to ${c.handle}, or add it to a group chat.`) : null,
+    flagged.length ? h('div', null, h('b', null, `Flagged senders (${flagged.length})`),
+      ...flagged.slice(0, 3).map((s) => h('div', { class: 'approw' },
+        h('div', { class: 'apphead' }, h('div', { class: 'appname' }, h('b', null, s.handle || s.name || 'Unknown sender'),
+          h('span', { class: 'muted' }, `flagged ${s.flags} time${s.flags === 1 ? '' : 's'}${s.lastTitle ? ` · ${s.lastTitle}` : ''}`)),
+        h('span', { class: s.maxLevel === 2 ? 'err' : 'muted' }, s.maxLevel === 2 ? 'Scam signs' : 'Asked for money')),
+        h('button', { class: 'ghost', onclick: async () => { try { await call('watch:forget', { id: s.id }); await loadSenders(); renderMain(); } catch (e) { toast(friendly(e)); } } }, 'Forget this sender')))) : null);
 }
 
 async function effective(u) {
@@ -1025,7 +1051,7 @@ function wordView() {
   const typed = h('textarea', { id: 'callsays', placeholder: 'Type or paste what the caller is saying', 'aria-label': 'What the caller is saying',
     oninput: () => {
       S.heard = typed.value; S.cur = '';
-      if (!typed.value.trim()) { S.callLevel = 0; S.callAi = null; S.callState = null; }
+      if (!typed.value.trim()) { S.callLevel = 0; S.callAi = null; S.callState = null; S.wordHeard = false; }
       S.listen.mode = typed.value.trim() ? 'typed' : 'off';
       paintListen();
       scanCall();
@@ -1060,6 +1086,10 @@ function wordView() {
   return h('section', null, topbar('On a call'), who, word, ...listen,
     f ? h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money") : null,
     h('details', { class: 'more', ...(S.openMore ? { open: true } : {}) }, h('summary', null, 'More'),
+      h('div', { class: 'labbox' }, h('b', null, 'Check my setup'),
+        h('p', { class: 'muted' }, 'Tests the microphone and shows what speech-to-text hears.'),
+        h('button', { class: 'ghost', id: 'setupcheck', onclick: () => runSetupCheck(document.getElementById('setupout')) }, 'Test the microphone and listening'),
+        h('div', { id: 'setupout', role: 'status', 'aria-live': 'polite' })),
       rec ? h('div', null, h('label', { for: 'recfile' }, 'Analyze a recording'), rec) : null,
       h('label', { for: 'callsays' }, 'Or type what you hear'), typed, h('div', { id: 'listenguide' }),
       h('p', { class: 'muted' }, "The browser's speech service or the Vouch server may process the audio; nothing is saved. Tell the other person you're using it.")));
@@ -1111,6 +1141,8 @@ function paintListen() {
     // On the call screen show the guide only once there is something to say.
     g.replaceChildren(...(c && (id === 'listenguide' || level >= 1) ? [guideCard(c, !!S.callAi)] : []));
   }
+  const coachBox = document.getElementById('lv-coach');
+  if (coachBox) coachBox.replaceChildren(...coachNodes());
   const whyBox = document.getElementById('lv-why');
   if (whyBox) whyBox.replaceChildren(...whyNodes());
   const cap = document.getElementById('lv-cap');
@@ -1159,6 +1191,7 @@ function liveCallOverlay() {
       h('div', { class: 'livetop' }, h('span', null, rec ? 'Analyzing a recording' : (f ? `Listening to your call with ${f.name}` : 'Listening to your call')),
         h('span', { class: 'calltime', id: 'lv-time' }, fmtClock(Date.now() - ((S.call && S.call.startedAt) || Date.now())))),
       h('div', { id: 'lv-risk', class: `riskbadge r${level}`, role: 'status', 'aria-live': 'assertive' }, RISK_TEXT[level]),
+      h('div', { id: 'lv-coach' }),
       h('div', { id: 'lv-why' }),
       h('div', { class: 'captions', id: 'lv-cap', 'aria-live': 'off' }),
       h('div', { id: 'lv-guide' }),
@@ -1175,7 +1208,7 @@ function liveCallOverlay() {
 function newCall(mode, status) {
   stopEngine();
   holdScreen();
-  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '', callState: null });
+  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '', callState: null, wordHeard: false });
   S.call = { startedAt: Date.now() };
   S.listen = { mode, status, level: 0, words: 0 };
   S.stt = { q: [], busy: false, retries: 0 };
@@ -1418,7 +1451,7 @@ function fail(message) {
 function stopListening() {
   stopEngine();
   S.listening = false;
-  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; S.callState = null; // the next call starts calm, so it can warn again
+  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; S.callState = null; S.wordHeard = false; // the next call starts calm, so it can warn again
   S.listen = { mode: 'off', status: '', level: 0, words: 0 };
   clearAlert('call');
   paintStatus();
@@ -1432,11 +1465,84 @@ function scanCall() {
   // second opinion, and whichever is higher wins. The AI read below can raise it further, never lower it.
   const st = S.callState || (S.callState = callInit());
   callStep(st, text, Date.now());
+  scanForWord(); // did the caller just say our code word?
   const r = callRisk(text);
   const level = Math.max(st.level, r.level);
   aiScanCall(); // the AI reads the same words a moment later and can raise this itself
   if (level <= (S.callLevel || 0)) { paintListen(); return; }
   escalateCall(level, r.tags, r.institution, null);
+}
+
+// Did the caller SAY the current code word? The phone is already listening, so it compares every pair of neighbouring words with
+// the real rotating word (this minute or last). A match is shown as good news, but a person still taps "It matches": hearing the
+// word is evidence, not a verdict. (If the person reads the word out loud first, a repeat proves nothing; the screen tells them not to.)
+let wordScanAt = 0;
+async function scanForWord() {
+  const f = likelyFriend();
+  if (!f || !f.wordKey || !S.listening || S.wordHeard || Date.now() - wordScanAt < 1500) return;
+  wordScanAt = Date.now();
+  const words = `${S.heard || ''} ${S.cur || ''}`.toLowerCase().replace(/[^a-z' -]+/g, ' ').split(/\s+/).filter(Boolean).slice(-16);
+  for (let i = 0; i < words.length - 1; i++) {
+    try {
+      if (await checkWord(f.wordKey, `${words[i]} ${words[i + 1]}`)) {
+        S.wordHeard = true;
+        if (!S.wordShown) { S.wordFriendId = f.id; S.callWith = f.id; revealWord(); }
+        paintListen();
+        return;
+      }
+    } catch { /* a damaged key: the typed check is still there */ }
+  }
+}
+
+// "Check my setup": for troubleshooting calls on your own. It listens for 4 seconds, says whether the microphone hears anything, and
+// shows what the speech-to-text actually made of it (and how long that took), so a problem is visible before a real call.
+async function runSetupCheck(out) {
+  const rows = [];
+  const say = (ok, text) => { rows.push(h('p', { class: ok ? 'ok' : 'err' }, `${ok ? '\u2713' : '\u2717'} ${text}`)); out.replaceChildren(...rows); };
+  const md = navigator.mediaDevices; const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!md || !md.getUserMedia || !Ctx) { say(false, "This browser can't use the microphone here. Vouch needs a secure (https) address."); return; }
+  out.replaceChildren(h('p', { class: 'muted' }, 'Listening for 4 seconds. Play a call near the phone, or say something.'));
+  let stream;
+  try { stream = await md.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } }); } catch (e) {
+    say(false, e && e.name === 'NotAllowedError' ? 'The microphone is blocked. Allow it in your browser settings, then try again.' : "Couldn't open the microphone. Another app may be using it.");
+    return;
+  }
+  const ctx = new Ctx();
+  try { if (ctx.resume) await ctx.resume(); } catch { /* fine */ }
+  if (!ctx.createScriptProcessor) { stream.getTracks().forEach((t) => t.stop()); say(false, "This browser can't capture audio for Vouch."); return; }
+  const src = ctx.createMediaStreamSource(stream); const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = []; let peak = 0;
+  proc.onaudioprocess = (e) => {
+    const d = new Float32Array(e.inputBuffer.getChannelData(0)); chunks.push(d);
+    let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    peak = Math.max(peak, Math.sqrt(sum / d.length));
+  };
+  src.connect(proc); proc.connect(ctx.destination);
+  await new Promise((r) => setTimeout(r, 4000));
+  try { proc.disconnect(); src.disconnect(); } catch { /* fine */ }
+  stream.getTracks().forEach((t) => t.stop());
+  try { ctx.close(); } catch { /* fine */ }
+  const level = peak > 0.02 ? 'strong' : peak > 0.004 ? 'weak' : 'none';
+  if (level === 'none') { say(false, 'No sound was picked up. Is the call on speaker with the volume up, and is the microphone allowed for this site?'); return; }
+  say(true, `The microphone works (sound level: ${level}${level === 'weak' ? ': move the phone closer or turn the volume up' : ''}).`);
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+  const canServer = !!(S.watch && S.watch.listen);
+  if (canServer && (ios || !speechCtor())) {
+    try {
+      const t0 = Date.now();
+      const { wav } = chunkToWav(chunks, ctx.sampleRate);
+      const r = await call('watch:listen', { wav }, 25000);
+      say(!!r.text, r.text ? `The Vouch server heard: "${r.text.slice(0, 140)}" (${((Date.now() - t0) / 1000).toFixed(1)} s to transcribe).` : 'The server listened but heard no words in that clip. Try again closer to the speaker.');
+    } catch (e) { say(false, e && e.message === 'NO_STT' ? "The Vouch server has no speech key, so it can't listen. Use typing under More." : friendly(e)); }
+  } else if (speechCtor()) say(true, 'This browser has its own speech recognition, so Listen for scams will use it and words appear almost at once. Tap Listen for scams to see them.');
+  else say(false, 'No speech recognition is available here. Type what you hear under More.');
+}
+
+// The assistant: one suggested sentence for what to say next, from what has been heard so far.
+function coachNodes() {
+  const c = callCoach(S.callState, { wordHeard: !!S.wordHeard, haveFriend: !!likelyFriend() });
+  if (!c.text) return [];
+  return [h('div', { class: `coach ${c.kind}`, role: 'status' }, h('b', null, c.kind === 'good' ? 'Code word heard' : 'Say this'), h('p', null, c.text))];
 }
 
 // Why, in plain words: which of the four steps of a scam call have been heard, the top reasons, and the one thing to do.
@@ -1506,6 +1612,7 @@ function callScamOverlay({ level, tags, institution, ai }) {
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
       ai ? h('p', { class: 'sender' }, ai.title) : null,
+      ...coachNodes(),
       ...whyNodes(),
       ...scamBody(guide, ai && ai.signals, ai && ai.impersonating, tags),
       // One main thing to do: make sure it is really them. The code word comes first, because it works on a live call.
@@ -2124,7 +2231,7 @@ function wireEvents() {
     S.linkCode = null;
     await loadWatch();
     toast(`${SOURCE_APP[m && m.channel] || 'That app'} is connected. Forward it a suspicious message to try it.`, 'ok');
-    if (S.tab === 'friends') renderMain();
+    if (S.tab === 'friends' || S.tab === 'check') renderMain();
   });
   // A message bot (Telegram, text, WhatsApp) flagged something sent to a chat linked to this account.
   on('scam:alert', (a) => {
@@ -2132,7 +2239,8 @@ function wireEvents() {
     const id = `bot-${a.ts || Date.now()}`;
     const guide = a.ai ? { title: a.ai.title, why: a.ai.why, steps: a.ai.steps, links: a.ai.links, image: a.ai.image } : { title: a.title, why: a.why, steps: a.steps || [] };
     S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source, sender: a.sender, ai: a.ai, aid: a.id, repeat: a.repeat, soft: a.level !== 2, signals: a.signals, impersonating: a.impersonating } });
-    if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends') renderMain(); });
+    if (a.source === 'telegram') S.lastTg = { title: a.title, who: a.sender && !a.sender.hidden ? (a.sender.handle || a.sender.name || '') : '', at: Date.now() };
+    if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends' || S.tab === 'check') renderMain(); });
     raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);
     attention(a.level === 2 ? `Warning. ${a.title}. Do not act on it.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
     notify(a.level === 2 ? 'Vouch: this message looks like a scam' : 'Vouch: this message asks for money', a.title, `bot-${a.source}`);

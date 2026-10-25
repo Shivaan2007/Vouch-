@@ -95,3 +95,25 @@ test('a story with no scam words and no code words scores nothing on the rules: 
   callStep(st, said, 1_000_000); callStep(st, said, 1_003_000);
   assert.equal(st.level, 0, 'the offline engine alone is not enough here, by design: it needs the AI read');
 });
+
+import { callCoach } from '../js/lib/scan.js';
+
+test('the coach suggests one safe sentence, chosen from what has been heard', () => {
+  const heardCode = play(['Please read me the code we just sent.']);
+  assert.match(callCoach(heardCode).text, /Do not read out any code/);
+  assert.match(callCoach(heardCode).text, /call you back on the number on my card/);
+  assert.equal(callCoach(heardCode).kind, 'stop');
+  const family = play(["Grandma it's me, my phone broke.", "Please don't tell Mom, I need two hundred dollars."]);
+  assert.match(callCoach(family, { haveFriend: true }).text, /What's our word\?/);
+  assert.match(callCoach(family, { haveFriend: false }).text, /call them back on a number you already have/);
+  assert.match(callCoach(play(["Download AnyDesk so I can fix your computer."])).text, /hang up and call you back myself/);
+  assert.match(callCoach(play(['Can you confirm your social security number?'])).text, /Do not give personal or card details/);
+});
+
+test('the coach says nothing on a quiet call, and celebrates only a real code-word match', () => {
+  assert.equal(callCoach(callInit()).text, '');
+  assert.equal(callCoach(play(['Your parcel is arriving tomorrow.'])).text, '');
+  const good = callCoach(callInit(), { wordHeard: true });
+  assert.equal(good.kind, 'good');
+  assert.match(good.text, /Tap "It matches" if you are sure/);
+});

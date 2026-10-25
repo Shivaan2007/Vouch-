@@ -331,6 +331,28 @@ export function callWhy(state) {
   };
 }
 
+/**
+ * The assistant on a live call: one thing to say next, in plain words, chosen from what has been heard so far. It never decides
+ * anything for the person; it suggests the safest next sentence. A rule-based coach, so it works offline and never invents advice.
+ * @param {ReturnType<typeof callInit>} state
+ * @param {{wordHeard?: boolean, haveFriend?: boolean}} [ctx] wordHeard: the caller said the current code word; haveFriend: there is someone to ask for a word
+ * @returns {{kind: 'good'|'stop'|'ask'|'', text: string}}
+ */
+export function callCoach(state, ctx = {}) {
+  const st = state || callInit();
+  const c = st.cats;
+  if (ctx.wordHeard) return { kind: 'good', text: 'They said our code word, and it matches. Tap "It matches" if you are sure it is really them.' };
+  if (!c.size && st.level < 1) return { kind: '', text: '' };
+  if (c.has('OTP')) return { kind: 'stop', text: 'Do not read out any code. Say: "I\'ll call you back on the number on my card." Then hang up.' };
+  if (c.has('SAFE_ACCOUNT') || c.has('REMOTE_ACCESS') || c.has('CASH_PICKUP') || c.has('PIN') || c.has('PAY_METHOD')) {
+    return { kind: 'stop', text: 'Do not do what they ask. Say: "I\'m going to hang up and call you back myself." Then hang up.' };
+  }
+  if (c.has('CREDENTIAL')) return { kind: 'stop', text: 'Do not give personal or card details. Say: "I\'ll call the bank on the number on my card."' };
+  if (st.level >= 1 && ctx.haveFriend) return { kind: 'ask', text: 'Ask them: "What\'s our word?" Do not say it first. If they cannot say it, it is not them.' };
+  if (st.level >= 1) return { kind: 'ask', text: 'Ask who they are, and say you will call them back on a number you already have.' };
+  return { kind: '', text: '' };
+}
+
 const has = (tags, ...names) => names.some((n) => tags.includes(n));
 const GUIDE = [
   { id: 'code', when: (s) => s.kind === 'code',

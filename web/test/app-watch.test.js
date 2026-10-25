@@ -7,7 +7,7 @@ import { createVouchServer } from '../../server/src/app.js';
 import { attachWatch } from '../../bot/watch.js';
 import { installFakeDom } from '../dev/fakedom.js';
 import { authString } from '../js/lib/canonical.js';
-import { createIdentityKeys, exportPub, signString } from '../js/lib/crypto.js';
+import { createIdentityKeys, exportPub, signString, deriveWordKey, currentWord } from '../js/lib/crypto.js';
 
 const SCAM = "hey it's me, new number! stuck at the store, can you buy $200 in Apple gift cards right now? don't tell mom zebra";
 const clients = [];
@@ -15,12 +15,13 @@ let server; let watch; let url;
 const sent = [];
 let aiNext = null; // lets a test make the AI say something specific
 
+let sttText = 'send me gift cards and do not tell anyone'; // what the faked speech-to-text hears
 const fetchImpl = async (u, init) => {
   const s = String(u);
   if (s.includes('/getMe')) return { json: async () => ({ ok: true, result: { username: 'vouch_test_bot' } }) };
   if (s.endsWith('/getBusinessConnection')) return { json: async () => ({ ok: true, result: { id: 'bcX', user: { id: 7001, first_name: 'Gran' }, user_chat_id: 7001, is_enabled: true } }) };
   if (s.includes('api.telegram.org')) { sent.push(JSON.parse(init.body)); return { json: async () => ({ ok: true }) }; }
-  if (s.includes('generativelanguage')) return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'send me gift cards and do not tell anyone' }] } }] }) };
+  if (s.includes('generativelanguage')) return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: sttText }] } }] }) };
   return { ok: true, json: async () => ({}) };
 };
 
@@ -170,7 +171,7 @@ async function otherPhone(name) {
   const nonce = await new Promise((r) => socket.once('auth:challenge', (m) => r(m.nonce)));
   const callOn = (ev, body = {}) => new Promise((r) => socket.emit(ev, body, r));
   const res = await callOn('user:register', { name, ...pubs, sig: await signString(keys.signKeyPair.privateKey, authString(nonce)) });
-  return { id: res.userId, socket, call: callOn };
+  return { id: res.userId, socket, call: callOn, keys };
 }
 
 test('a forwarded scam shows who sent it, what the AI made of it, and the sender is listed', async () => {
@@ -341,4 +342,131 @@ test('the AI read alone raises a call warning: no scam words and no code words a
     assert.ok(text().includes('Impersonating a relative'), 'and it names what it inferred');
   } finally { aiNext = null; }
   await dismissAll();
+});
+
+test('Check a message shows Telegram as a connected app: its logo, the real status, the last warning, and who was flagged', async () => {
+  await dismissAll();
+  await go('Check a message');
+  await wait(300);
+  assert.ok(find(appEl, (n) => n.id === 'tgcard'), 'the Telegram card is on the Check screen');
+  assert.ok(find(appEl, (n) => n.className === 'applogo tg') && find(appEl, (n) => n.className === 'logo' && /telegram\.svg/.test(String(n.attrs.style))), 'with the Telegram logo');
+  const card = find(appEl, (n) => n.id === 'tgcard');
+  const cardText = dom.textOf ? dom.textOf(card) : text();
+  assert.ok(/Connected/.test(cardText) && cardText.includes('@vouch_test_bot'), 'it is connected, and says which bot');
+  assert.ok(text().includes('Last warning:'), 'it says when the last warning came in');
+  const count = () => Number((/Flagged senders \((\d+)\)/.exec(text()) || [])[1] || 0);
+  const before = count();
+  assert.ok(before >= 1 && (text().includes('@fake_irs') || text().includes('@judge_bank')), 'it lists who was flagged, from the real server list');
+  await btn('Forget this sender').fire('click');
+  await wait(400);
+  assert.equal(count(), before - 1, 'forgetting a sender really removes them');
+});
+
+test('the caller saying the real rotating code word is heard, and shown as a match to confirm (not decided for the person)', async () => {
+  await dismissAll();
+  // pair a new friend, so there is a real shared word
+  await go('My people');
+  await btn('Add someone').fire('click');
+  await wait(400);
+  const m = /([A-Z0-9]{4})-([A-Z0-9]{4})/.exec(text());
+  assert.ok(m, 'a pairing code is shown');
+  const wanda = await otherPhone('Wanda');
+  assert.equal((await wanda.call('pair:accept', { token: m.slice(1).join('') })).ok, true);
+  await wait(700);
+  await btn('It matches').fire('click');
+  await wait(150);
+  const me = (await wanda.call('circle:list')).friends.find((f) => f.name === 'Gran');
+  const { word } = await currentWord(await deriveWordKey(wanda.keys.exchKeyPair.privateKey, me.exchPub));
+  const before = sttText;
+  sttText = `hello it is me, and our word is ${word}, ok?`;
+  let proc;
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 16000; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { proc = { connect() {}, disconnect() {}, onaudioprocess: null }; return proc; }
+    close() {}
+  };
+  dom.nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) };
+  try {
+    await go('On a call'); await wait(100);
+    await btn('Wanda').fire('click'); await wait(150);
+    await btn('Listen for scams').fire('click'); await wait(300);
+    const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
+    for (let i = 0; i < 25; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } });
+    await wait(1200);
+    assert.ok(text().includes('Code word heard') && text().includes('They said our code word, and it matches'), 'the real word, said aloud, is recognised');
+    assert.ok(btn('It matches'), 'and the person still has the button to confirm it');
+    await btn('Stop listening').fire('click');
+    await wait(100);
+  } finally { sttText = before; wanda.socket.close(); }
+});
+
+test('a wrong word is not mistaken for the code word: the assistant suggests asking for it', async () => {
+  let proc;
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 16000; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { proc = { connect() {}, disconnect() {}, onaudioprocess: null }; return proc; }
+    close() {}
+  };
+  const before = sttText;
+  sttText = "grandma it's me, my phone broke so I'm calling from a friend's, there's no time, please hurry and send two hundred dollars";
+  try {
+    await go('On a call'); await wait(100);
+    await btn('Wanda').fire('click'); await wait(150);
+    await btn('Listen for scams').fire('click'); await wait(300);
+    const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
+    for (let i = 0; i < 25; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } });
+    await wait(1200);
+    assert.ok(!text().includes('Code word heard'), 'no match was claimed');
+    assert.ok(text().includes('Say this') && text().includes("What's our word?"), 'the assistant says what to ask');
+    await btn('Stop listening').fire('click');
+    await wait(100);
+  } finally { sttText = before; }
+});
+
+test('Check my setup: the microphone is tested and what the speech-to-text heard is shown, with how long it took', async () => {
+  let proc;
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 16000; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { proc = { connect() {}, disconnect() {}, onaudioprocess: null }; return proc; }
+    close() {}
+  };
+  dom.nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) };
+  const iphone = dom.nav.userAgent;
+  Object.defineProperty(dom.nav, 'userAgent', { value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', configurable: true });
+  const before = sttText; sttText = 'this is a test of the microphone';
+  try {
+    await go('On a call'); await wait(100);
+    const run = btn('Test the microphone and listening').fire('click');
+    await wait(200);
+    const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
+    for (let i = 0; i < 20; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } });
+    await run; await wait(4600);
+    assert.ok(text().includes('The microphone works'), 'it says the microphone works');
+    assert.ok(text().includes('The Vouch server heard: "this is a test of the microphone"'), 'and shows what the speech-to-text heard');
+    assert.match(text(), /s to transcribe/, 'with how long it took');
+  } finally { sttText = before; Object.defineProperty(dom.nav, 'userAgent', { value: iphone, configurable: true }); }
+});
+
+test('Check my setup: a silent room is reported plainly, not as success', async () => {
+  let proc;
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 16000; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { proc = { connect() {}, disconnect() {}, onaudioprocess: null }; return proc; }
+    close() {}
+  };
+  await go('On a call'); await wait(100);
+  const run = btn('Test the microphone and listening').fire('click');
+  await wait(200);
+  const silence = new Float32Array(4096);
+  for (let i = 0; i < 20; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => silence } });
+  await run; await wait(4600);
+  assert.ok(text().includes('No sound was picked up'), 'it says so, and what to check');
 });

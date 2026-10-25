@@ -377,3 +377,19 @@ html.calm *, html.calm *::before, html.calm *::after { animation: none !importan
 .actions { background: var(--sheet); box-shadow: 0 -14px 14px -8px var(--sheet); }
 .livetop { display: flex; justify-content: space-between; align-items: baseline; gap: 0.8rem; text-align: left; }
 .calltime { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+/* The call assistant: one suggested sentence, clearly set apart. */
+.coach { text-align: left; border-radius: var(--radius-sm); padding: 0.8rem 1rem; margin: 0.6rem 0; background: rgba(255, 255, 255, 0.14); border-left: 6px solid currentColor; }
+.coach b { display: block; font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.2rem; }
+.coach p { margin: 0; font-weight: 700; font-size: 1.1rem; }
+.coach.good { background: rgba(134, 239, 172, 0.2); }
+.overlay.alert .coach { background: rgba(0, 0, 0, 0.08); }
+
+/* Telegram as a connected app: its logo in its own blue. */
+.applogo { flex: none; width: 2.6rem; height: 2.6rem; border-radius: 50%; display: grid; place-items: center; }
+.applogo.tg { background: #229ed9; }
+.applogo .logo { width: 1.5rem; height: 1.5rem; background: #ffffff; }
+.tgcard .apphead { display: flex; align-items: center; gap: 0.8rem; }
+.tgcard .appname { flex: 1; display: flex; flex-direction: column; }
+:root.theme-hc .applogo.tg { background: #ffffff; } :root.theme-hc .applogo.tg .logo { background: #000000; }
+.labbox { margin: 0.8rem 0; } .labbox p { margin: 0.3rem 0; }
