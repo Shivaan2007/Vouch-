@@ -4,11 +4,12 @@ Names are suggestions: Victim = "Grandma", Family = "Alex". Confirm at the first
 
 ## Ops (before every judge)
 
-- Laptop on the phone hotspot. Server running (`npm start`), `cloudflared` tunnel up, link opened on both Vouch phones.
+- Laptop on the phone hotspot. Server running with `node bot/serve.js` (it loads `.env`: Gemini and ElevenLabs keys and the voice ID), `cloudflared` tunnel up, link opened on both Vouch phones. Same address as the rehearsal, or everyone re-pairs.
 - Warm the server: open the link, wait for "Online" on both phones.
 - Soft reset: `/demo` page, enter the demo key, **Reset demo (keep friends)**. Both phones should stay paired.
 - Phones: Auto-Lock Never, alerts on, volume up, brightness up, Do Not Disturb off.
-- Soundboard open on the laptop: play each clip once, then Stop.
+- Clips copied from `demo/clips/` to `web/dev/audio/` (this laptop only). Soundboard open: play each clip once, then Stop.
+- iPhones: tap the screen once after opening Vouch, so spoken alerts can play.
 - Backup: the demo video and a second paired phone pair if available.
 
 ## Tejasv: presenter and scammer
@@ -25,11 +26,11 @@ If a clip fails: say the line yourself.
 ## Shivaan: the Victim ("Grandma")
 
 1. Phone in hand, Vouch open. Take the call on speaker.
-2. **On a call** tab, tap **Get our code word**. Ask out loud: "What's our word?"
+2. Home, **On a call**, tap **Show the word for Alex**. Ask out loud: "What's our word?"
 3. The caller dodges. Tap **They're asking me for money**.
-4. Check form: type `200`, pick **Gift cards**, tap **Check now**.
-5. Wait for Alex's answer. Red **STOP. Do not send money.** appears and speaks. Hold the phone up to the judge.
-6. Contrast beat: **Check a message** tab, type `20`, pick **Venmo / Cash App / Zelle**, tap **Check now**.
+4. Check form: type `200`, pick **Gift cards**, tap **Ask Alex's phone**.
+5. Wait for Alex's answer. Red **STOP. Do not send money.** appears and speaks. Hold the phone up to the judge, then tap **I understand**.
+6. Contrast beat: Home, **Check a message**, type `20`, pick **Venmo / Cash App / Zelle**, tap **Ask Alex's phone**.
 7. Green **Verified. Safe to send.** appears. Show it.
 
 The judge watches; you do all the typing.
