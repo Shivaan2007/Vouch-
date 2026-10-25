@@ -4,6 +4,8 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { io as ioClient } from 'socket.io-client';
 import { createMockServer } from '../dev/mock-server.js';
+import { authString } from '../js/lib/canonical.js';
+import { createIdentityKeys, exportPub, signString, signAnswer } from '../js/lib/crypto.js';
 
 const server = createMockServer();
 const clients = [];
@@ -89,4 +91,46 @@ test('every tab renders and the pairing code appears', async () => {
   await btn('Add someone').fire('click');
   await wait(400);
   assert.match(text(), /[A-Z0-9]{4}-[A-Z0-9]{4}/);
+});
+// A second "phone" (real keys, real socket) links up with the app, then answers a request it is asked about.
+async function otherPhone(name) {
+  const keys = await createIdentityKeys();
+  const pubs = { signPub: await exportPub(keys.signKeyPair.publicKey), exchPub: await exportPub(keys.exchKeyPair.publicKey) };
+  const socket = ioClient(url, { transports: ['websocket'], reconnection: false });
+  clients.push(socket);
+  const nonce = await new Promise((resolve) => socket.once('auth:challenge', (m) => resolve(m.nonce)));
+  const call = (event, body = {}) => new Promise((resolve) => socket.emit(event, body, resolve));
+  const res = await call('user:register', { name, ...pubs, sig: await signString(keys.signKeyPair.privateKey, authString(nonce)) });
+  assert.equal(res.ok, true);
+  return { id: res.userId, keys, socket, call };
+}
+
+test('linking a friend: the Check form shows brand logos and the screenshot control; a Not me brings the red STOP', async () => {
+  const token = /([A-Z0-9]{4})-([A-Z0-9]{4})/.exec(text()).slice(1).join('');
+  const sam = await otherPhone('Sam');
+  const prompt = new Promise((resolve) => sam.socket.once('verify:prompt', resolve));
+  assert.equal((await sam.call('pair:accept', { token })).ok, true);
+  await wait(600);
+  assert.ok(text().includes('Linked with Sam'), 'safety-code screen');
+  await btn('It matches').fire('click');
+
+  await btn('Check a message').fire('click');
+  await wait(100);
+  assert.ok(text().includes('Is this request real?'));
+  assert.ok(text().includes('Venmo / Cash App / Zelle') && text().includes('Gift cards'), 'method cards');
+  assert.ok(findAll(appEl, (n) => n.className === 'logo').length >= 8, 'brand logos are drawn');
+  assert.ok(find(appEl, (n) => n.id === 'shot'), 'screenshot control');
+  assert.ok(text().includes('Looks risky'), 'the shared scam text is flagged in the form');
+
+  find(appEl, (n) => n.id === 'amount').value = '60';
+  await find(appEl, (n) => n.id === 'amount').fire('input');
+  await btn('Check now').fire('click');
+  const p = await prompt;
+  assert.equal(p.amountCents, 6000);
+  const fields = { requestId: p.requestId, checkerId: p.checker.id, claimedId: sam.id, amountCents: p.amountCents, method: p.method, answer: 'not_me' };
+  const s = await signAnswer(sam.keys.signKeyPair.privateKey, fields);
+  assert.equal((await sam.call('verify:answer', { requestId: p.requestId, answer: 'not_me', retypedCents: p.amountCents, ...s })).ok, true);
+  await wait(500);
+  assert.ok(text().includes('STOP. Do not send money.'), 'full-screen STOP');
+  assert.ok(text().includes('Sam says this was NOT them'), 'says who denied it');
 });

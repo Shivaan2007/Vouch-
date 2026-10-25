@@ -44,6 +44,20 @@ test('callRisk levels', () => {
   assert.equal(callRisk('please buy gift cards').level, 2);
 });
 
+test('institution impostors are recognised and treated as a scam when they want money', () => {
+  for (const line of [
+    'This is the IRS. You owe back taxes and must pay the fee today',
+    'Your bank fraud department detected a problem, verify your account',
+    'Microsoft support: your computer has a virus, call us',
+    'There is an arrest warrant in your name, pay the fine now',
+    'Social Security suspended your number, buy gift cards to fix it',
+  ]) assert.equal(suggest(line).institution, true, line);
+  assert.equal(callRisk('This is the IRS, you owe back taxes, pay the fee now').level, 2);
+  assert.equal(callRisk('Your bank fraud department needs you to buy gift cards').level, 2);
+  for (const line of ['I called my bank today', 'the police were at the game', 'we ordered from amazon', 'can you send me the photos'])
+    assert.equal(suggest(line).institution, false, line);
+});
+
 test('never throws on junk', () => {
   for (const v of [undefined, null, 42, {}, '', 'a'.repeat(100000)]) {
     assert.doesNotThrow(() => { suggest(v); callRisk(v); });

@@ -44,19 +44,62 @@ const ERRORS = {
   AMOUNT_MISMATCH: "The amount you typed doesn't match.", BAD_SIGNATURE: "Your signature wasn't accepted.",
   ALREADY_ANSWERED: 'This was already answered.', NOT_FOUND: 'This request is gone.',
   RATE_LIMITED: 'Slow down a little.', BAD_INPUT: 'Check what you entered.',
+  BAD_IMAGE: "Couldn't read that picture. Try a screenshot.", IMAGE_TOO_BIG: 'That picture is too large. Try a smaller screenshot.',
   NEED_AMOUNT: 'Please type how much they asked for, like 60 or 60.50.', NEED_FRIEND: 'Link up with someone you trust first.',
 };
 const friendly = (e) => ERRORS[e && e.message] || `Something went wrong (${e && e.message})`;
 
 // Big radio cards (native inputs, so screen readers and keyboards work).
+// Brand marks (web/img/brands, CC0 Simple Icons; see NOTICE.md) shown next to the payment method or app they stand for.
+// They are drawn with the text colour, so they follow light and dark mode. Decorative: the words carry the meaning.
+const METHOD_LOGOS = {
+  venmo_cashapp_zelle: ['venmo', 'cashapp', 'zelle'], gift_card: ['apple', 'googleplay', 'steam', 'target'],
+  wire: ['westernunion'], crypto: ['bitcoin', 'ethereum'],
+};
+const CHANNEL_LOGOS = {
+  text: ['imessage', 'googlemessages'], call: ['phone'], dm: ['whatsapp', 'messenger', 'telegram', 'instagram'], email: ['gmail'],
+};
+function logos(names, size) {
+  if (!names || !names.length) return null;
+  return h('span', { class: `logos${size ? ` ${size}` : ''}`, 'aria-hidden': 'true' },
+    names.map((n) => h('span', { class: 'logo', style: `--src:url(img/brands/${n}.svg)` })));
+}
+
 let choiceSeq = 0;
+// options: [value, text, optionalLogoNames]. The returned fieldset has setValue(v) to change the selection from code.
 function choice(legend, options, selected, onchange, cls) {
   const name = `c${++choiceSeq}`;
-  return h('fieldset', null, h('legend', null, legend),
-    h('div', { class: `choices ${cls || ''}` }, options.map(([value, text]) =>
+  const fs = h('fieldset', null, h('legend', null, legend),
+    h('div', { class: `choices ${cls || ''}` }, options.map(([value, text, brands]) =>
       h('label', { class: 'choice' },
         h('input', { type: 'radio', name, value, checked: value === selected, onchange: () => onchange(value) }),
-        h('span', null, text)))));
+        h('span', { class: 'face' }, logos(brands), h('span', null, text))))));
+  fs.setValue = (v) => fs.querySelectorAll('input').forEach((i) => { i.checked = i.value === v; });
+  return fs;
+}
+
+const MAX_IMAGE_CHARS = 3_900_000; // the server accepts up to 4 MB as a data URL
+// Shrink a picked screenshot to a JPEG the server accepts. Nothing leaves the phone until "Check now".
+async function readScreenshot(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('BAD_IMAGE'));
+      i.src = url;
+    });
+    const scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight, 1));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    for (const q of [0.8, 0.6, 0.4]) {
+      const d = c.toDataURL('image/jpeg', q);
+      if (d.startsWith('data:image/jpeg') && d.length <= MAX_IMAGE_CHARS) return d;
+    }
+    throw new Error('IMAGE_TOO_BIG');
+  } finally { URL.revokeObjectURL(url); }
 }
 
 // Get a person's attention without relying on sight alone: vibrate (Android) and speak aloud.
@@ -98,7 +141,7 @@ const S = {
   friends: [], tab: 'check', pendingPair: null, current: null, results: new Map(), texts: new Map(),
   drafts: {}, queue: [], codeView: null, scanning: false, stream: null, wordFriendId: null,
   announced: new Map(), size: 1, forgetAsk: false, bootError: '',
-  form: { friendId: '', method: 'venmo_cashapp_zelle', channel: 'text', amount: '', text: '', amountTouched: false, methodTouched: false },
+  form: { friendId: '', method: 'venmo_cashapp_zelle', channel: 'text', amount: '', text: '', image: '', amountTouched: false, methodTouched: false },
 };
 const $app = document.getElementById('app');
 let $content, $status, $banners, $overlay, $toast, $conn;
@@ -371,11 +414,12 @@ function setupView() {
 function flashIfRisky() {
   if (!S.me) return;
   const text = S.form.text;
-  const { tags } = suggest(text);
-  if (!text || !riskyEnough(tags) || S.flashedFor === text) return;
+  const { tags, institution, ask } = suggest(text);
+  // A "bank" or "tax office" asking for money is a scam on its own, even with no payment keyword.
+  if (!text || !(riskyEnough(tags) || (institution && ask)) || S.flashedFor === text) return;
   S.flashedFor = text;
-  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags } });
-  raiseAlert(2, 'This message has scam warning signs. Check it before you send anything.', 'message');
+  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags, institution } });
+  raiseAlert(2, institution ? 'Banks and government agencies never ask for this. Do not reply.' : 'This message has scam warning signs. Check it before you send anything.', 'message');
   attention('Warning. This message looks like a scam. Do not send anything yet.', [400, 150, 400, 150, 400]);
   notify('Vouch: this message looks like a scam', 'Do not send anything yet. Open Vouch to check it.', 'local-scam');
   renderOverlay();
@@ -391,10 +435,11 @@ async function submitCheck() {
   const body = { claimedId: F.friendId, amountCents: cents, method: F.method, channel: F.channel };
   const sent = F.text.trim();
   if (sent) body.text = sent;
+  if (F.image) body.imageDataUrl = F.image;
   const { requestId } = await call('verify:request', body);
   if (sent) S.texts.set(requestId, sent); // kept in this tab's memory only
   S.current = requestId;
-  Object.assign(F, { text: '', amount: '', amountTouched: false, methodTouched: false });
+  Object.assign(F, { text: '', amount: '', image: '', amountTouched: false, methodTouched: false });
   return requestId;
 }
 
@@ -416,14 +461,14 @@ function checkView() {
   };
   const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
   const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; } });
-  const method = h('select', { id: 'method', onchange: () => { F.method = method.value; F.methodTouched = true; } },
-    METHODS.map(([k, t]) => h('option', { value: k }, t)));
-  text.value = F.text; amount.value = F.amount; method.value = F.method;
+  const methodChoice = choice('3. How do they want it?', METHODS.map(([k, t]) => [k, t, METHOD_LOGOS[k]]), F.method,
+    (v) => { F.method = v; F.methodTouched = true; }, 'two');
+  text.value = F.text; amount.value = F.amount;
   function onText() {
     F.text = text.value;
     const s = suggest(F.text);
     if (s.amount && !F.amountTouched) { F.amount = s.amount; amount.value = s.amount; }
-    if (s.method && !F.methodTouched) { F.method = s.method; method.value = s.method; }
+    if (s.method && !F.methodTouched) { F.method = s.method; methodChoice.setValue(s.method); }
     paintFlags();
   }
   paintFlags();
@@ -431,8 +476,20 @@ function checkView() {
   const who = S.friends.length > 1
     ? choice('Who does it say it is?', S.friends.map((f) => [f.id, f.name]), F.friendId, (v) => { F.friendId = v; })
     : h('p', { class: 'big' }, `It says it's ${S.friends[0].name}.`);
-  const channel = choice('How did they reach you?', CHANNELS, F.channel, (v) => { F.channel = v; }, 'two');
+  const channel = choice('How did they reach you?', CHANNELS.map(([k, t]) => [k, t, CHANNEL_LOGOS[k]]), F.channel, (v) => { F.channel = v; }, 'two');
   const msg = h('div', { role: 'alert' });
+  // Optional screenshot (a fake invoice, a payment page, a chat). Shrunk on this phone; analysed, never saved.
+  const preview = h('div');
+  const paintShot = () => preview.replaceChildren(...(F.image ? [
+    h('img', { class: 'thumb', src: F.image, alt: 'The screenshot you added' }),
+    h('button', { class: 'ghost', onclick: () => { F.image = ''; shot.value = ''; paintShot(); } }, 'Remove the screenshot')] : []));
+  const shot = h('input', { id: 'shot', type: 'file', accept: 'image/*', onchange: async () => {
+    const file = shot.files && shot.files[0];
+    if (!file) return;
+    try { F.image = await readScreenshot(file); msg.replaceChildren(); } catch (e) { F.image = ''; msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
+    paintShot();
+  } });
+  paintShot();
   const paste = h('button', { class: 'ghost', onclick: async () => {
     try {
       const clip = (await navigator.clipboard.readText()).slice(0, 2000);
@@ -465,9 +522,10 @@ function checkView() {
   return h('section', null, h('h2', null, 'Is this request real?'),
     h('p', { class: 'muted' }, "We'll ask their real phone. Your message is checked and not saved."),
     h('label', { for: 'text' }, '1. The message'), text, flags, h('div', { class: 'row' }, paste, example),
+    h('label', { for: 'shot' }, 'Or add a screenshot (optional)'), shot, preview,
     h('div', null, who), h('div', null, channel),
     h('label', { for: 'amount' }, '2. How much do they want? ($)'), amount,
-    h('label', { for: 'method' }, '3. How do they want it?'), method,
+    methodChoice,
     btn, msg,
     h('div', { id: 'result', 'aria-live': 'polite' }));
 }
@@ -533,7 +591,8 @@ function renderResult() {
   const thread = sent ? h('div', { class: 'thread' }, h('div', { class: 'from' }, name), h('div', { class: 'bubble' }, sent)) : null;
   const card = h('div', { class: 'card' },
     h('div', { class: 'stage' }, h('b', null, '1 · What they asked'),
-      h('p', null, `${name} · ${fmt(info.amountCents)} · ${label(METHODS, info.method)} · ${label(CHANNELS, info.channel)}`)),
+      h('p', null, `${name} · ${fmt(info.amountCents)} · ${label(METHODS, info.method)} · ${label(CHANNELS, info.channel)}`),
+      h('div', null, logos(METHOD_LOGOS[info.method]), logos(CHANNEL_LOGOS[info.channel]))),
     h('div', { class: 'stage' }, h('b', null, '2 · AI check'),
       und.explanation ? h('p', null, und.explanation) : null,
       tags.length ? tags.map((t) => h('span', { class: 'chip' }, TAGS[t] || t)) : h('p', null, 'Nothing stands out.'),
@@ -718,7 +777,7 @@ function scanCall() {
   const r = callRisk(`${S.heard || ''} ${S.cur || ''}`);
   if (r.level <= (S.callLevel || 0)) return;
   S.callLevel = r.level;
-  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags } });
+  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags, institution: r.institution } });
   raiseAlert(r.level, r.level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
   attention(r.level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
     r.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
@@ -726,13 +785,14 @@ function scanCall() {
   renderOverlay();
 }
 
-function callScamOverlay({ level, tags }) {
-  const f = friendById(S.wordFriendId) || S.friends[0];
+function callScamOverlay({ level, tags, institution }) {
+  const f = institution ? null : (friendById(S.wordFriendId) || S.friends[0]); // an "institution" has no code word
   const hard = level === 2;
   return h('div', { class: `overlay alert${hard ? '' : ' soft'}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Scam warning' },
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
-      h('p', { class: 'big' }, hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.'),
+      h('p', { class: 'big' }, institution ? 'Banks, tax offices and tech support never ask for gift cards, crypto, wires or codes. Hang up and call the number on your card or their official website.'
+        : (hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.')),
       tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null,
       f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
       f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
@@ -920,6 +980,8 @@ function renderOverlay() {
   if ($overlay.dataset.key === key) return; // already showing it; don't wipe what the person is typing
   if ($overlay.dataset.key === 'scan' && key !== 'scan') stopStream();
   $overlay.dataset.key = key;
+  // While a dialog is up, the page behind it can't be reached by keyboard, screen reader or tap.
+  for (const el of [$conn, $sticky, $banners, $toast, $content, document.getElementById('nav')]) if (el) el.inert = !!key;
   if (item) $overlay.replaceChildren(overlayFor(item));
   else if (S.scanning) $overlay.replaceChildren(scanOverlay());
   else if (S.codeView) $overlay.replaceChildren(codeOverlay(S.codeView));
@@ -942,10 +1004,11 @@ function overlayFor(item) {
 }
 
 // Shown the instant a risky message is pasted or shared.
-function scamOverlay({ tags }) {
+function scamOverlay({ tags, institution }) {
   const F = S.form;
   const friend = friendById(F.friendId) || S.friends[0];
-  const go = friend ? h('button', { onclick: async () => {
+  // An impostor "institution" isn't someone you can pair with, so the advice is to hang up and call a number you trust.
+  const go = friend && !institution ? h('button', { onclick: async () => {
     dismiss();
     setTab('check');
     try { await submitCheck(); renderMain(); document.getElementById('result')?.scrollIntoView({ block: 'start' }); } catch (e) { toast(friendly(e)); }
@@ -953,9 +1016,9 @@ function scamOverlay({ tags }) {
   return h('div', { class: 'overlay alert', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, 'This looks like a scam.'),
-      h('p', { class: 'big' }, 'Do not send anything yet.'),
-      h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))),
-      h('p', null, 'Check it with someone you trust. It takes a few seconds.'),
+      h('p', { class: 'big' }, institution ? 'Banks, tax offices and tech support never ask for gift cards, crypto, wires or codes.' : 'Do not send anything yet.'),
+      tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null,
+      h('p', null, institution ? 'Do not reply. Call the number on your card, your bill or their official website.' : 'Check it with someone you trust. It takes a few seconds.'),
       go, h('button', { class: 'ghost', onclick: dismiss }, 'Not now')));
 }
 
@@ -1050,6 +1113,7 @@ function promptOverlay(p) {
   return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
     h('p', { class: 'muted' }, 'Vouch check'),
     h('div', { class: 'big' }, `Did you just ask ${p.checker.name} for ${fmt(p.amountCents)} via ${label(METHODS, p.method)}?`),
+    logos(METHOD_LOGOS[p.method], 'lg'),
     retype ? [h('label', null, 'Confirm the amount'), retype] : null, yes, no, msg));
 }
 

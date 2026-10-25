@@ -20,6 +20,26 @@ const RULES = [
   ['PAYBACK_PROMISE', [/\b(pay|paying|paid|repay|send|give|get) (you|it|that|this|the money) back\b/, /\b(venmo|zelle|cash ?app|paypal) (you|it) back\b/, /\brepay(ing)? you\b/, /\b(double|triple) (it|your money)\b/]],
 ];
 
+// Impostors of an institution (bank, tax office, tech support, police) can't be paired like a friend, so the defence is
+// different: hang up and call the number you already trust. These phrases only choose which advice to show.
+const INSTITUTION = [
+  /\b(irs|internal revenue|back taxes|tax (debt|lien))\b/, /\bsocial security\b/, /\bmedicare\b/,
+  /\b(bank|card|account|security|fraud) (fraud |security )?(department|team|alert|specialist|agent)\b/, /\bfraud (department|team|alert)\b/,
+  /\b(microsoft|apple|windows|amazon) (tech )?support\b/, /\btech support\b/, /\bgeek squad\b/, /\b(your )?computer (has|is) (a )?(virus|infected|hacked)\b/,
+  /\b(arrest warrant|warrant for your arrest|you will be arrested|court (date|order|fine))\b/, /\b(police|sheriff|detective|officer) (department|here|calling)\b/,
+  /\bverify your (account|identity|social)\b/, /\bsuspended (account|card)\b/, /\bunpaid (toll|fine|ticket)s?\b/,
+];
+
+/**
+ * Is someone claiming to be an institution (bank, government, tech support, police)?
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function claimsInstitution(text) {
+  const t = norm(text);
+  return INSTITUTION.some((re) => re.test(t));
+}
+
 /**
  * Does the text ask for money, whatever the story is? This is what catches scams nobody planned for:
  * a request for money from a voice or number you can't verify is the thing to check, not the excuse.
@@ -51,7 +71,7 @@ export function suggest(text) {
   else if (tags.includes('WIRE')) method = 'wire';
   else if (tags.includes('CRYPTO')) method = 'crypto';
   else if (/venmo|zelle|cash\s?app/.test(t)) method = 'venmo_cashapp_zelle';
-  return { tags, amount, method, ask: asksForMoney(t) };
+  return { tags, amount, method, ask: asksForMoney(t), institution: claimsInstitution(t) };
 }
 
 /**
@@ -68,6 +88,8 @@ export const riskyEnough = (tags) => tags.some((x) => ['GIFT_CARD', 'WIRE', 'CRY
  */
 export function callRisk(text) {
   const s = suggest(text);
-  const level = riskyEnough(s.tags) && (s.ask || s.tags.some((x) => ['GIFT_CARD', 'WIRE', 'CRYPTO'].includes(x))) ? 2 : (s.ask ? 1 : 0);
-  return { level, tags: s.tags, amount: s.amount, ask: s.ask };
+  const payTag = s.tags.some((x) => ['GIFT_CARD', 'WIRE', 'CRYPTO'].includes(x));
+  // An "institution" asking for money is a scam signal on its own: real ones don't phone you for gift cards or transfers.
+  const level = (riskyEnough(s.tags) && (s.ask || payTag)) || (s.institution && (s.ask || payTag)) ? 2 : (s.ask ? 1 : 0);
+  return { level, tags: s.tags, amount: s.amount, ask: s.ask, institution: s.institution };
 }
