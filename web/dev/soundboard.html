@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vouch demo soundboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 20px/1.4 system-ui, sans-serif; margin: 0; padding: 16px; max-width: 34rem; margin-inline: auto; background: Canvas; color: CanvasText; }
+  h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
+  p { margin: 0.4rem 0; } .note { opacity: 0.7; font-size: 0.9rem; }
+  button { font: inherit; font-weight: 600; width: 100%; min-height: 4rem; margin-top: 0.7rem; padding: 0.8rem 1rem; border-radius: 10px;
+           border: 2px solid CanvasText; background: CanvasText; color: Canvas; text-align: left; }
+  button.stop { background: transparent; color: CanvasText; text-align: center; }
+  button.playing { outline: 4px solid; outline-offset: 2px; }
+  .miss { color: #b42318; font-weight: 600; font-size: 0.9rem; margin: 0.2rem 0 0; }
+  small { display: block; font-weight: 400; opacity: 0.8; }
+</style>
+</head>
+<body>
+<h1>Demo soundboard (the "scammer" on the call)</h1>
+<p class="note">Play these into the real phone call (hold this phone's speaker to the call phone, or play from a laptop on speaker). Files live in <code>web/dev/audio/</code>. Generate them in ElevenLabs.</p>
+<div id="list"></div>
+<button class="stop" id="stop">Stop</button>
+<script type="module" src="./soundboard.js"></script>
+</body>
+</html>
