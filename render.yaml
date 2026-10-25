@@ -32,5 +32,3 @@ services:
         sync: false
       - key: WATCH_SALT
         generateValue: true
-      - key: GEMINI_MODEL
-        value: gemini-2.5-flash
