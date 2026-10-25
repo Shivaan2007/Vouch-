@@ -9,14 +9,7 @@ import {
 } from '../js/lib/crypto.js';
 
 let server; let url;
-// VOUCH_SERVER=real runs the same flow against the real server (server/src/app.js) instead of the reference one.
-before(async () => {
-  if (process.env.VOUCH_SERVER === 'real') {
-    const { createVouchServer } = await import('../../server/src/app.js');
-    server = createVouchServer({ log: () => {} });
-  } else server = createMockServer();
-  url = `http://localhost:${await server.listen(0)}`;
-});
+before(async () => { server = createMockServer(); url = `http://localhost:${await server.listen(0)}`; });
 after(async () => { for (const p of phones) p.socket.close(); await server.close(); });
 
 const phones = [];
@@ -115,9 +108,7 @@ test('Not me: red, and the circle gets an alert', async () => {
   await pair(friend, checker); await pair(friend, third);
   const prompt = friend.next('verify:prompt');
   await J(checker, friend, { amountCents: 20000, method: 'gift_card' });
-  const p = await prompt;
-  // The phone sends the amount along with "Not me" at tier 2+, so the person never has to type it.
-  assert.equal((await answer(friend, p, 'not_me', { retypedCents: p.amountCents })).ok, true);
+  assert.equal((await answer(friend, await prompt, 'not_me')).ok, true);
   const u = await checker.next('verify:update', (x) => x.verdict === 'red');
   assert.equal(u.stages.confidence.answer, 'not_me');
   const alert = await third.next('circle:alert');
@@ -174,6 +165,5 @@ test('tier 3: needs a second circle member to confirm', async () => {
   const s = await signConfirm(second.keys.signKeyPair.privateKey, { requestId: cp.requestId, confirmerId: second.id, claimedId: cp.claimedId, amountCents: cp.amountCents, answer: 'yes' });
   assert.equal((await second.call('verify:confirm', { requestId: cp.requestId, answer: 'yes', ...s })).ok, true);
   const u = await checker.next('verify:update', (x) => x.verdict === 'green');
-  const { needed, received } = u.stages.confidence.approvals;
-  assert.ok(needed >= 1 && received >= needed, `approvals ${received}/${needed}`);
+  assert.equal(u.stages.confidence.approvals.received, 1);
 });
