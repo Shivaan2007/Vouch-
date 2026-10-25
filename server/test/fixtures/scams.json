@@ -1,0 +1,31 @@
+{
+  "scams": [
+    { "text": "new number lost my wallet venmo me $60 rn", "method": "venmo_cashapp_zelle", "expectTags": ["URGENCY", "NEW_NUMBER"], "expectRisk": "medium", "expectAmount": 60 },
+    { "text": "hey its me, phone broke so using a friend's. need $200 in itunes gift cards asap dont tell mom", "method": "gift_card", "expectTags": ["URGENCY", "SECRECY", "NEW_NUMBER", "GIFT_CARD"], "expectRisk": "high", "expectAmount": 200 },
+    { "text": "stuck at the airport, wire me $500 and i'll pay you back double", "method": "wire", "expectTags": ["WIRE", "PAYBACK_PROMISE"], "expectRisk": "high", "expectAmount": 500 },
+    { "text": "send bitcoin to this address, it's urgent, keep it between us", "method": "unknown", "expectTags": ["URGENCY", "SECRECY", "CRYPTO"], "expectRisk": "high", "expectAmount": null },
+    { "text": "grandma i'm in jail, don't tell mom and dad, send $1,500 by wire immediately", "method": "wire", "expectTags": ["URGENCY", "SECRECY", "WIRE"], "expectRisk": "high", "expectAmount": 1500 },
+    { "text": "can you buy steam gift cards and send me the codes? need it today", "method": "gift_card", "expectTags": ["URGENCY", "GIFT_CARD"], "expectRisk": "high", "expectAmount": null },
+    { "text": "changed my number. cash app me $80 right away, ill pay you back tomorrow", "method": "venmo_cashapp_zelle", "expectTags": ["URGENCY", "NEW_NUMBER", "PAYBACK_PROMISE"], "expectRisk": "medium", "expectAmount": 80 },
+    { "text": "this is your boss, i need google play cards for a client, keep this between us", "method": "other", "expectTags": ["SECRECY", "GIFT_CARD"], "expectRisk": "high", "expectAmount": null },
+    { "text": "coinbase me 0.05 btc right now, will repay you tomorrow", "method": "crypto", "expectTags": ["URGENCY", "CRYPTO", "PAYBACK_PROMISE"], "expectRisk": "high", "expectAmount": null },
+    { "text": "my account got frozen, zelle me $350 immediately and delete this message", "method": "venmo_cashapp_zelle", "expectTags": ["URGENCY", "SECRECY"], "expectRisk": "medium", "expectAmount": 350 },
+    { "text": "i lost my phone, using a new number. i need $90 for a ride home right now, i'll venmo you back", "method": "venmo_cashapp_zelle", "expectTags": ["URGENCY", "NEW_NUMBER", "PAYBACK_PROMISE"], "expectRisk": "medium", "expectAmount": 90 },
+    { "text": "pay the fee with apple gift cards or the account is suspended, hurry", "method": "unknown", "expectTags": ["URGENCY", "GIFT_CARD"], "expectRisk": "high", "expectAmount": null },
+    { "text": "emergency!! hospital bills. wire western union $2,000, please keep this secret", "method": "wire", "expectTags": ["URGENCY", "SECRECY", "WIRE"], "expectRisk": "high", "expectAmount": 2000 },
+    { "text": "it's me, new phone who dis. send $40 via zelle, i promise ill pay you back", "method": "venmo_cashapp_zelle", "expectTags": ["NEW_NUMBER", "PAYBACK_PROMISE"], "expectRisk": "medium", "expectAmount": 40 },
+    { "text": "invest in my crypto thing, double your money in a week, pay in usdt", "method": "crypto", "expectTags": ["CRYPTO", "PAYBACK_PROMISE"], "expectRisk": "high", "expectAmount": null }
+  ],
+  "normal": [
+    { "text": "hey can you venmo me $25 for dinner last night", "method": "venmo_cashapp_zelle", "expectTags": [], "expectRisk": "medium", "expectAmount": 25 },
+    { "text": "can you spot me $20 for lunch? i'll pay you back friday", "method": "venmo_cashapp_zelle", "expectTags": ["PAYBACK_PROMISE"], "expectRisk": "medium", "expectAmount": 20 },
+    { "text": "your share of the rent is $650, zelle when you can", "method": "venmo_cashapp_zelle", "expectTags": [], "expectRisk": "medium", "expectAmount": 650 },
+    { "text": "can i borrow $40 for gas? will pay you back on payday", "method": "other", "expectTags": ["PAYBACK_PROMISE"], "expectRisk": "low", "expectAmount": 40 },
+    { "text": "i'll give you cash for the concert ticket, $80 at the door", "method": "cash_in_person", "expectTags": [], "expectRisk": "low", "expectAmount": 80 },
+    { "text": "hey it's mike, you free to hang out tonight?", "method": "unknown", "expectTags": [], "expectRisk": "low", "expectAmount": null },
+    { "text": "split the airbnb? it's $120 each, no rush", "method": "venmo_cashapp_zelle", "expectTags": [], "expectRisk": "medium", "expectAmount": 120 },
+    { "text": "can you send me $15.50 for the pizza?", "method": "other", "expectTags": [], "expectRisk": "low", "expectAmount": 15.5 },
+    { "text": "birthday is coming up, want to chip in 30 dollars for the group gift?", "method": "other", "expectTags": [], "expectRisk": "low", "expectAmount": 30 },
+    { "text": "reminder: club dues $10 due friday", "method": "venmo_cashapp_zelle", "expectTags": [], "expectRisk": "medium", "expectAmount": 10 }
+  ]
+}
