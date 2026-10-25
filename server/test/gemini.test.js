@@ -20,14 +20,14 @@ test('Gemini tags are added to the rules tags (union), order follows TAG_LIST', 
   assert.equal(out.source, 'gemini');
 });
 
-test('Gemini can never remove a rules tag, and never changes payment risk', async () => {
+test('Gemini can never remove a rules tag, and never lowers payment risk', async () => {
   const input = { ...base, text: 'buy gift cards asap', paymentMethod: 'gift_card' };
   const out = await analyze(input, { ...KEY, fetchImpl: reply(JSON.stringify({ tags: [], explanation: 'Looks fine.' })) });
   assert.ok(out.tags.includes('GIFT_CARD') && out.tags.includes('URGENCY'));
   assert.equal(out.paymentRisk, 'high');
-  const low = await analyze({ ...base, text: 'lunch money?', paymentMethod: 'other' },
-    { ...KEY, fetchImpl: reply(JSON.stringify({ tags: ['GIFT_CARD', 'WIRE', 'CRYPTO'], explanation: 'x' })) });
-  assert.equal(low.paymentRisk, 'low');
+  const kept = await analyze({ ...base, text: 'lunch money?', paymentMethod: 'venmo_cashapp_zelle' },
+    { ...KEY, fetchImpl: reply(JSON.stringify({ tags: ['URGENCY'], explanation: 'x' })) });
+  assert.equal(kept.paymentRisk, 'medium'); // tags that are not about how to pay leave the risk alone
 });
 
 test('unknown tags, FIRST_REQUEST, extra fields and a verdict are all ignored', async () => {
@@ -203,4 +203,29 @@ test('everything hangs: returns rules-only at the budget, not later', async () =
   assert.ok(Date.now() - t0 < 400);
   assert.equal(out.source, 'rules');
   assert.deepEqual(out.tags, ['URGENCY']);
+});
+
+// ---- Gemini sees how they want to be paid (e.g. in a screenshot the rules cannot read): payment risk goes to high ----
+test('Gemini seeing a gift card, wire or crypto request raises payment risk to high, and only upward', async () => {
+  for (const tag of ['GIFT_CARD', 'WIRE', 'CRYPTO']) {
+    const out = await analyze({ ...base, text: '', imageBase64: 'iVBORw0KGgoAAAANSUhEUg==', paymentMethod: 'venmo_cashapp_zelle' },
+      { ...KEY, fetchImpl: reply(JSON.stringify({ tags: [tag], explanation: 'x' })) });
+    assert.equal(out.paymentRisk, 'high', tag);
+    assert.ok(out.tags.includes(tag));
+    assert.equal(out.source, 'gemini');
+  }
+  // a Gemini answer that is not about how to pay never changes it, in either direction
+  for (const [method, want] of [['other', 'low'], ['venmo_cashapp_zelle', 'medium'], ['gift_card', 'high']]) {
+    const out = await analyze({ ...base, text: 'hi', paymentMethod: method },
+      { ...KEY, fetchImpl: reply(JSON.stringify({ tags: ['URGENCY', 'SECRECY'], explanation: 'x' })) });
+    assert.equal(out.paymentRisk, want, method);
+  }
+});
+
+test('when Gemini fails, payment risk is exactly what the rules said', async () => {
+  const input = { ...base, text: '', imageBase64: 'iVBORw0KGgoAAAANSUhEUg==', paymentMethod: 'venmo_cashapp_zelle' };
+  for (const fetchImpl of [statusReply(429), async () => { throw new Error('net'); }, reply('garbage')]) {
+    const out = await analyze(input, { ...KEY, fetchImpl });
+    assert.equal(out.paymentRisk, 'medium');
+  }
 });
