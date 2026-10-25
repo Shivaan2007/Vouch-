@@ -38,10 +38,14 @@ const DETECTORS = {
     /\bgift ?cards?\b/,
     /\b(itunes|google play|steam|amazon|target|apple|walmart|ebay) (gift )?(cards?|codes?)\b/,
     /\bsteam wallet\b/,
+    /\bitunes\b/,
     /\b(scratch off|scratch the back)\b/,
   ],
   WIRE: [
-    /\bwire(d|s)?\b/,
+    /\bwire (me|it|us|him|her|them|the|a|some|my|your|money|funds|transfer|\$)/,
+    /\bwired (me|it|us|the|money|funds)\b/,
+    /\b(by|via|through|over) (a )?wire\b/,
+    /\bwire transfer\b/,
     /\bwestern union\b/,
     /\bmoney ?gram\b/,
     /\b(bank|international) transfer\b/,
@@ -73,12 +77,12 @@ export function detectTags(text, { firstRequest = false } = {}) {
 }
 
 // Payment keywords in the text. 'high' beats 'medium'; null when nothing is mentioned.
-const HIGH_WORDS = /\b(gift ?cards?|apple card|steam|itunes|google play|wire|wired|western union|money ?gram|bitcoin|btc|crypto(currency)?|coinbase|usdt|ethereum)\b/;
+const HIGH_TAGS = ['GIFT_CARD', 'WIRE', 'CRYPTO']; // the same patterns as the tags, so a bare "steam" or "wire" does not count
 const MEDIUM_WORDS = /\b(zelle|venmo|cash ?app|paypal|apple cash)\b/;
 
 export function inferPaymentRisk(text) {
   const t = normalize(text);
-  if (HIGH_WORDS.test(t)) return 'high';
+  if (HIGH_TAGS.some((tag) => DETECTORS[tag].some((p) => p.test(t)))) return 'high';
   if (MEDIUM_WORDS.test(t)) return 'medium';
   return null;
 }
