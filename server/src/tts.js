@@ -2,10 +2,10 @@
 // The audio is made once per phrase and kept in memory. Without a key, or on any failure, the route answers 503/502
 // and the phone falls back to its built-in voice, so this can never break a check.
 export const PHRASES = {
-  stop: 'Stop. Do not send money. This request could be a scam.',
-  wait: 'Wait. Do not send money yet. Check again with your friend.',
+  stop: 'Stop. This looks like a scam. Do not act on it.',
+  wait: 'Wait. Do not go ahead yet. Check again with your friend.',
   ok: 'Verified. Your friend confirmed this on their own phone.',
-  call: 'Warning. This call may be a scam. Do not send money.',
+  call: 'Warning. This call may be a scam. Do not share codes, passwords or money.',
 };
 
 const DEFAULT_MODEL = 'eleven_flash_v2_5';
