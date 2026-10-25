@@ -18,6 +18,7 @@ let aiNext = null; // lets a test make the AI say something specific
 const fetchImpl = async (u, init) => {
   const s = String(u);
   if (s.includes('/getMe')) return { json: async () => ({ ok: true, result: { username: 'vouch_test_bot' } }) };
+  if (s.endsWith('/getBusinessConnection')) return { json: async () => ({ ok: true, result: { id: 'bcX', user: { id: 7001, first_name: 'Gran' }, user_chat_id: 7001, is_enabled: true } }) };
   if (s.includes('api.telegram.org')) { sent.push(JSON.parse(init.body)); return { json: async () => ({ ok: true }) }; }
   if (s.includes('generativelanguage')) return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'send me gift cards and do not tell anyone' }] } }] }) };
   return { ok: true, json: async () => ({}) };
@@ -230,4 +231,66 @@ test('the Check form shows the AI read a moment after you paste, and a flagged c
   assert.ok(sent.some((m) => /Vouch flagged your call/.test(m.text || '')), 'the alert bot messaged the person on Telegram');
   await dismissAll();
   sam.socket.close();
+});
+
+// ---- end to end: the three ways a scam reaches a phone, through the real server into the real app ----
+const BANK = "First Harbor Bank fraud dept: your account is compromised. Read me the six digit code we just texted you and do not tell anyone.";
+
+test('Telegram Business, end to end: a stranger writes to the connected person and the Vouch app flashes with who sent it', async () => {
+  await dismissAll();
+  await watch.telegram.handleUpdate({ update_id: 700, business_message: { business_connection_id: 'bcX', chat: { id: 9100, type: 'private' },
+    from: { id: 9100, first_name: 'Judge', username: 'judge_bank', is_bot: false }, text: BANK } });
+  await wait(600);
+  assert.ok(text().includes('Sent to Vouch from Telegram'), 'the app flashed');
+  assert.ok(text().includes('@judge_bank'), 'and says who wrote');
+  assert.ok(!text().includes('six digit code') && !text().includes('First Harbor'), 'the message itself never reached the app');
+  await dismissAll();
+  await watch.telegram.handleUpdate({ update_id: 701, business_message: { business_connection_id: 'bcX', chat: { id: 9100, type: 'private' },
+    from: { id: 9101, first_name: 'Pal', username: 'a_friend', is_bot: false }, text: 'are we still on for lunch tomorrow?' } });
+  await wait(400);
+  assert.ok(!text().includes('Sent to Vouch from Telegram'), 'a normal message from a friend does nothing');
+});
+
+test('Telegram group, end to end: /link the group, then what anyone types there reaches the linked phone', async () => {
+  const gran = await otherPhone('GroupGran');
+  const { code } = await gran.call('watch:link');
+  const inGroup = (id, from, t) => watch.telegram.handleUpdate({ update_id: id, message: { chat: { id: -5001, type: 'group' }, from: { is_bot: false, ...from }, text: t } });
+  await inGroup(800, { id: 1, first_name: 'Shivaan' }, `/link ${code}`);
+  assert.match(sent[sent.length - 1].text, /Linked to GroupGran/, 'the group is linked with the plain /link form');
+  const flagged = new Promise((resolve) => gran.socket.once('scam:alert', resolve));
+  await inGroup(801, { id: 2, first_name: 'Judge', username: 'judge_two' }, "Hi it's your grandson, new number. I'm in trouble: buy $300 in Apple gift cards right now and don't tell mom.");
+  const a = await flagged;
+  assert.equal(a.level, 2);
+  assert.equal(a.source, 'telegram');
+  assert.equal(a.sender.handle, '@judge_two');
+  assert.ok(!JSON.stringify(a).includes('gift cards') && !JSON.stringify(a).includes('$300'), 'the alert carries no message text');
+  let quiet = true;
+  gran.socket.once('scam:alert', () => { quiet = false; });
+  await inGroup(802, { id: 3, first_name: 'Pal' }, 'dinner at 7 on Friday? mom is making lasagna');
+  await wait(400);
+  assert.ok(quiet, 'a normal message in the group stays silent');
+  gran.socket.close();
+});
+
+test('a call, end to end: the call engine stops a "read me the code" call, explains why, and leaves a genuine call alone', async () => {
+  await dismissAll();
+  await go('On a call');
+  const box = find(appEl, (n) => n.id === 'callsays');
+  box.value = '';
+  await box.fire('input'); // an earlier test's call is over: a new call starts calm
+  await wait(100);
+  box.value = "Hello, this is First Harbor Bank. We sent you a code, please read me the six digit code we just texted you.";
+  await box.fire('input');
+  await wait(300);
+  assert.ok(text().includes('STOP'), 'a red line is a stop at once');
+  assert.ok(text().includes('They asked you to read out a code'), 'with the reason in plain words');
+  assert.ok(text().includes('Hang up'), 'and what to do');
+  await dismissAll();
+  box.value = '';
+  await box.fire('input'); // a new call starts calm
+  await wait(100);
+  box.value = "Hi, it is Dr Lee's office confirming your appointment on Tuesday at three.";
+  await box.fire('input');
+  await wait(300);
+  assert.ok(!text().includes('STOP'), 'a genuine call from a doctor does not raise an alarm');
 });

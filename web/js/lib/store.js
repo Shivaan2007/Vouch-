@@ -122,6 +122,23 @@ export function deleteFriend(id) {
   return run('friends', 'readwrite', 'delete', id);
 }
 
+// People this phone removed on purpose (a tampered link, or just "Remove"). The server may still list the link, and syncing
+// would otherwise bring them straight back, so their public keys are remembered here and skipped when syncing.
+// A deliberate new pairing with the same person clears the entry.
+export async function getRemoved() {
+  const list = await run('kv', 'readonly', 'get', 'removed');
+  return Array.isArray(list) ? list : [];
+}
+export async function addRemoved(signPub) {
+  if (!signPub) return;
+  const list = await getRemoved();
+  if (!list.includes(signPub)) await run('kv', 'readwrite', 'put', [...list, signPub].slice(-200), 'removed');
+}
+export async function clearRemoved(signPub) {
+  const list = await getRemoved();
+  if (list.includes(signPub)) await run('kv', 'readwrite', 'put', list.filter((s) => s !== signPub), 'removed');
+}
+
 /** Wipe identity, keys and friends. */
 export async function resetAll() {
   await run('kv', 'readwrite', 'clear');

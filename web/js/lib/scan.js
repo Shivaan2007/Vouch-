@@ -171,6 +171,166 @@ export function callRisk(text) {
   return { level, tags: s.tags, amount: s.amount, ask: s.ask, institution: s.institution };
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------
+// The call engine. A scam call is not one bad word: it is a SCRIPT that unfolds in stages. First the caller claims to be someone
+// (a bank, an agency, a grandchild), then frightens or rushes you, then isolates you ("don't tell anyone", "stay on the line"),
+// and only then asks for the thing: a code, card details, remote access, a "safe account", a gift card, cash. This engine listens
+// for that shape over time, the way scam-call research and call-protection products describe it, instead of matching one phrase.
+//   - signals have weights; recent ones count more (they decay over about a minute), so a long honest call can't add up slowly
+//   - stages are remembered for the whole call: a script told slowly is still a script
+//   - a few RED LINES are a stop at once: real banks never ask you to read out a code or move your money
+//   - a promotion to STOP that rests on soft signals must hold for a moment, so one mis-heard word can't cry wolf
+//   - phrases real organisations say ("we will never ask for your PIN") count against, but never cancel a red line
+// Pure functions, no DOM, runs fully offline. The AI read can raise the level further; it can never lower this floor.
+// ---------------------------------------------------------------------------------------------------------------------------
+const HARD = 99;
+const CALL_SIGNALS = [
+  ['OTP', HARD, [
+    /\b(read|tell|give|send|confirm|repeat|share|say)( me| us)?( back)?( the| that| your| this| those)?( (six|6|four|4|five|5)[- ]?digit)? ?(code|otp|passcode|digits)\b/,
+    /\bwhat(?:'s| is) the code\b/, /\bcode (we|i) (just )?(sent|texted)\b/, /\bo\.? ?t\.? ?p\b/, /\bone[- ]time (pass)?(code|word)\b/,
+    /\b(digits|numbers) (we|i) (just )?(texted|sent)\b/,
+    /\b(sent|texted|text) (you )?a (six[- ]digit |6[- ]digit |verification |security )?code\b[^.?!]{0,80}\b(read|tell|give|repeat|confirm|need)\b/,
+    /\b(code|digits|passcode)\b[^.?!]{0,60}\b(read|tell|give|say|repeat)\b[^.?!]{0,20}\b(back|to me)\b/,
+  ]],
+  ['SAFE_ACCOUNT', HARD, [/\b(safe|secure|protected|holding|temporary) account\b/, /\b(move|transfer|withdraw)( all| some| out)?( of)? your (money|savings|funds|balance|account)\b/, /\bprotect your (money|funds|savings)\b/]],
+  ['REMOTE_ACCESS', HARD, [
+    /\b(anydesk|any desk|teamviewer|team viewer|quick ?support|ultraviewer|logmein|ammyy|remote (access|desktop|control|session))\b/,
+    /\b(download|install)\b[^.?!]{0,30}\b(app|software|program)\b[^.?!]{0,50}\b(so (that )?i can|to (see|access|fix|help|control))\b/, /\bshare your screen\b/,
+  ]],
+  ['CASH_PICKUP', HARD, [/\bcourier\b[^.?!]{0,30}\b(collect|pick ?up|come)\b/, /\bbitcoin atm\b/, /\b(put|place|seal)\b[^.?!]{0,20}\bcash\b[^.?!]{0,20}\b(envelope|box|bag)\b/, /\bpick ?up the (cash|money|envelope)\b/]],
+  ['PIN', HARD, [/\b(your|the) (atm |debit |card |banking )?pin( number)?\b/, /\b(online banking|account|login|log ?in) password\b/, /\blog ?in details\b/]],
+  ['PAY_METHOD', HARD, [
+    /\b(buy|get|purchase|pick up|grab|go (to|and))\b[^.?!]{0,40}\b(gift|gif|apple|google play|itunes|steam|target|amazon) cards?\b/,
+    /\bpay (with|using|by|in)( an?)? (apple |google play |itunes |steam |target |amazon |gift )?cards?\b/,
+    /\b(send|transfer|deposit)\b[^.?!]{0,30}\b(bitcoin|crypto|btc|usdt)\b/, /\bwire (me|us|the|your)\b/,
+  ]],
+  ['CREDENTIAL', 3, [
+    /\b(ssn|social security number)\b/, /\b(full|entire|whole|long|16[- ]digit|your|the) card number\b/, /\bcvv\b|\bsecurity code on the back\b|\bthree digits on the back\b/,
+    /\bmother'?s maiden( name)?\b/, /\bdate of birth\b|\bbirth ?date\b/, /\brouting( and account)? number\b|\b(your|the) account number\b/, /\bexpir(y|ation) date\b/,
+  ]],
+  ['ISOLATION', 3, [
+    /\b(stay|keep me|remain) on the (line|phone)\b/, /\bdo ?n'?t hang up\b|\bdo not hang up\b/, /\bif (the )?(bank|teller|cashier|clerk) (asks|ask)\b/,
+    /\bsay (it'?s|it is|that it'?s) (for|a) (a )?(gift|family|renovation|home|car)/, /\bkeep me on speaker\b/,
+    /\bdo ?n'?t (tell|let) (anyone|anybody|your (family|wife|husband|son|daughter|kids?))\b/,
+  ]],
+  ['CALLBACK', 3, [/\bcall (us|me) back (at|on) [\d ()+-]{7,}/, /\bdo ?n'?t call the number (on|from) (your|the) (card|statement|bank)/, /\bthis is the (direct|private|fraud) line\b/]],
+  ['AUTHORITY', 2, [
+    /\bthis is (officer|agent|detective|sergeant|inspector)\b/, /\bbadge number\b/,
+    /\bcalling (you )?from (your |the )?(bank|irs|medicare|microsoft|amazon|apple|social security|police|fbi|sheriff)\b/,
+    /\b(it'?s|this is) (me|your) (grand ?(son|daughter|kid|child)|nephew|niece)\b/, /\bgrand(ma|pa|mother|father|dad)?,? it'?s me\b/,
+  ]],
+  ['FEAR', 2, [
+    /\b(account|computer|identity|card|ssn|social security number)( has been| was| is| have been)? (compromised|hacked|stolen|suspended|frozen|breached)\b/,
+    /\bwarrant\b/, /\byou will be arrested\b/, /\blose (all )?(of )?your (money|savings)\b/,
+  ]],
+  // A plain small amount ("lend me 40", "send 25") is a request for money too. The shared rules only count bigger or marked amounts.
+  ['ASK', 2, [/\b(lend|loan|borrow|spot|front|send|wire|give|venmo|zelle|cash ?app)( me| us)?( about| around)? \$?\d[\d,]*(\.\d\d)?\b(?! (minutes?|mins?|hours?|days?|seconds?|pm|am|o'clock|years?|times|people|more))/]],
+  ['COUNTER', -2, [
+    /\bwe(?:'ll| will) never (ask|call|email|text)\b/, /\b(hang up|call us back)[^.?!]{0,30}(back of your card|number on your card|official (number|website))/,
+    /\bappointment (reminder|confirmation)\b/, /\bpress \d to (confirm|cancel|stop)\b/, /\bthis is an automated\b/, /\bnever share (this|your) (code|pin|password)\b/,
+  ]],
+];
+const STAGE_OF = { AUTHORITY: 'authority', FEAR: 'fear', ISOLATION: 'isolation', CALLBACK: 'isolation', ASK: 'action', CREDENTIAL: 'action', PAY_METHOD: 'action', OTP: 'action', SAFE_ACCOUNT: 'action', REMOTE_ACCESS: 'action', CASH_PICKUP: 'action', PIN: 'action' };
+const CALL_REASON = {
+  OTP: 'They asked you to read out a code. Real banks never do this.',
+  SAFE_ACCOUNT: 'They want you to move your money to a "safe" account. That is always a scam.',
+  REMOTE_ACCESS: 'They want control of your computer or phone.',
+  CASH_PICKUP: 'They want to collect cash from you.',
+  PIN: 'They asked for a PIN or a password.',
+  PAY_METHOD: 'They want to be paid with gift cards, crypto or a wire.',
+  CREDENTIAL: 'They asked for personal or card details.',
+  ISOLATION: 'They want you to keep quiet or stay on the line.',
+  CALLBACK: 'They told you not to use the phone number you already trust.',
+  AUTHORITY: 'They claim to be an official, a company, or someone you know.',
+  FEAR: 'They are rushing or scaring you.',
+  ASK: 'They asked for money.',
+};
+const CALL_ORDER = ['OTP', 'SAFE_ACCOUNT', 'REMOTE_ACCESS', 'CASH_PICKUP', 'PIN', 'PAY_METHOD', 'CREDENTIAL', 'CALLBACK', 'ISOLATION', 'AUTHORITY', 'FEAR', 'ASK'];
+
+// A negative word just before the phrase ("we will NEVER ask you to read out a code") turns it from a threat into reassurance.
+// Only the same sentence counts: "Don't tell mom. A courier will collect the cash." must not cancel the second sentence.
+function negated(t, index) {
+  const sentence = t.slice(Math.max(0, index - 40), index).split(/[.?!]/).pop();
+  return /\b(never|don'?t|do not|won'?t|will not|not)\b(?:\W+\w+){0,3}\W*$/.test(sentence);
+}
+
+/** A fresh state for one call. */
+export function callInit() {
+  return { seen: new Set(), hits: [], stages: new Set(), cats: new Set(), level: 0, pendingAt: 0 };
+}
+
+/**
+ * Feed what has been heard so far (the whole transcript is fine; repeats are recognised and not counted twice).
+ * @param {ReturnType<typeof callInit>} state mutated and returned
+ * @param {string} text the transcript so far
+ * @param {number} [now]
+ * @returns {{level: 0|1|2} & ReturnType<typeof callInit>}
+ */
+export function callStep(state, text, now = Date.now()) {
+  const t = norm(text);
+  const add = (cat, w, key) => {
+    if (state.seen.has(key)) return;
+    state.seen.add(key);
+    state.hits.push({ cat, w, at: now });
+    if (w > 0) { state.cats.add(cat); if (STAGE_OF[cat]) state.stages.add(STAGE_OF[cat]); }
+  };
+  for (const [cat, w, patterns] of CALL_SIGNALS) {
+    for (const re of patterns) {
+      for (const m of t.matchAll(new RegExp(re.source, 'g'))) {
+        if (cat !== 'COUNTER' && negated(t, m.index)) continue;
+        add(cat, w, `${cat}|${t.slice(Math.max(0, m.index - 12), m.index + m[0].length + 12)}`);
+      }
+    }
+  }
+  // Signals the shared phone rules already know how to hear (kept in step with the server's rules).
+  const recent = t.slice(-400);
+  const s = suggest(recent);
+  if (s.tags.includes('URGENCY')) add('FEAR', 2, 'FEAR|tag-urgency');
+  if (s.tags.includes('SECRECY')) add('ISOLATION', 3, 'ISOLATION|tag-secrecy');
+  if (s.tags.some((x) => ['GIFT_CARD', 'WIRE', 'CRYPTO'].includes(x))) add('PAY_METHOD', 3, 'PAY_METHOD|tag-method');
+  if (claimsInstitution(recent)) add('AUTHORITY', 2, 'AUTHORITY|institution');
+  if (s.ask) add('ASK', 2, `ASK|${Math.floor(now / 90000)}`);
+
+  // Score: recent signals count fully, older ones fade, and anything past 90 seconds no longer adds.
+  let score = 0;
+  for (const h of state.hits) if (h.w !== HARD && now - h.at <= 90000) score += h.w * Math.exp(-(now - h.at) / 60000);
+  score = Math.max(0, score);
+  const hard = state.hits.some((h) => h.w === HARD);
+  const c = state.cats;
+  const soft2 = score >= 7 || (state.stages.size >= 3 && state.stages.has('action'))
+    || (c.has('AUTHORITY') && c.has('CREDENTIAL') && (c.has('FEAR') || c.has('ISOLATION') || c.has('CALLBACK')));
+  let level = 0;
+  if (hard) level = 2;
+  else if (soft2) {
+    // Soft signals alone must hold for a moment before they become a STOP (speech-to-text mishears a word now and then).
+    if (!state.pendingAt) state.pendingAt = now;
+    level = now - state.pendingAt >= 1500 ? 2 : Math.max(state.level, 1);
+  } else {
+    state.pendingAt = 0;
+    if (score >= 3 || c.has('ASK') || c.has('CREDENTIAL') || c.has('PAY_METHOD')) level = 1;
+  }
+  state.level = Math.max(state.level, level); // a warning is never taken back during a call
+  state.score = Math.round(score * 10) / 10;
+  return state;
+}
+
+/** What to show a person: the four stages as a ladder, the top reasons in plain words, and one thing to do. */
+export function callWhy(state) {
+  const st = state || callInit();
+  const seen = new Set(st.hits.filter((h) => h.w > 0).map((h) => h.cat));
+  const reasons = CALL_ORDER.filter((cat) => seen.has(cat)).slice(0, 3).map((cat) => CALL_REASON[cat]);
+  return {
+    steps: [
+      { id: 'authority', on: st.stages.has('authority'), text: "Says they're from a bank, agency or family" },
+      { id: 'fear', on: st.stages.has('fear'), text: 'Rushing or scaring you' },
+      { id: 'isolation', on: st.stages.has('isolation'), text: 'Asking you to keep quiet or stay on the line' },
+      { id: 'action', on: st.stages.has('action'), text: 'Asking for a code, card details or money' },
+    ],
+    reasons,
+    action: st.level >= 2 ? 'Hang up. Then call the number on your card or the official website yourself.' : st.level === 1 ? 'Be careful. Do not give any codes or money. Make sure it is really them.' : '',
+  };
+}
+
 const has = (tags, ...names) => names.some((n) => tags.includes(n));
 const GUIDE = [
   { id: 'code', when: (s) => s.kind === 'code',

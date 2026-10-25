@@ -1,14 +1,16 @@
 {
   "name": "Vouch",
   "short_name": "Vouch",
-  "description": "Check that a message or call asking for money is really from someone you trust.",
+  "description": "Check that a message or call asking for money, codes or personal details is really from someone you trust.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#3730a3",
   "icons": [
-    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ],
   "share_target": {
     "action": "./",

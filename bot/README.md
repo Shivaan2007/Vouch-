@@ -97,6 +97,17 @@ Set ELEVENLABS_API_KEY (and optionally ELEVENLABS_VOICE_ID) in .env. Then:
 - **Speaking:** a voice note to the bot is answered in writing and out loud; send /voice to have every answer read aloud. The spoken verdict is the headline plus the first step.
 - Nothing is stored or logged: not the audio, not the words.
 
+## Telegram Business: the bot sits on a person's own account (the natural demo)
+
+This is the one place a bot can watch someone's real messages, with no group chat and nothing for the sender to do. Anyone who messages the connected person is checked; **only the person is warned, the sender sees nothing, and the bot never writes to them.**
+
+One-time setup (about 3 minutes):
+1. In @BotFather: `/mybots`, pick the bot, **Bot Settings, Business Mode**, turn it on.
+2. On the account to protect (needs **Telegram Premium**): **Settings, Telegram Business, Chatbots**, add `@vouch_alert_bot`. You can limit which chats it sees.
+3. On that same account, open the bot once and tap **Start** (or Connect from the Vouch app), so Vouch knows who to warn and the app flashes too.
+
+What it does: the person gets a "now watching" message; every message from someone else is scanned; scams and money requests are shown to the person with the sender's Telegram name and handle (which also feeds Flagged senders); everything else is silent. The person's own messages and other bots are never scanned. Commands in a stranger's message (`/unlink`, `/start link_...`) are ignored, so a sender can never change settings. Not tested against a live Telegram Business account yet: the tests use a faked Telegram.
+
 ## How ElevenLabs is used (and why)
 
 Shivaan's fixed spoken alerts (`/tts/*`) speak the four standard phrases. This section is the rest.

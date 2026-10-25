@@ -166,6 +166,121 @@ test('starting the bot sets its command menu', async () => {
   void p;
 });
 
+// ---- Telegram Business: the bot sits on a person's own account ----
+function businessHarness() {
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    const method = String(url).split('/').pop();
+    const body = init && typeof init.body === 'string' ? JSON.parse(init.body) : {};
+    if (method === 'getBusinessConnection') {
+      return { json: async () => (body.business_connection_id === 'bc1' ? { ok: true, result: { id: 'bc1', user: { id: 4242, first_name: 'Grandma' }, user_chat_id: 4242, is_enabled: true } } : { ok: false }) };
+    }
+    if (method === 'answerCallbackQuery') { answers.push(body.text); return { json: async () => ({ ok: true }) }; }
+    if (body.text) sent.push({ chat: body.chat_id, text: body.text, markup: body.reply_markup });
+    return { json: async () => ({ ok: true, result: { message_id: 7 } }) };
+  };
+  const answers = []; const noted = [];
+  const linkCalls = [];
+  const link = { lookup: () => (linked ? ['acct-1'] : []), who: () => [], bind: (...a) => { linkCalls.push(['bind', ...a]); return null; }, unbindChat: (...a) => linkCalls.push(['unbind', ...a]) };
+  let linked = false;
+  const track = { note: (users, channel, sender, a) => { noted.push({ users, sender: sender.id, level: a.level }); return { count: 1, repeatScam: false }; }, raise() {} };
+  const bot = createBot({ token: 'T', fetchImpl, link, track, infer: async () => null, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  return { bot, sent, linkCalls, answers, noted, setLinked: (v) => { linked = v; } };
+}
+const fromStranger = (text) => ({ update_id: 1, business_message: { business_connection_id: 'bc1', chat: { id: 9001, type: 'private' }, from: { id: 9001, first_name: 'Judge', username: 'judge_bank', is_bot: false }, text } });
+
+test("connecting the bot to a person's Telegram tells them what it will and will not do", async () => {
+  const { bot, sent } = businessHarness();
+  await bot.handleUpdate({ update_id: 1, business_connection: { id: 'bc1', user: { id: 4242, first_name: 'Grandma' }, user_chat_id: 4242, is_enabled: true } });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].chat, 4242);
+  assert.match(sent[0].text, /I'm now watching your Telegram messages/);
+  assert.match(sent[0].text, /never reply to them/);
+});
+
+test('a stranger who messages the connected person is scanned, and only the owner is warned', async () => {
+  const { bot, sent } = businessHarness();
+  await bot.handleUpdate(fromStranger('Chase fraud dept: your account is compromised. Verify now or buy gift cards to secure it, do not tell anyone, right away'));
+  assert.ok(sent.length >= 1, 'the owner is told');
+  assert.ok(sent.every((m) => m.chat === 4242), 'every message goes to the owner, none to the sender');
+  assert.match(sent.map((m) => m.text).join('\n'), /SCAM WARNING/);
+  assert.match(sent.map((m) => m.text).join('\n'), /@judge_bank/, 'and says who sent it');
+});
+
+test('a normal message from a stranger is not mentioned at all', async () => {
+  const { bot, sent } = businessHarness();
+  await bot.handleUpdate(fromStranger('hey, are we still on for lunch tomorrow?'));
+  assert.equal(sent.length, 0, 'no noise');
+});
+
+test("the owner's own messages and bots are never scanned", async () => {
+  const { bot, sent } = businessHarness();
+  await bot.handleUpdate({ update_id: 1, business_message: { business_connection_id: 'bc1', chat: { id: 9001, type: 'private' }, from: { id: 4242, first_name: 'Grandma', is_bot: false }, text: 'buy gift cards right now, do not tell anyone' } });
+  await bot.handleUpdate({ update_id: 2, business_message: { business_connection_id: 'bc1', chat: { id: 9001, type: 'private' }, from: { id: 5, first_name: 'Bot', is_bot: true }, text: 'buy gift cards right now, do not tell anyone' } });
+  assert.equal(sent.length, 0);
+});
+
+test('commands typed by a stranger through Business do nothing: they cannot unlink, link or switch anything', async () => {
+  const { bot, sent, linkCalls } = businessHarness();
+  for (const cmd of ['/unlink', '/start link_123456', '/link 123456', '/guardian', '/voice', '/flag', '/who']) await bot.handleUpdate(fromStranger(cmd));
+  assert.deepEqual(linkCalls, [], 'no link was bound or removed');
+  assert.ok(!sent.some((m) => /Done\.|Linked to|guardian/i.test(m.text)), 'and no command was obeyed');
+});
+
+const SCAMMY = 'Chase fraud dept: your account is compromised. Verify now or buy gift cards to secure it, do not tell anyone, right away';
+const buttonsOf = (sent) => { const m = sent.find((x) => x.markup); return m ? m.markup.inline_keyboard.flat() : []; };
+const press = (data, chat = 4242) => ({ update_id: 9, callback_query: { id: 'cq1', data, message: { message_id: 7, chat: { id: chat } } } });
+
+test('a warning carries buttons, and the bot acts on them like an assistant', async () => {
+  const { bot, sent, answers, noted, setLinked } = businessHarness();
+  setLinked(true);
+  await bot.handleUpdate(fromStranger(SCAMMY));
+  const buttons = buttonsOf(sent);
+  assert.deepEqual(buttons.map((b) => b.text).slice(0, 2), ['Flag sender', "It's fine"]);
+  const flag = buttons.find((b) => b.text === 'Flag sender').callback_data;
+  await bot.handleUpdate(press(flag));
+  assert.match(answers[0], /Flagged/);
+  assert.ok(noted.some((n) => n.sender === '9001' && n.level === 2), 'and the sender is now on the flagged list');
+});
+
+test('"It\'s fine" teaches the bot to stay quiet about that sender, but only the person it was sent to can press it', async () => {
+  const { bot, sent, answers } = businessHarness();
+  await bot.handleUpdate(fromStranger(SCAMMY));
+  const ok = buttonsOf(sent).find((b) => b.text === "It's fine").callback_data;
+  await bot.handleUpdate(press(ok, 777)); // someone else's chat
+  assert.match(answers[0], /expired/, 'a stranger cannot press the owner\'s buttons');
+  const before = sent.length;
+  await bot.handleUpdate(press(ok));
+  assert.match(answers[1], /won't warn you about them for a week/);
+  await bot.handleUpdate(fromStranger(SCAMMY));
+  assert.equal(sent.length, before, 'now silent about them');
+});
+
+test('"what did you catch today?" is answered from what the bot did, never from message text', async () => {
+  const { bot, sent } = businessHarness();
+  await bot.handleUpdate(fromStranger(SCAMMY));
+  await bot.handleUpdate(fromStranger('lunch tomorrow?'));
+  sent.length = 0;
+  await bot.handleUpdate({ update_id: 5, message: { chat: { id: 4242, type: 'private' }, from: { id: 4242, first_name: 'Grandma', is_bot: false }, text: 'what did you catch today?' } });
+  const reply = sent.map((m) => m.text).join('\n');
+  assert.match(reply, /checked 2 messages and warned you about 1/);
+  assert.match(reply, /@judge_bank/);
+  assert.ok(!/gift cards|compromised/i.test(reply), 'the message itself is not repeated');
+});
+
+test('an unknown or disabled connection is ignored', async () => {
+  const { bot, sent } = businessHarness();
+  await bot.handleUpdate({ update_id: 1, business_message: { business_connection_id: 'nope', chat: { id: 9001, type: 'private' }, from: { id: 9001, first_name: 'X', is_bot: false }, text: 'buy gift cards right now, do not tell anyone' } });
+  assert.equal(sent.length, 0);
+});
+
+test('the bot asks Telegram for business updates', async () => {
+  const seen = [];
+  const bot = createBot({ token: 'T', fetchImpl: async (url, init) => { if (String(url).endsWith('/getUpdates')) seen.push(JSON.parse(init.body).allowed_updates); return { json: async () => ({ ok: false, description: 'stop' }) }; } });
+  bot.start(); await new Promise((r) => setTimeout(r, 30)); bot.stop();
+  assert.ok(seen[0].includes('business_message') && seen[0].includes('business_connection'));
+});
+
 test('a flagged sender whose profile picture looks AI-generated gets a hedged hint, once a day', async () => {
   const said = []; let photoCalls = 0;
   const fetchImpl = async (url, init) => {
@@ -174,13 +289,20 @@ test('a flagged sender whose profile picture looks AI-generated gets a hedged hi
     const body = init && init.body ? JSON.parse(init.body) : {};
     if (u.endsWith('/getUserProfilePhotos')) { photoCalls += 1; return { json: async () => ({ ok: true, result: { photos: [[{ file_id: 'a', file_size: 100 }, { file_id: 'b', file_size: 900 }]] } }) }; }
     if (u.endsWith('/getFile')) return { json: async () => ({ ok: true, result: { file_path: 'photos/f.jpg' } }) };
+    if (u.endsWith('/getBusinessConnection')) return { json: async () => ({ ok: true, result: { id: 'bc9', user: { id: 1, first_name: 'Grandma' }, user_chat_id: 1, is_enabled: true } }) };
     if (body.text) said.push(body.text);
     return { json: async () => ({ ok: true, result: { message_id: 1 } }) };
   };
   const base = { moneyRequest: true, amountUSD: 200, paymentMethod: 'gift_card', risk: 'high', scamType: 'Gift card scam', impersonating: '', signals: [], why: 'Asks for gift cards.', steps: ['Do not buy any.'], tags: [], intent: 'message', reply: '', links: [], image: null };
   const infer = async (i) => (i.imageBase64 ? { ...base, moneyRequest: false, risk: 'none', scamType: 'Ordinary photo', why: '', steps: [], image: { kind: 'Profile photo', aiGenerated: 'likely', risk: 'low', concerns: [] } } : base);
   const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
-  const msg = (id) => ({ update_id: id, message: { chat: { id: -100, type: 'group' }, from: { id: 555, first_name: 'Pat', is_bot: false }, text: 'Buy Apple gift cards for $200 right now and send me the codes' } });
+  const TEXT = 'Buy Apple gift cards for $200 right now and send me the codes';
+  // In a group everyone would read it, including the sender, so the hint is never posted there.
+  await bot.handleUpdate({ update_id: 90, message: { chat: { id: -100, type: 'group' }, from: { id: 556, first_name: 'Pat', is_bot: false }, text: TEXT } });
+  assert.ok(!said.some((s) => /profile picture/.test(s)), 'not in a group');
+  assert.equal(photoCalls, 0, 'and the picture was not even fetched');
+  // Where only the protected person reads it (their own account, through Business), it is shown.
+  const msg = (id) => ({ update_id: id, business_message: { business_connection_id: 'bc9', chat: { id: 555, type: 'private' }, from: { id: 555, first_name: 'Pat', is_bot: false }, text: TEXT } });
   await bot.handleUpdate(msg(1));
   assert.ok(said.some((s) => /profile picture looks AI-generated/.test(s) && /only a hint/.test(s)), 'hedged, not certain');
   await bot.handleUpdate(msg(2));
