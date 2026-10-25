@@ -148,7 +148,8 @@ function unlockVoice() {
     Promise.resolve(el.play()).catch(() => { voice.el = null; }); // blocked: try again on the next tap
   } catch { voice.el = null; }
 }
-for (const ev of ['pointerdown', 'touchend', 'keydown']) addEventListener(ev, unlockVoice, { capture: true, passive: true });
+// Only where there is a real window (the team's Node smoke tests load this file without one).
+if (typeof addEventListener === 'function') for (const ev of ['pointerdown', 'touchend', 'keydown']) addEventListener(ev, unlockVoice, { capture: true, passive: true });
 
 async function warmVoice() {
   if (voice.warmed) return;
