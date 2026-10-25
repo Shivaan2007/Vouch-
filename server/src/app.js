@@ -10,6 +10,7 @@ import { openDb } from './db.js';
 import { verifySig, isP256Spki, newId, sha256hex, normalizeText } from './sig.js';
 import { decide, tierFor } from './decision.js';
 import { analyzeSafe } from './analyze.js';
+import { createTts } from './tts.js';
 import { authString, answerString, confirmString, METHODS } from '../../web/js/lib/canonical.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,7 @@ export function createVouchServer({
   sweepMs = 1000,
   analyze,
   demoKey = process.env.DEMO_KEY,
+  ttsOptions = {},
   registerPerMin = cfg.REGISTER_PER_MIN,
   log = (...a) => console.log(...a),
 } = {}) {
@@ -69,6 +71,14 @@ export function createVouchServer({
   app.get('/demo', (_req, res) => (demoKey ? res.type('html').send(DEMO_PAGE) : res.status(404).end()));
   app.post('/demo/reset', demoGuard, (req, res) => res.json({ ok: true, ...resetDemo(req.query.hard === '1') }));
   app.get('/demo/status', demoGuard, (_req, res) => res.json({ ok: true, ...demoStatus() }));
+
+  // Spoken alerts: GET /tts/stop | wait | ok | call -> audio/mpeg. Only these fixed phrases exist; the route takes no text.
+  const tts = createTts({ log, ...ttsOptions });
+  app.get('/tts/:id', async (req, res) => {
+    const out = await tts.get(req.params.id);
+    if (out.status !== 200) return res.status(out.status).json({ ok: false, error: out.error });
+    return res.set({ 'Content-Type': 'audio/mpeg', 'Cache-Control': 'public, max-age=86400' }).send(out.audio);
+  });
   app.use(express.static(webDir));
 
   const httpServer = http.createServer(app);
@@ -418,6 +428,7 @@ export function createVouchServer({
     const users = db.prepare('SELECT user_id, name FROM users ORDER BY created_at').all();
     return {
       users: users.map((u) => ({ name: u.name, online: isOnline(u.user_id), friends: q.friends.all({ u: u.user_id }).length })),
+      tts: tts.enabled() ? `on (${tts.cachedCount()} of 4 phrases cached)` : 'off (no ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID)',
       pairs: db.prepare('SELECT COUNT(*) n FROM pairs').get().n,
       openRequests: db.prepare("SELECT COUNT(*) n FROM verify_requests WHERE status = 'open'").get().n,
     };
