@@ -27,7 +27,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
   db.exec(`
     CREATE TABLE IF NOT EXISTS watch_links (channel TEXT NOT NULL, ref TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (channel, ref));
     CREATE TABLE IF NOT EXISTS watch_chats (channel TEXT NOT NULL, ref TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (channel, ref, user_id));
-    INSERT OR IGNORE INTO watch_chats SELECT channel, ref, user_id, created_at FROM watch_links;
+    INSERT OR IGNORE INTO watch_chats (channel, ref, user_id, created_at) SELECT channel, ref, user_id, created_at FROM watch_links;
     CREATE TABLE IF NOT EXISTS watch_codes (code TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
     -- Who sent flagged messages to each account: an identifier, a name and a count. Never the message itself.
     CREATE TABLE IF NOT EXISTS watch_senders (

@@ -290,3 +290,41 @@ test('the app gets an instant AI read, and a flagged call messages the person an
   assert.ok(sent.some((m) => String(m.chat_id) === '8401' && /CallUser is on a call that looks like a scam/.test(m.text)), 'and so is the family');
   gran.socket.close();
 });
+
+test('restarts are safe: starting the service again on the same database file keeps links and senders', async () => {
+  const os = await import('node:os'); const fs = await import('node:fs'); const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vouch-restart-'));
+  const dbPath = path.join(dir, 'v.db');
+  const boot = async () => {
+    const s = createVouchServer({ dbPath, log: () => {} });
+    const w = attachWatch({ httpServer: s.httpServer, io: s.io, db: s.db, fetchImpl, startTelegram: false, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }), infer: async () => null, env: { BOT_TOKEN: 'TESTTOKEN' } });
+    const p = await s.listen(0);
+    return { s, w, p };
+  };
+  // first life: register, link a chat, flag a sender
+  let { s, w, p } = await boot();
+  const keys = await createIdentityKeys();
+  const sock = ioClient(`http://localhost:${p}`, { transports: ['websocket'], reconnection: false });
+  const nonce = await new Promise((r) => sock.once('auth:challenge', (m) => r(m.nonce)));
+  const call = (ev, b = {}) => new Promise((r) => sock.emit(ev, b, r));
+  await call('user:register', { name: 'Restarter', signPub: await exportPub(keys.signKeyPair.publicKey), exchPub: await exportPub(keys.exchKeyPair.publicKey), sig: await signString(keys.signKeyPair.privateKey, authString(nonce)) });
+  const { code } = await call('watch:link');
+  await w.telegram.handleUpdate({ update_id: 1, message: { chat: { id: -7777, type: 'group' }, from: { id: 1, first_name: 'G', is_bot: false }, text: `/start link_${code}` } });
+  await w.telegram.handleUpdate({ update_id: 2, message: { chat: { id: -7777, type: 'group' }, from: { id: 9, first_name: 'Bad', username: 'bad_guy', is_bot: false }, text: SCAM } });
+  assert.equal((await call('watch:senders')).senders.length, 1);
+  sock.close(); await s.close();
+
+  // second life: the same file, started again (this crashed before the fix)
+  ({ s, w, p } = await boot());
+  assert.ok(w.link.lookup('telegram', -7777).length === 1, 'the chat is still linked');
+  const sock2 = ioClient(`http://localhost:${p}`, { transports: ['websocket'], reconnection: false });
+  const nonce2 = await new Promise((r) => sock2.once('auth:challenge', (m) => r(m.nonce)));
+  const call2 = (ev, b = {}) => new Promise((r) => sock2.emit(ev, b, r));
+  const reg = await call2('auth:login', { userId: (await new Promise((r) => { const row = s.db.prepare('SELECT user_id FROM users LIMIT 1').get(); r(row); })).user_id, sig: await signString(keys.signKeyPair.privateKey, authString(nonce2)) });
+  assert.equal(reg.ok, true);
+  const senders = (await call2('watch:senders')).senders;
+  assert.equal(senders.length, 1);
+  assert.equal(senders[0].handle, '@bad_guy');
+  sock2.close(); await s.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
