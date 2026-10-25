@@ -140,7 +140,9 @@ export function createVouchServer({
     if (!nonce || typeof sig !== 'string') fail('BAD_SIGNATURE');
     const ok = verifySig(signPub, authString(nonce), sig);
     if (!ok) fail('BAD_SIGNATURE');
-    freshChallenge(socket); // a nonce is good for one login only
+    // A nonce is good for one successful login. Do NOT send another auth:challenge here: the phone answers every challenge
+    // with a login, so that would loop. One challenge per connection, as PROTOCOL section 2 says.
+    socket.data.nonce = null;
   }
 
   // ---- verdicts ----
@@ -166,7 +168,8 @@ export function createVouchServer({
         understanding: { tags, paymentRisk: r.payment_risk, explanation: r.explanation, firstRequest: !!r.first_request },
         confidence: {
           answer: a ? a.answer : (timedOut ? 'timeout' : 'none'), wordOk: !!r.word_ok,
-          approvals: { needed: d.tier === 3 ? 2 : 1, received: (a?.answer === 'yes' ? 1 : 0) + (s?.answer === 'yes' ? 1 : 0) },
+          // the second person only: the phone shows "Second person: received of needed" and hides it when needed is 0
+          approvals: { needed: d.needs.second ? 1 : 0, received: s?.answer === 'yes' ? 1 : 0 },
           answerSig: a ? { answer: a.answer, ts: a.ts, nonce: a.nonce, sig: a.sig } : null,
         },
       },
@@ -326,7 +329,8 @@ export function createVouchServer({
       if (r.status !== 'open') fail('NOT_ALLOWED'); // timed out
       if (!['yes', 'not_me'].includes(p.answer)) fail('BAD_INPUT');
       checkNonceTs(p.ts, p.nonce);
-      if (r.tier >= 2 && p.retypedCents !== r.amount_cents) fail('AMOUNT_MISMATCH');
+      // The retype stops a reflex tap on Yes. It must never block a Not me.
+      if (p.answer === 'yes' && r.tier >= 2 && p.retypedCents !== r.amount_cents) fail('AMOUNT_MISMATCH');
       const signed = answerString({
         requestId: r.request_id, checkerId: r.checker_id, claimedId: r.claimed_id,
         amountCents: r.amount_cents, method: r.method, answer: p.answer, ts: p.ts, nonce: p.nonce,
