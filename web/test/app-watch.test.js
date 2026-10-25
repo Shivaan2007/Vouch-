@@ -594,3 +594,16 @@ test('with recording switched on, the whole call is saved on this phone, can be 
     const done = btn('Done'); if (done) await done.fire('click');
   }
 });
+
+test('the call card says who the caller claims to be and who you are, without presenting it as proven', async () => {
+  await dismissAll();
+  await go('On a call'); await wait(100);
+  await btn('Listen for scams').fire('click'); await wait(200);
+  const box = find(appEl, (n) => n.tag === 'textarea' && n.attrs && n.attrs.id === 'callsays');
+  if (box) { box.value = 'Hello, this is Sam from First Harbor Bank fraud department, please read me the six digit code'; await box.fire('input'); }
+  await wait(300);
+  assert.ok(text().includes('Caller') && text().includes('You'), 'both labels are on the card');
+  assert.ok(text().includes('this phone'), 'and who you are');
+  assert.ok(!/Caller[^]*verified|confirmed by Vouch/i.test(text()), 'never claims it knows who it is for sure');
+  await stopCall();
+});

@@ -70,9 +70,9 @@ export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl 
    * The full read. The AI decides what the message is; the rules are the floor under it.
    * @param {{text?: string, imageBase64?: string, context?: string[]}} input
    */
-  async function assess({ text = '', imageBase64, context = [], audioBase64 } = {}) {
+  async function assess({ text = '', imageBase64, context = [], audioBase64, videoBase64, videoMime } = {}) {
     let ai = null;
-    try { ai = await infer({ text, imageBase64, context, audioBase64 }); } catch { ai = null; }
+    try { ai = await infer({ text, imageBase64, context, audioBase64, videoBase64, videoMime }); } catch { ai = null; }
     if (ai) ai = { links: [], image: null, signals: [], steps: [], tags: [], heard: '', ...ai }; // tolerate a result that leaves a field out
     // For a call, the words are what the AI just heard on top of what was already known; the rules read all of them.
     const words = `${text} ${(ai && ai.heard) || ''}`.trim();

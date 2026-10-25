@@ -1184,6 +1184,18 @@ function paintListen() {
     }
     g.replaceChildren(...(c && id === 'listenguide' ? [guideCard(c, !!S.callAi)] : []));
   }
+  // Who is on the line, and who Vouch is protecting. Vouch cannot read caller ID from a web page, so "who" is what YOU picked from
+  // your trusted people, or who the caller CLAIMS to be (as heard); it is never presented as proven.
+  const who = document.getElementById('lv-who');
+  if (who) {
+    const claim = (S.callAi && S.callAi.impersonating) || '';
+    if (claim) S.callClaims = claim;
+    const f = callFriend();
+    const caller = f ? [h('b', null, f.name), ' (on your trusted list). Ask for the code word to be sure.']
+      : S.callClaims ? [h('b', null, S.callClaims), ' (as the caller says). Not on your list, so not confirmed.']
+        : ['Not known yet. Not on your list.'];
+    who.replaceChildren(h('span', { class: 'wk' }, 'Caller'), h('span', null, ...caller), h('span', { class: 'wk' }, 'You'), h('span', null, h('b', null, S.me ? S.me.name : ''), ' (this phone)'));
+  }
   const coachBox = document.getElementById('lv-coach');
   if (coachBox) coachBox.replaceChildren(...coachNodes());
   const whyBox = document.getElementById('lv-why');
@@ -1237,6 +1249,7 @@ function dockView() {
       h('span', { class: 'livedot', 'aria-hidden': 'true' }),
       h('span', { class: 'livetitle' }, rec ? 'Analyzing a recording' : (f ? `Listening to your call with ${f.name}` : 'Listening to your call')),
       h('span', { class: 'calltime', id: 'lv-time' }, fmtClock(Date.now() - ((S.call && S.call.startedAt) || Date.now())))),
+    h('div', { class: 'wholine', id: 'lv-who' }),
     h('div', { id: 'lv-risk', class: `riskbadge r${level}`, role: 'status', 'aria-live': 'assertive' }, RISK_TEXT[level]),
     h('div', { id: 'lv-guide' }),
     h('div', { id: 'lv-coach' }),
@@ -1272,7 +1285,7 @@ function rebuildDock() { if ($dock) $dock.dataset.sig = ''; paintDock(); }
 function newCall(mode, status) {
   stopEngine();
   holdScreen();
-  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '', callState: null, wordHeard: false });
+  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '', callState: null, wordHeard: false, callClaims: '' });
   S.call = { startedAt: Date.now() };
   S.listen = { mode, status, level: 0, words: 0 };
   S.stt = { q: [], busy: false, retries: 0 };
@@ -1617,7 +1630,7 @@ async function stopListening() {
   const rec = await stopRecorder(); // let the last seconds of audio land before anything is torn down
   stopEngine();
   S.listening = false;
-  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; S.callState = null; S.wordHeard = false; // the next call starts calm, so it can warn again
+  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; S.callState = null; S.wordHeard = false; S.callClaims = ''; // the next call starts calm, so it can warn again
   S.listen = { mode: 'off', status: '', level: 0, words: 0 };
   clearAlert('call');
   paintStatus();

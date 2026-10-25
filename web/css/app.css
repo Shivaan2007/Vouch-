@@ -626,3 +626,7 @@ input, textarea { border: 1.5px solid var(--line); background: var(--bg); } inpu
 .tgcard .apphead .applogo { grid-row: 1 / span 2; }
 .tgcard .appname { min-width: 0; } .tgcard .appname .muted { overflow-wrap: normal; white-space: nowrap; }
 .tgcard .statuschip { grid-column: 2; justify-self: start; }
+
+/* Who is on the line, and who Vouch is protecting. */
+.wholine { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.7rem; align-items: baseline; font-size: 0.95rem; margin: 0.2rem 0 0.5rem; padding: 0.55rem 0.75rem; background: var(--surface); border-radius: var(--radius-sm); }
+.wholine .wk { color: var(--muted); font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }

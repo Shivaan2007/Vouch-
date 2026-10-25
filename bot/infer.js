@@ -138,11 +138,12 @@ export function cleanInference(raw) {
  * @param {{fetchImpl?: typeof fetch, apiKey?: string, timeoutMs?: number}} [opts]
  * @returns {Promise<ReturnType<typeof cleanInference>>} null when there is no key, no input, or anything goes wrong
  */
-export async function inferScam({ text = '', imageBase64, context = [], audioBase64 } = {}, { fetchImpl = globalThis.fetch, apiKey = geminiConfig().apiKey, timeoutMs = 3500, hedgeMs = 1200 } = {}) {
+export async function inferScam({ text = '', imageBase64, context = [], audioBase64, videoBase64, videoMime } = {}, { fetchImpl = globalThis.fetch, apiKey = geminiConfig().apiKey, timeoutMs = 3500, hedgeMs = 1200 } = {}) {
   const mime = imageMime(imageBase64);
   const hasText = typeof text === 'string' && text.trim().length > 0;
   const hasAudio = typeof audioBase64 === 'string' && audioBase64.startsWith('UklGR'); // a WAV file
-  if (!apiKey || typeof fetchImpl !== 'function' || (!hasText && !mime && !hasAudio)) return null;
+  const hasVideo = typeof videoBase64 === 'string' && /^video\/(mp4|webm|quicktime|mpeg)$/.test(videoMime || '') && videoBase64.length > 100;
+  if (!apiKey || typeof fetchImpl !== 'function' || (!hasText && !mime && !hasAudio && !hasVideo)) return null;
 
   const parts = [{ text: INSTRUCTIONS }];
   const earlier = (Array.isArray(context) ? context : []).map((c) => clean(c, 400)).filter(Boolean).slice(-5);
@@ -152,9 +153,10 @@ export async function inferScam({ text = '', imageBase64, context = [], audioBas
   const links = hasText ? extractLinks(text) : [];
   parts.push({ text: links.length ? `LINKS FOUND IN THE MESSAGE (parsed by code; judge each one; you cannot open them):\n${describeLinks(links)}` : 'LINKS FOUND IN THE MESSAGE: none. (If an attached image shows a link, judge it too.)' });
   if (mime) parts.push({ inline_data: { mime_type: mime, data: imageBase64 } });
+  if (hasVideo) parts.push({ text: 'ATTACHED VIDEO (untrusted). Report it in the image field (present true, kind: Video): does it look AI-generated or a deepfake (unnatural face, lip-sync, texture or motion), and does anyone in it ask for money, codes or personal details? Put anything said that matters into heard. Hedge: this is a hint, not proof.' }, { inline_data: { mime_type: videoMime, data: videoBase64 } });
 
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), hasAudio ? Math.max(timeoutMs, 9000) : timeoutMs); // listening to a clip takes longer than reading text
+  const timer = setTimeout(() => ctrl.abort(), hasAudio ? Math.max(timeoutMs, 9000) : hasVideo ? Math.max(timeoutMs, 20000) : timeoutMs); // listening to a clip takes longer than reading text
   // One model's try. A model that is rate-limited or retired fails fast; a model that merely stalls is not waited for (see below).
   const attempt = async (model) => {
     try {
