@@ -149,3 +149,19 @@ test('a picture that cannot be opened gets a plain answer, not silence or a cras
   await bot.handleUpdate({ update_id: 2, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, photo: [{ file_id: 'x', file_size: 9999999 }] } });
   assert.equal(says.filter((s) => /couldn't open/.test(s)).length, 2, 'too large is refused politely too');
 });
+
+test('an alert sent on its own carries a one-tap Open Vouch button, but only for a real https address', () => {
+  const secure = createBot({ token: 'T', vouchUrl: 'https://vouch.example', fetchImpl: async () => ({ json: async () => ({}) }) });
+  assert.deepEqual(secure.openApp, { reply_markup: { inline_keyboard: [[{ text: 'Open Vouch', url: 'https://vouch.example' }]] } });
+  assert.deepEqual(createBot({ token: 'T', vouchUrl: 'http://192.168.1.5:3000', fetchImpl: async () => ({}) }).openApp, {});
+  assert.deepEqual(createBot({ token: 'T', fetchImpl: async () => ({}) }).openApp, {});
+});
+
+test('starting the bot sets its command menu', async () => {
+  const methods = [];
+  const fetchImpl = async (url) => { methods.push(String(url).split('/').pop()); const bot = null; void bot; return { json: async () => ({ ok: false, description: 'stop' }) }; };
+  const b = createBot({ token: 'T', fetchImpl });
+  const p = b.start(); await new Promise((r) => setTimeout(r, 30)); b.stop();
+  assert.ok(methods.includes('setMyCommands'));
+  void p;
+});

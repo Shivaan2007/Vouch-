@@ -58,6 +58,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     linkedFor: db.prepare('SELECT DISTINCT channel FROM watch_chats WHERE user_id = ?'),
     unlink: db.prepare('DELETE FROM watch_chats WHERE user_id = ? AND channel = ?'),
     unlinkChat: db.prepare('DELETE FROM watch_chats WHERE channel = ? AND ref = ?'),
+    backfill: db.prepare('UPDATE watch_chats SET target = ? WHERE channel = ? AND ref = ? AND target IS NULL'),
     userName: db.prepare('SELECT name FROM users WHERE user_id = ?'),
   };
   q.sExpire.run(Date.now() - SENDER_TTL_MS);
@@ -65,7 +66,8 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
 
   // Used by the doors: find who a chat warns (every account linked to it), link it with a one-time code, or unlink it.
   const link = {
-    lookup: (channel, id) => q.lookup.all(channel, hashRef(channel, id)).map((r) => r.user_id),
+    // A chat linked by an older version has no address to message back. Seeing it speak is the moment to learn it.
+    lookup: (channel, id) => { const ref = hashRef(channel, id); q.backfill.run(String(id), channel, ref); return q.lookup.all(channel, ref).map((r) => r.user_id); },
     who: (channel, id) => q.lookup.all(channel, hashRef(channel, id)).map((r) => nameOf(r.user_id)),
     bind: (channel, id, code) => {
       const row = q.getCode.get(String(code).trim());
@@ -136,7 +138,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
   let ready = Promise.resolve(); // resolves once Telegram has answered, so a startup message can be honest
   if (env.BOT_TOKEN) {
     telegram = createBot({
-      token: env.BOT_TOKEN, fetchImpl, analyze, infer, vouchUrl: env.VOUCH_URL || '', link, onFlag: pushAlert, onAi: pushAi, track, log, voice,
+      token: env.BOT_TOKEN, fetchImpl, analyze, infer, vouchUrl: env.VOUCH_URL || env.PUBLIC_URL || '', link, onFlag: pushAlert, onAi: pushAi, track, log, voice,
       guardians: (env.GUARDIAN_CHAT_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
     });
     // Only start listening once Telegram accepts the token, so a wrong or revoked token is one clear log line, not a retry loop.
@@ -214,7 +216,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     let sentTo = 0;
     for (const t of q.targets.all(userId)) {
       try {
-        if (t.channel === 'telegram' && telegram) { await telegram.say(t.target, text); sentTo += 1; }
+        if (t.channel === 'telegram' && telegram) { await telegram.say(t.target, text, telegram.openApp); sentTo += 1; }
         else if ((t.channel === 'sms' || t.channel === 'whatsapp') && twilio) { await twilio.send(t.target, text); sentTo += 1; }
       } catch { /* one app being unreachable must not stop the others */ }
     }

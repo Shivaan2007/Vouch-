@@ -25,6 +25,7 @@ const fetchImpl = async (u, init) => {
 
 const dom = installFakeDom({ makeSocket: () => { const s = ioClient(url, { transports: ['websocket'], reconnection: false }); clients.push(s); return s; } });
 const { appEl, loc, wait, text, btn, find } = dom;
+const go = async (label) => { const home = btn('Home'); if (home) { await home.fire('click'); await wait(30); } await btn(label).fire('click'); };
 
 before(async () => {
   process.env.GEMINI_API_KEY = 'test-key'; // so the server can listen; the Gemini call is faked above
@@ -49,7 +50,7 @@ test('sign up, then the message-bot card shows Telegram and a one-time link code
   find(appEl, (n) => n.id === 'name').value = 'Gran';
   await btn('Get started').fire('click');
   await wait(1000);
-  await btn('My people').fire('click');
+  await go('My people');
   await wait(100);
   assert.ok(text().includes('Connected apps'));
   assert.ok(text().includes('@vouch_test_bot'), 'the door the server really has');
@@ -80,9 +81,9 @@ test('a message forwarded to the linked bot chat flashes a warning in the app', 
 });
 
 test('On a call works with no friends: typed words are flagged live, with the scam type and steps', async () => {
-  await btn('On a call').fire('click');
+  await go('On a call');
   await wait(100);
-  assert.ok(text().includes('Is the call a scam?'), 'the call listener is there even with no friends');
+  assert.ok(text().includes('Listen for scams'), 'the call listener is there even with no friends');
   const box = find(appEl, (n) => n.id === 'callsays');
   box.value = 'please go and buy some apple gift cards and read me the numbers';
   await box.fire('input');
@@ -103,15 +104,15 @@ test('listening through the Vouch server: audio goes up, words come back, the ca
     close() {}
   };
   dom.nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) };
-  await btn('My people').fire('click'); // the app re-reads what the server offers
+  await go('My people'); // the app re-reads what the server offers
   await wait(200);
-  await btn('On a call').fire('click');
+  await go('On a call');
   await wait(100);
   // start from a clean slate: clear the typed words and the earlier call alert
   const box = find(appEl, (n) => n.id === 'callsays');
   box.value = '';
   await box.fire('input');
-  await btn('Is the call a scam?').fire('click');
+  await btn('Listen for scams').fire('click');
   await wait(300);
   assert.ok(text().includes('Put the call on speaker'), 'tells the person what to do');
   assert.ok(proc && typeof proc.onaudioprocess === 'function', 'the microphone is wired up');
@@ -137,8 +138,8 @@ test('the call screen: caller, clock, captions with the risky words marked, risk
   globalThis.Audio = class { play() { return Promise.resolve(); } pause() {} };
   globalThis.URL.createObjectURL = () => 'blob:test';
   globalThis.URL.revokeObjectURL = () => {};
-  await btn('My people').fire('click'); await wait(150);
-  await btn('On a call').fire('click'); await wait(100);
+  await go('My people'); await wait(150);
+  await go('On a call'); await wait(100);
   const pick = find(appEl, (n) => n.id === 'recfile');
   assert.ok(pick, 'the recording picker is offered because the server can listen');
   const file = { arrayBuffer: async () => new ArrayBuffer(8), name: 'clip.mp3' };
@@ -186,7 +187,7 @@ test('a forwarded scam shows who sent it, what the AI made of it, and the sender
   assert.ok(text().includes('read by AI'), 'and says the AI read it');
   assert.ok(find(appEl, (n) => n.tag === 'details' && n.className === 'whybox'), 'the proof sits behind one tap: Why Vouch thinks so');
   await dismissAll();
-  await btn('My people').fire('click');
+  await go('My people');
   await wait(300);
   assert.ok(text().includes('Flagged senders'), 'there is a list of flagged senders');
   assert.ok(text().includes('@fake_irs'), 'with this one in it');
@@ -205,7 +206,7 @@ test('the Check form shows the AI read a moment after you paste, and a flagged c
   assert.equal((await sam.call('pair:accept', { token })).ok, true);
   await wait(600);
   await btn('It matches').fire('click');
-  await btn('Check a message').fire('click');
+  await go('Check a message');
   await wait(150);
   aiNext = async () => ({ moneyRequest: true, amountUSD: 1000, paymentMethod: 'unknown', risk: 'medium', scamType: 'Secret money request', impersonating: 'a friend', signals: ['asks you not to tell anyone'], why: 'Asks you to keep it secret.', steps: ['Do not send yet.', 'Call them on a number you know.'], tags: ['SECRECY'], intent: 'message', reply: '' });
   try {
@@ -218,7 +219,7 @@ test('the Check form shows the AI read a moment after you paste, and a flagged c
   assert.ok(text().includes('asks you not to tell anyone'), 'with what stood out');
 
   sent.length = 0;
-  await btn('On a call').fire('click');
+  await go('On a call');
   await wait(100);
   const calls = dom.nav; // unused; keep lint quiet
   void calls;

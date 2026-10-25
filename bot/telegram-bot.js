@@ -35,7 +35,9 @@ export function createBot({
     });
     return res.json();
   }
-  const say = (chat_id, text) => api('sendMessage', { chat_id, text, disable_web_page_preview: true });
+  const say = (chat_id, text, extra = {}) => api('sendMessage', { chat_id, text, disable_web_page_preview: true, ...extra });
+  // Under a warning that was sent on its own (not as a reply), one tap opens Vouch. Only a real https address can be a button.
+  const openApp = /^https:\/\//.test(vouchUrl) ? { reply_markup: { inline_keyboard: [[{ text: 'Open Vouch', url: vouchUrl }]] } } : {};
 
   // The channel-neutral engine (shared with the SMS/WhatsApp door): assess text, then word the answer.
   const core = createCore({ analyze, infer, vouchUrl });
@@ -94,6 +96,7 @@ export function createBot({
       await fetchImpl(`https://api.telegram.org/bot${token}/sendVoice`, { method: 'POST', body: form });
     } catch (e) { log('voice reply failed:', e.message); }
   }
+  const tipped = new Set(); // chats already told how to connect, so the tip is said once
   const voiceChats = new Set(); // chats that asked to hear every answer, kept in memory only
 
   async function alertGuardians(fromChatId, name, tags) {
@@ -151,6 +154,19 @@ export function createBot({
       return;
     }
     if (/^\/stopguardian\b/.test(text)) { guardianChats.delete(String(chatId)); await say(chatId, 'Okay, this chat will no longer get heads-ups.'); return; }
+    // "/flag" as a reply to a message (or to a forwarded one): remember who sent it, for the Vouch accounts this chat warns.
+    if (/^\/flag\b/.test(text)) {
+      const users = link ? link.lookup('telegram', chatId) : [];
+      if (!users.length) { await say(chatId, 'Connect this chat to your Vouch first (in Vouch: My people, Connect). Then I can remember who to watch for.'); return; }
+      const target = msg.reply_to_message;
+      if (!target) { await say(chatId, 'Reply to the message with /flag. In a private chat, forward the message to me first, then reply to it.'); return; }
+      const who = senderOf(target, isPrivate);
+      if (!target.forward_origin && target.from && msg.from && target.from.id === msg.from.id) { await say(chatId, "That message is yours, so there's no one to flag. Forward theirs to me, then reply with /flag."); return; }
+      if (!who || who.hidden || !track) { await say(chatId, "I can't tell who sent that. Telegram hides the sender when someone turns off forwarding."); return; }
+      track.note(users, 'telegram', who, { level: 2, guide: { title: 'Flagged by you' } });
+      await say(chatId, `Done. I'll treat ${who.handle || who.name || 'them'} as a likely scammer, and you'll see them under Flagged senders in Vouch.`);
+      return;
+    }
     if (/^\/voice\b/.test(text)) {
       if (!voice || !voice.enabled) { await say(chatId, "Spoken answers aren't switched on for this bot yet."); return; }
       if (voiceChats.has(String(chatId))) { voiceChats.delete(String(chatId)); await say(chatId, 'Okay. I will answer in writing only.'); }
@@ -201,6 +217,10 @@ export function createBot({
     const speak = !deferQuiet && (isPrivate || q.level === 2 || (q.level === 1 && q.ask));
     if (deferQuiet) api('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
     const sent = speak ? await say(chatId, core.reply(q, { sender: view })) : null;
+    if (speak && q.level >= 1 && !users.length && link && isPrivate && !tipped.has(String(chatId))) {
+      tipped.add(String(chatId));
+      await say(chatId, 'Tip: this chat is not connected to Vouch, so the warning stays here. In Vouch, open My people and tap Connect next to Telegram, and warnings will flash in the app too.');
+    }
     const alerts = []; // [account, alert id], so the AI's read can be added to the very warning already on screen
     if (q.level >= 1) for (const uid of users) alerts.push([uid, onFlag(uid, q, 'telegram', view)]);
     if (q.level === 2) await alertGuardians(chatId, msg.from.first_name, q.tags);
@@ -233,6 +253,12 @@ export function createBot({
 
   async function start() {
     running = true;
+    // The menu next to the message box lists what the bot can do, so nobody has to remember a command.
+    api('setMyCommands', { commands: [
+      { command: 'start', description: 'What I do' }, { command: 'flag', description: 'Reply to a message to flag its sender' },
+      { command: 'voice', description: 'Read my answers out loud' }, { command: 'who', description: 'Who this chat warns' },
+      { command: 'unlink', description: 'Stop warning the Vouch app' }, { command: 'guardian', description: 'Family chat: get heads-ups' },
+    ] }).catch(() => {});
     let offset = 0;
     while (running) {
       try {
@@ -250,7 +276,7 @@ export function createBot({
   }
   const stop = () => { running = false; };
 
-  return { handleUpdate, assess, start, stop, guardianChats, say, alertGuardians };
+  return { handleUpdate, assess, start, stop, guardianChats, say, alertGuardians, openApp };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
