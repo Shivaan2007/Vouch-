@@ -364,6 +364,27 @@ async function boot() {
     S.me = null; S.keys = null; S.pubs = null; S.friends = [];
     S.bootError = (e && (e.name + ': ' + e.message)) || String(e);
   }
+  // Set the display once from a link, so a demo phone never has to be set up by hand (and a reset or re-pair does not undo it):
+  //   https://<address>/?aloud=1            speak warnings aloud
+  //   also size=1..4, theme=auto|light|dark|hc, reading=1, calm=1   (combine them with &)
+  // It is saved on the phone like any Display setting, then removed from the address bar. It never touches keys or people.
+  try {
+    const p = new URLSearchParams(location.search);
+    const patch = {};
+    if (p.has('aloud')) patch.aloud = p.get('aloud') === '1';
+    if (p.has('size') && [1, 2, 3, 4].includes(Number(p.get('size')))) patch.size = Number(p.get('size'));
+    if (p.has('theme') && ['auto', 'light', 'dark', 'hc'].includes(p.get('theme'))) patch.theme = p.get('theme');
+    if (p.has('reading')) patch.reading = p.get('reading') === '1';
+    if (p.has('calm')) patch.calm = p.get('calm') === '1';
+    if (Object.keys(patch).length) {
+      saveDisplay({ ...loadDisplay(), ...patch });
+      for (const k of ['aloud', 'size', 'theme', 'reading', 'calm']) p.delete(k);
+      const rest = p.toString();
+      history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
+      const clean = rest ? `?${rest}` : '';
+      if (location.search !== clean) location.search = clean; // a real browser already shows the cleaned address after replaceState, so this never reloads the page
+    }
+  } catch { /* a malformed address must never stop the app from starting */ }
   const m = /pair=([A-Za-z0-9]+)/.exec(location.hash);
   if (m) S.pendingPair = m[1].toUpperCase();
   // Android "Share to Vouch": the shared message arrives as ?text=...
