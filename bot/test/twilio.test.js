@@ -96,8 +96,8 @@ test('non-image media and empty messages get a helpful nudge, not an error', asy
 
 test('a calm message is not called safe', async () => {
   const r = await post({ From: '+15551116666', Body: 'dinner is at six' });
-  assert.match(r.body, /Nothing stands out/);
-  assert.match(r.body, /only a Yes/);
+  assert.match(r.body, /don&apos;t see anything in that asking for money/);
+  assert.match(r.body, /check it with their own phone in Vouch/);
 });
 
 test('XML in a message cannot break the reply', async () => {

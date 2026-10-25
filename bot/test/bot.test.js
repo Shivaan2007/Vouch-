@@ -28,8 +28,8 @@ test('private scam message gets an immediate warning', async () => {
 test('private clean message gets a calm answer that does not clear it', async () => {
   const { texts, say } = harness();
   await say(1, 'dinner is at six, bring dessert');
-  assert.match(texts()[0].text, /Nothing stands out/);
-  assert.match(texts()[0].text, /only a Yes/);
+  assert.match(texts()[0].text, /don't see anything in that asking for money/);
+  assert.match(texts()[0].text, /check it with their own phone in Vouch/);
 });
 
 test('groups stay quiet unless something looks wrong', async () => {
@@ -73,4 +73,40 @@ test('bots and empty updates are ignored', async () => {
   await bot.handleUpdate({ update_id: 2 });
   await bot.handleUpdate(undefined);
   assert.equal(texts().length, 0);
+});
+
+test('saying hello to the bot gets a conversation, not a scam analysis', async () => {
+  const { texts, say } = harness();
+  for (const hello of ['yo', 'hi', 'Hello!', 'thanks', 'what do you do?']) {
+    await say(1, hello);
+  }
+  const all = texts().map((t) => t.text);
+  assert.equal(all.length, 5);
+  for (const t of all) {
+    assert.match(t, /I'm Vouch Alert/);
+    assert.doesNotMatch(t, /Nothing stands out|SCAM|does not make it safe|asking for money or showing/);
+  }
+});
+
+test('when the AI is available it answers a greeting itself, in its own words', async () => {
+  const sent = [];
+  const fetchImpl = async (url, init) => { sent.push({ method: url.split('/').pop(), body: JSON.parse(init.body) }); return { json: async () => ({ ok: true, result: { message_id: 1 } }) }; };
+  const infer = async () => ({ moneyRequest: false, amountUSD: null, paymentMethod: 'unknown', risk: 'none', scamType: 'Ordinary message', impersonating: '', signals: [], why: '', steps: [], tags: [], intent: 'chat', reply: 'Hi there! Send me anything that looks off and I will tell you what I see.' });
+  const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, text: 'yo' } });
+  const says = sent.filter((s) => s.method === 'sendMessage');
+  assert.equal(says.length, 1);
+  assert.equal(says[0].body.text, 'Hi there! Send me anything that looks off and I will tell you what I see.');
+});
+
+test('a real message in a private chat waits for the AI instead of saying something premature', async () => {
+  const sent = [];
+  const fetchImpl = async (url, init) => { sent.push({ method: url.split('/').pop(), body: JSON.parse(init.body) }); return { json: async () => ({ ok: true, result: { message_id: 7 } }) }; };
+  const infer = async () => ({ moneyRequest: true, amountUSD: 1000, paymentMethod: 'unknown', risk: 'low', scamType: 'Ordinary message', impersonating: '', signals: [], why: 'A friend asks for $1000 with nothing unusual about it.', steps: ['Check it with their own phone.'], tags: [], intent: 'message', reply: '' });
+  const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, text: 'hey can you help me out, rent is due' } });
+  assert.ok(sent.some((s) => s.method === 'sendChatAction' && s.body.action === 'typing'), 'shows it is thinking');
+  const says = sent.filter((s) => s.method === 'sendMessage');
+  assert.equal(says.length, 1, 'one answer, after the AI has read it');
+  assert.match(says[0].body.text, /Someone is asking you for money/);
 });

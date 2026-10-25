@@ -174,3 +174,37 @@ details.more summary { padding: 0.8rem 0; }
 .friend:first-child { border-top: 0; }
 .err { color: var(--red); font-weight: 600; margin-top: 0.5rem; }
 .ok { color: var(--green); font-weight: 600; margin-top: 0.5rem; }
+
+/* live call screen: what a call looks like */
+.overlay.live { background: #0b0b0c; color: #fff; text-align: center; transition: none; }
+.overlay.live.lv1 { background: #2a2107; }
+.overlay.live.lv2 { background: #3b0d0a; }
+.livetop { font-size: 0.85rem; letter-spacing: 0.04em; color: rgba(255, 255, 255, 0.7); margin: 0.2rem 0 1rem; }
+.avatar { width: 5.2rem; height: 5.2rem; border-radius: 50%; background: rgba(255, 255, 255, 0.14); display: grid; place-items: center; font-size: 2.2rem; font-weight: 700; margin: 0 auto 0.6rem; }
+.callername { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.01em; }
+.calltime { font-size: 1.1rem; color: rgba(255, 255, 255, 0.75); font-variant-numeric: tabular-nums; margin: 0.1rem 0 0.8rem; }
+.riskbadge { display: inline-block; font-weight: 700; padding: 0.35rem 1rem; border-radius: 99px; font-size: 1rem; background: rgba(255, 255, 255, 0.16); color: #fff; }
+.riskbadge.r1 { background: #fcd34d; color: #3a2a00; }
+.riskbadge.r2 { background: #ef4444; color: #fff; }
+.livestatus { color: rgba(255, 255, 255, 0.7); font-size: 0.9rem; min-height: 1.4em; margin: 0.7rem 0 0.4rem; }
+.overlay.live .meter { background: rgba(255, 255, 255, 0.18); max-width: 14rem; margin: 0 auto 0.6rem; }
+.overlay.live .meterfill { background: #fff; width: 0; }
+.captions { text-align: left; background: rgba(255, 255, 255, 0.08); border-radius: var(--radius); padding: 0.9rem 1.1rem; min-height: 5.5rem; max-height: 9.5rem; overflow: auto; font-size: 1.15rem; line-height: 1.45; }
+.captions .dim { color: rgba(255, 255, 255, 0.55); }
+mark { background: #fcd34d; color: #000; border-radius: 5px; padding: 0 0.2em; font-weight: 700; }
+.overlay.live .guide { text-align: left; margin-top: 0.8rem; }
+.overlay.live #livewordarea { text-align: center; background: rgba(255, 255, 255, 0.08); border-radius: var(--radius); padding: 0.9rem 1rem; margin-top: 0.8rem; }
+.overlay.live #livewordarea .muted { color: rgba(255, 255, 255, 0.7); }
+.overlay.live #livewordarea details { text-align: left; }
+.callbtns { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.4rem, 1fr)); gap: 0.8rem; margin: 1.4rem auto 0; max-width: 24rem; }
+.cbtn { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; background: transparent; color: #fff; font-size: 0.8rem; min-height: 0; padding: 0; margin: 0; width: auto; }
+.cbtn .circle { width: 3.7rem; height: 3.7rem; border-radius: 50%; background: rgba(255, 255, 255, 0.16); display: grid; place-items: center; }
+.cbtn.end .circle { background: #dc2626; }
+.callbar { display: flex; align-items: center; gap: 0.7rem; background: #0b0b0c; color: #fff; border-radius: var(--radius); padding: 0.55rem 0.9rem; margin: 0.6rem 0; font-size: 0.9rem; font-weight: 600; }
+.callbar span:nth-child(2) { flex: 1; }
+.callbar button { width: auto; margin: 0; min-height: 2.4rem; padding: 0.4rem 0.9rem; background: #fff; color: #000; }
+
+/* sender and AI lines on a warning */
+.sender { font-weight: 700; margin: 0.4rem 0; }
+.airead { background: var(--surface); border-radius: var(--radius-sm); padding: 0.7rem 0.9rem; margin: 0.6rem 0 0; font-weight: 500; }
+.overlay.alert .airead { background: rgba(0, 0, 0, 0.08); }

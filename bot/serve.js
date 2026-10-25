@@ -7,8 +7,10 @@ import { attachWatch } from './watch.js';
 const server = createVouchServer({ dbPath: process.env.DB_PATH || 'vouch.db' });
 const watch = attachWatch({ httpServer: server.httpServer, io: server.io, db: server.db, log: (...a) => console.log(...a) });
 const port = Number(process.env.PORT) || 3000;
-server.listen(port).then((p) => {
+server.listen(port).then(async (p) => {
+  console.log(`Vouch (with Watch) listening on :${p}.`);
+  await watch.ready; // wait for Telegram to answer, so this line tells the truth
   const ch = watch.channels().map((c) => c.name).join(', ') || 'none configured';
-  console.log(`Vouch (with Watch) listening on :${p}. Message doors: ${ch}.`);
+  console.log(`Message doors: ${ch}. Call listening: ${process.env.GEMINI_API_KEY ? 'on' : 'off (no GEMINI_API_KEY)'}.`);
 });
 process.on('SIGTERM', () => { watch.stop(); process.exit(0); });
