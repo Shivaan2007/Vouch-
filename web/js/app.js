@@ -8,7 +8,8 @@ import {
 import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
-import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk } from './lib/scan.js';
+import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify } from './lib/scan.js';
+import { chunkToWav } from './lib/audio.js';
 
 // ---------- helpers ----------
 
@@ -44,19 +45,62 @@ const ERRORS = {
   AMOUNT_MISMATCH: "The amount you typed doesn't match.", BAD_SIGNATURE: "Your signature wasn't accepted.",
   ALREADY_ANSWERED: 'This was already answered.', NOT_FOUND: 'This request is gone.',
   RATE_LIMITED: 'Slow down a little.', BAD_INPUT: 'Check what you entered.',
+  BAD_IMAGE: "Couldn't read that picture. Try a screenshot.", IMAGE_TOO_BIG: 'That picture is too large. Try a smaller screenshot.',
   NEED_AMOUNT: 'Please type how much they asked for, like 60 or 60.50.', NEED_FRIEND: 'Link up with someone you trust first.',
 };
 const friendly = (e) => ERRORS[e && e.message] || `Something went wrong (${e && e.message})`;
 
 // Big radio cards (native inputs, so screen readers and keyboards work).
+// Brand marks (web/img/brands, CC0 Simple Icons; see NOTICE.md) shown next to the payment method or app they stand for.
+// They are drawn with the text colour, so they follow light and dark mode. Decorative: the words carry the meaning.
+const METHOD_LOGOS = {
+  venmo_cashapp_zelle: ['venmo', 'cashapp', 'zelle'], gift_card: ['apple', 'googleplay', 'steam', 'target'],
+  wire: ['westernunion'], crypto: ['bitcoin', 'ethereum'],
+};
+const CHANNEL_LOGOS = {
+  text: ['imessage', 'googlemessages'], call: ['phone'], dm: ['whatsapp', 'messenger', 'telegram', 'instagram'], email: ['gmail'],
+};
+function logos(names, size) {
+  if (!names || !names.length) return null;
+  return h('span', { class: `logos${size ? ` ${size}` : ''}`, 'aria-hidden': 'true' },
+    names.map((n) => h('span', { class: 'logo', style: `--src:url(img/brands/${n}.svg)` })));
+}
+
 let choiceSeq = 0;
+// options: [value, text, optionalLogoNames]. The returned fieldset has setValue(v) to change the selection from code.
 function choice(legend, options, selected, onchange, cls) {
   const name = `c${++choiceSeq}`;
-  return h('fieldset', null, h('legend', null, legend),
-    h('div', { class: `choices ${cls || ''}` }, options.map(([value, text]) =>
+  const fs = h('fieldset', null, h('legend', null, legend),
+    h('div', { class: `choices ${cls || ''}` }, options.map(([value, text, brands]) =>
       h('label', { class: 'choice' },
         h('input', { type: 'radio', name, value, checked: value === selected, onchange: () => onchange(value) }),
-        h('span', null, text)))));
+        h('span', { class: 'face' }, logos(brands), h('span', null, text))))));
+  fs.setValue = (v) => fs.querySelectorAll('input').forEach((i) => { i.checked = i.value === v; });
+  return fs;
+}
+
+const MAX_IMAGE_CHARS = 3_900_000; // the server accepts up to 4 MB as a data URL
+// Shrink a picked screenshot to a JPEG the server accepts. Nothing leaves the phone until "Check now".
+async function readScreenshot(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('BAD_IMAGE'));
+      i.src = url;
+    });
+    const scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight, 1));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    for (const q of [0.8, 0.6, 0.4]) {
+      const d = c.toDataURL('image/jpeg', q);
+      if (d.startsWith('data:image/jpeg') && d.length <= MAX_IMAGE_CHARS) return d;
+    }
+    throw new Error('IMAGE_TOO_BIG');
+  } finally { URL.revokeObjectURL(url); }
 }
 
 // Get a person's attention without relying on sight alone: vibrate (Android) and speak aloud.
@@ -98,11 +142,12 @@ const S = {
   friends: [], tab: 'check', pendingPair: null, current: null, results: new Map(), texts: new Map(),
   drafts: {}, queue: [], codeView: null, scanning: false, stream: null, wordFriendId: null,
   announced: new Map(), size: 1, forgetAsk: false, bootError: '',
-  form: { friendId: '', method: 'venmo_cashapp_zelle', channel: 'text', amount: '', text: '', amountTouched: false, methodTouched: false },
+  form: { friendId: '', method: 'venmo_cashapp_zelle', channel: 'text', amount: '', text: '', image: '', amountTouched: false, methodTouched: false },
 };
 const $app = document.getElementById('app');
 let $content, $status, $banners, $overlay, $toast, $conn;
 let toastTimer = null;
+const SOURCE_NAMES = { telegram: 'Telegram', sms: 'a text message', whatsapp: 'WhatsApp' };
 const friendById = (id) => S.friends.find((f) => f.id === id);
 // Is this person known to the server right now? Unknown until the first sync, so assume yes.
 const isLinked = (f) => !S.linked || S.linked.has(f.id);
@@ -198,7 +243,7 @@ async function boot() {
   }
   S.size = loadSize();
   applySize(S.size);
-  try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js'); } catch { /* optional */ }
+  try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {}); } catch { /* optional */ }
   buildShell();
   if (!store.isPersistent() || S.bootError) {
     const why = S.bootError || store.storageProblem();
@@ -209,8 +254,18 @@ async function boot() {
   renderMain();
   wireEvents();
   connect({ onChallenge, onStatus });
-  setInterval(tickWord, 1000);
+  setInterval(() => { tickWord(); tickCode(); }, 1000);
   setInterval(repeatAlert, REPEAT_MS);
+  // A link opened while Vouch is already running (for example a scanned QR in the same tab).
+  globalThis.addEventListener?.('hashchange', () => {
+    const m = /pair=([A-Za-z0-9]+)/.exec(location.hash);
+    if (!m) return;
+    history.replaceState(null, '', location.pathname);
+    const token = m[1].toUpperCase();
+    if (S.authed) acceptToken(token); else S.pendingPair = token;
+  });
+  // Ask the browser to keep this site's saved keys and links (Safari can erase them from sites it thinks are unused).
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch { /* optional */ }
   flashIfRisky(); // a message shared into Vouch is warned about straight away
 }
 
@@ -265,6 +320,7 @@ async function afterAuth() {
   S.authed = true;
   paintStatus();
   await syncFriends();
+  loadWatch().then(() => { if (S.tab === 'friends' || S.tab === 'word') renderMain(); }); // not awaited: a server without Watch just says nothing
   if (S.pendingPair) {
     const token = S.pendingPair;
     S.pendingPair = null;
@@ -303,15 +359,16 @@ function buildShell() {
   $toast = h('div', { role: 'status', 'aria-live': 'polite' });
   $content = h('main');
   $overlay = h('div');
-  const tabs = [['check', 'Check a message'], ['word', 'On a call'], ['friends', 'My people']];
-  const nav = h('nav', { id: 'nav', 'aria-label': 'Main' }, tabs.map(([key, text]) =>
-    h('button', { 'data-tab': key, onclick: () => setTab(key) }, text)));
+  const tabs = [['check', 'Check a message', 'message'], ['word', 'On a call', 'call'], ['friends', 'My people', 'people']];
+  const nav = h('nav', { id: 'nav', 'aria-label': 'Main' }, tabs.map(([key, text, icon]) =>
+    h('button', { 'data-tab': key, onclick: () => setTab(key) },
+      h('span', { class: 'ico', 'aria-hidden': 'true', style: `--src:url(img/ui/${icon}.svg)` }), h('span', null, text))));
   const size = h('button', { class: 'ghost size', 'aria-label': 'Change text size', onclick: () => {
     S.size = (S.size % 3) + 1;
     applySize(S.size);
     saveSize(S.size);
   } }, 'A+');
-  $app.replaceChildren(h('header', null, h('h1', null, 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $sticky, $banners, $toast, $content, nav, $overlay);
+  $app.replaceChildren(h('header', null, h('h1', { class: 'brand' }, h('img', { src: 'icon.svg', alt: '', width: '28', height: '28' }), 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $sticky, $banners, $toast, $content, nav, $overlay);
   paintStatus();
 }
 
@@ -360,22 +417,32 @@ function setupView() {
     h('h2', null, 'Welcome to Vouch'),
     h('p', null, 'Vouch checks that a message or call asking for money is really from someone you trust.'),
     h('p', { class: 'muted' }, 'Your phone makes a private key. It never leaves this phone.'),
+    installCard(),
     S.pendingPair ? h('p', { class: 'ok' }, "You'll be linked to your friend right after this.") : null,
     h('label', { for: 'name' }, 'Your name'), name, btn, msg);
 }
 
 // ---------- check a message ----------
 
+// A plain-words read of what kind of scam this looks like and what to do, from the language of the message or call.
+function guideCard(g) {
+  return h('div', { class: 'guide' },
+    h('b', null, g.title),
+    h('p', null, g.why),
+    h('ol', { class: 'steps' }, g.steps.map((s) => h('li', null, s))));
+}
+
 // The moment a risky message lands (pasted or shared), warn right away, aloud, before anyone has to ask.
 // This is an on-phone warning only; it never clears anything.
 function flashIfRisky() {
   if (!S.me) return;
   const text = S.form.text;
-  const { tags } = suggest(text);
-  if (!text || !riskyEnough(tags) || S.flashedFor === text) return;
+  const { tags, institution, ask } = suggest(text);
+  // A "bank" or "tax office" asking for money is a scam on its own, even with no payment keyword.
+  if (!text || !(riskyEnough(tags) || (institution && ask)) || S.flashedFor === text) return;
   S.flashedFor = text;
-  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags } });
-  raiseAlert(2, 'This message has scam warning signs. Check it before you send anything.', 'message');
+  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags, institution } });
+  raiseAlert(2, institution ? 'Banks and government agencies never ask for this. Do not reply.' : 'This message has scam warning signs. Check it before you send anything.', 'message');
   attention('Warning. This message looks like a scam. Do not send anything yet.', [400, 150, 400, 150, 400]);
   notify('Vouch: this message looks like a scam', 'Do not send anything yet. Open Vouch to check it.', 'local-scam');
   renderOverlay();
@@ -391,10 +458,11 @@ async function submitCheck() {
   const body = { claimedId: F.friendId, amountCents: cents, method: F.method, channel: F.channel };
   const sent = F.text.trim();
   if (sent) body.text = sent;
+  if (F.image) body.imageDataUrl = F.image;
   const { requestId } = await call('verify:request', body);
   if (sent) S.texts.set(requestId, sent); // kept in this tab's memory only
   S.current = requestId;
-  Object.assign(F, { text: '', amount: '', amountTouched: false, methodTouched: false });
+  Object.assign(F, { text: '', amount: '', image: '', amountTouched: false, methodTouched: false });
   return requestId;
 }
 
@@ -407,23 +475,25 @@ function checkView() {
   const F = S.form;
   if (!F.friendId || !friendById(F.friendId)) F.friendId = S.friends[0].id;
 
-  const flags = h('div', { class: 'flagbar', 'aria-live': 'polite' });
+  const flags = h('div', { 'aria-live': 'polite' });
   const paintFlags = () => {
     const s = suggest(F.text);
-    if (s.tags.length) flags.replaceChildren(h('span', null, 'Looks risky:'), ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t])));
-    else if (s.ask) flags.replaceChildren(h('span', null, 'This asks for money. Check who it is before you send anything.'));
-    else flags.replaceChildren();
+    const g = classify(F.text);
+    const kids = [];
+    if (g) kids.push(guideCard(g));
+    if (s.tags.length) kids.push(h('div', { class: 'flagbar' }, ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))));
+    flags.replaceChildren(...kids);
   };
   const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
   const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; } });
-  const method = h('select', { id: 'method', onchange: () => { F.method = method.value; F.methodTouched = true; } },
-    METHODS.map(([k, t]) => h('option', { value: k }, t)));
-  text.value = F.text; amount.value = F.amount; method.value = F.method;
+  const methodChoice = choice('3. How do they want it?', METHODS.map(([k, t]) => [k, t, METHOD_LOGOS[k]]), F.method,
+    (v) => { F.method = v; F.methodTouched = true; }, 'two');
+  text.value = F.text; amount.value = F.amount;
   function onText() {
     F.text = text.value;
     const s = suggest(F.text);
     if (s.amount && !F.amountTouched) { F.amount = s.amount; amount.value = s.amount; }
-    if (s.method && !F.methodTouched) { F.method = s.method; method.value = s.method; }
+    if (s.method && !F.methodTouched) { F.method = s.method; methodChoice.setValue(s.method); }
     paintFlags();
   }
   paintFlags();
@@ -431,8 +501,20 @@ function checkView() {
   const who = S.friends.length > 1
     ? choice('Who does it say it is?', S.friends.map((f) => [f.id, f.name]), F.friendId, (v) => { F.friendId = v; })
     : h('p', { class: 'big' }, `It says it's ${S.friends[0].name}.`);
-  const channel = choice('How did they reach you?', CHANNELS, F.channel, (v) => { F.channel = v; }, 'two');
+  const channel = choice('How did they reach you?', CHANNELS.map(([k, t]) => [k, t, CHANNEL_LOGOS[k]]), F.channel, (v) => { F.channel = v; }, 'two');
   const msg = h('div', { role: 'alert' });
+  // Optional screenshot (a fake invoice, a payment page, a chat). Shrunk on this phone; analysed, never saved.
+  const preview = h('div');
+  const paintShot = () => preview.replaceChildren(...(F.image ? [
+    h('img', { class: 'thumb', src: F.image, alt: 'The screenshot you added' }),
+    h('button', { class: 'ghost', onclick: () => { F.image = ''; shot.value = ''; paintShot(); } }, 'Remove the screenshot')] : []));
+  const shot = h('input', { id: 'shot', type: 'file', accept: 'image/*', onchange: async () => {
+    const file = shot.files && shot.files[0];
+    if (!file) return;
+    try { F.image = await readScreenshot(file); msg.replaceChildren(); } catch (e) { F.image = ''; msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
+    paintShot();
+  } });
+  paintShot();
   const paste = h('button', { class: 'ghost', onclick: async () => {
     try {
       const clip = (await navigator.clipboard.readText()).slice(0, 2000);
@@ -465,9 +547,10 @@ function checkView() {
   return h('section', null, h('h2', null, 'Is this request real?'),
     h('p', { class: 'muted' }, "We'll ask their real phone. Your message is checked and not saved."),
     h('label', { for: 'text' }, '1. The message'), text, flags, h('div', { class: 'row' }, paste, example),
+    h('label', { for: 'shot' }, 'Or add a screenshot (optional)'), shot, preview,
     h('div', null, who), h('div', null, channel),
     h('label', { for: 'amount' }, '2. How much do they want? ($)'), amount,
-    h('label', { for: 'method' }, '3. How do they want it?'), method,
+    methodChoice,
     btn, msg,
     h('div', { id: 'result', 'aria-live': 'polite' }));
 }
@@ -533,7 +616,8 @@ function renderResult() {
   const thread = sent ? h('div', { class: 'thread' }, h('div', { class: 'from' }, name), h('div', { class: 'bubble' }, sent)) : null;
   const card = h('div', { class: 'card' },
     h('div', { class: 'stage' }, h('b', null, '1 · What they asked'),
-      h('p', null, `${name} · ${fmt(info.amountCents)} · ${label(METHODS, info.method)} · ${label(CHANNELS, info.channel)}`)),
+      h('p', null, `${name} · ${fmt(info.amountCents)} · ${label(METHODS, info.method)} · ${label(CHANNELS, info.channel)}`),
+      h('div', null, logos(METHOD_LOGOS[info.method]), logos(CHANNEL_LOGOS[info.channel]))),
     h('div', { class: 'stage' }, h('b', null, '2 · AI check'),
       und.explanation ? h('p', null, und.explanation) : null,
       tags.length ? tags.map((t) => h('span', { class: 'chip' }, TAGS[t] || t)) : h('p', null, 'Nothing stands out.'),
@@ -625,8 +709,11 @@ function paintWordArea() {
 
 function wordView() {
   if (!S.friends.length) {
-    return h('section', null, h('h2', null, 'On a call'), h('p', null, 'Link up with someone first to get a word only you two know.'),
-      h('button', { onclick: () => setTab('friends') }, 'Add someone'));
+    // Watching a call needs no friend; only the shared code word does.
+    return h('section', null, h('h2', null, 'On a call'),
+      listenCard(),
+      h('p', null, 'Link up with someone first to get a code word only you two know.'),
+      h('button', { class: 'ghost', onclick: () => setTab('friends') }, 'Add someone'));
   }
   if (!S.wordFriendId || !friendById(S.wordFriendId)) S.wordFriendId = S.friends[0].id;
   const who = S.friends.length > 1
@@ -656,57 +743,215 @@ async function tickWord() {
 }
 
 // ---------- watch a call ----------
-// Uses the browser's own speech recognition on the speakerphone. The words are checked on this phone, then dropped:
-// nothing is recorded, saved or sent by Vouch. (The browser's speech service may process the audio to make text.)
+// Live flagging of a call that is on speaker. Two engines, so it is never a dead end:
+//   1. the browser's own speech recognition, or
+//   2. short audio chunks sent to the Vouch server over the signed-in socket and turned into words there (Gemini).
+// Either way the words are scanned on this phone and nothing is saved. A typed box works everywhere.
+
+const speechCtor = () => globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+
+function paintListen() {
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  const L = S.listen || {};
+  set('listenstatus', L.status || '');
+  const heard = `${S.heard || ''} ${S.cur || ''}`.trim();
+  set('transcript', heard ? heard.slice(-260) : '…');
+  const bar = document.getElementById('micbar');
+  if (bar) bar.style.width = `${Math.round((L.level || 0) * 100)}%`;
+  const g = document.getElementById('listenguide');
+  if (g) {
+    const c = classify(heard);
+    g.replaceChildren(...(c ? [guideCard(c)] : (L.mode && L.mode !== 'off' ? [h('p', { class: 'muted' }, 'Nothing suspicious heard yet.')] : [])));
+  }
+}
 
 function listenCard() {
-  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
-  if (S.listening) {
-    return h('div', { class: 'card' }, h('b', null, 'Watching this call'),
-      h('p', { class: 'muted', id: 'transcript' }, (S.cur || S.heard || '').slice(-200) || 'Listening…'),
+  const L = S.listen || (S.listen = { mode: 'off', status: '', level: 0, words: 0, hint: '' });
+  const on = !!S.listening;
+  const typed = h('textarea', { id: 'callsays', placeholder: 'Or type or paste what the caller is saying', 'aria-label': 'What the caller is saying',
+    oninput: () => {
+      if (S.listening) return;
+      S.heard = typed.value; S.cur = '';
+      if (!typed.value.trim()) S.callLevel = 0;
+      S.listen.mode = typed.value.trim() ? 'typed' : 'off';
+      paintListen();
+      scanCall();
+    } });
+  if (!on) typed.value = S.heard || '';
+  const canServer = !!(S.watch && S.watch.listen);
+  const kids = [h('b', null, 'Watch this call for scams')];
+  if (on) {
+    kids.push(
+      h('p', { id: 'listenstatus', role: 'status', 'aria-live': 'polite' }, L.status),
+      L.mode === 'server' ? h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'micbar' })) : null,
+      h('p', { class: 'muted', id: 'transcript', 'aria-live': 'off' }, (S.cur || S.heard || '').slice(-260) || '…'),
+      h('div', { id: 'listenguide' }),
+      L.hint === 'switch' && canServer && L.mode === 'browser'
+        ? h('button', { onclick: () => { stopEngine(); startServerListening(); } }, 'Try listening through Vouch instead') : null,
       h('button', { class: 'ghost', onclick: stopListening }, 'Stop watching'));
+  } else {
+    kids.push(
+      h('p', null, 'Put the call on speaker, then start. Vouch listens for requests for money and warns you the moment it hears one. It does not record or save the call.'),
+      h('p', { class: 'muted' }, canServer ? "Your browser's speech service, or the Vouch server, may process the audio. Tell the other person you're using it."
+        : "Your browser's speech service may process the audio. Tell the other person you're using it."),
+      L.status ? h('p', { class: 'err', role: 'alert' }, L.status) : null,
+      h('button', { onclick: startListening }, 'Start watching'),
+      h('div', { id: 'listenguide' }),
+      typed,
+      h('p', { class: 'muted' }, 'Some phones block the microphone during a call. If yours does, put Vouch on a second phone or tablet next to the call, or type what you hear.'));
   }
-  return h('div', { class: 'card' }, h('b', null, 'Watch this call for scams'),
-    h('p', null, 'Put the call on speaker, then start. Vouch warns you the moment someone asks for money. Nothing is recorded or saved.'),
-    SR ? h('button', { onclick: startListening }, 'Start watching')
-      : h('p', { class: 'muted' }, "This browser can't listen. Use Check a message instead."),
-    h('p', { class: 'muted' }, 'Some phones block the microphone during a call. If yours does, put Vouch on a second phone or tablet next to the call.'));
+  return h('div', { class: 'card' }, ...kids.filter(Boolean));
 }
 
 function startListening() {
-  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
-  if (!SR) return;
+  Object.assign(S, { heard: '', cur: '', callLevel: 0 });
+  S.listen = { mode: 'off', status: '', level: 0, words: 0, hint: '' };
+  if (speechCtor()) startBrowserListening();
+  else if (S.watch && S.watch.listen) startServerListening();
+  else {
+    S.listen.status = "This browser can't listen to speech, and the Vouch server has no speech key. Type what the caller says in the box.";
+    renderMain();
+  }
+}
+
+function startBrowserListening() {
+  const SR = speechCtor();
   const rec = new SR();
-  rec.lang = 'en-US';
+  rec.lang = navigator.language || 'en-US';
   rec.continuous = true;
   rec.interimResults = true;
-  S.listening = true; S.heard = ''; S.cur = ''; S.callLevel = 0; S.rec = rec;
+  S.listening = true; S.rec = rec;
+  S.listen = { mode: 'browser', status: 'Listening with your browser. Put the call on speaker, close to the phone.', level: 0, words: 0, hint: '' };
   rec.onresult = (e) => {
     let text = '';
     for (let i = 0; i < e.results.length; i++) text += `${e.results[i][0].transcript} `;
     S.cur = text.slice(-1500);
-    const t = document.getElementById('transcript');
-    if (t) t.textContent = S.cur.slice(-200);
+    S.listen.words = `${S.heard} ${S.cur}`.trim().split(/\s+/).filter(Boolean).length;
+    S.listen.status = `Listening. Heard ${S.listen.words} words.`;
+    S.listen.hint = '';
+    paintListen();
     scanCall();
   };
   rec.onerror = (e) => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { stopListening(); toast('The microphone is blocked. Allow it in your browser settings.'); }
-    else if (e.error === 'audio-capture') { stopListening(); toast("Couldn't use the microphone. Some phones block it during a call; use a second phone next to the call."); }
+    const code = e && e.error;
+    if (code === 'no-speech') { S.listen.status = "I'm not hearing anyone. Put the call on speaker, close to the phone."; paintListen(); return; }
+    if (code === 'aborted') return;
+    if (code === 'not-allowed') { fail('The microphone is blocked. Allow it in your browser settings, then start again.'); return; }
+    if (S.watch && S.watch.listen && ['network', 'service-not-allowed', 'audio-capture', 'language-not-supported'].includes(code)) {
+      S.listen.status = "The browser can't listen here. Switching to listening through Vouch…";
+      paintListen();
+      stopEngine();
+      startServerListening();
+      return;
+    }
+    fail(code === 'network' ? "The browser's speech service can't be reached. Type what the caller says in the box."
+      : (code === 'audio-capture' ? "Couldn't use the microphone. Some phones block it during a call; use a second phone next to the call, or type what you hear."
+        : `Listening stopped (${code || 'unknown'}). Type what the caller says in the box.`));
   };
   rec.onend = () => { // browsers end a session after a pause; start again while the person is still watching
-    if (!S.listening) return;
+    if (!S.listening || S.listen.mode !== 'browser') return;
     S.heard = `${S.heard} ${S.cur}`.slice(-1500); S.cur = '';
     try { rec.start(); } catch { /* already starting */ }
   };
-  try { rec.start(); } catch (e) { S.listening = false; toast("Couldn't start listening."); }
+  try { rec.start(); } catch (err) { fail("Couldn't start listening. Type what the caller says in the box."); return; }
+  S.listen.timer = setTimeout(() => { // say so when nothing is coming through, instead of staying quiet
+    if (S.listening && S.listen.mode === 'browser' && S.listen.words === 0) {
+      S.listen.hint = 'switch';
+      S.listen.status = "Still not hearing any words. Make sure the call is on speaker and the volume is up.";
+      if (S.tab === 'word') renderMain();
+    }
+  }, 12000);
+  paintStatus();
+  renderMain();
+}
+
+async function startServerListening() {
+  S.listening = true;
+  S.listen = { mode: 'server', status: 'Starting the microphone…', level: 0, words: 0, hint: '' };
+  paintStatus();
+  renderMain();
+  const md = navigator.mediaDevices;
+  const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!md || !md.getUserMedia || !Ctx) { fail("This browser can't use the microphone here. Type what the caller says in the box."); return; }
+  let stream;
+  try { stream = await md.getUserMedia({ audio: { noiseSuppression: true, autoGainControl: true } }); } catch (err) {
+    fail(err && err.name === 'NotAllowedError' ? 'The microphone is blocked. Allow it in your browser settings, then start again.'
+      : (err && err.name === 'NotFoundError' ? 'No microphone found. Type what the caller says in the box.' : "Couldn't use the microphone. Type what the caller says in the box."));
+    return;
+  }
+  if (!S.listening) { stream.getTracks().forEach((t) => t.stop()); return; }
+  const ctx = new Ctx();
+  try { if (ctx.resume) await ctx.resume(); } catch { /* fine */ }
+  if (!ctx.createScriptProcessor) { stream.getTracks().forEach((t) => t.stop()); fail("This browser can't capture audio. Type what the caller says in the box."); return; }
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(4096, 1, 1);
+  let chunks = []; let samples = 0; let sending = false;
+  const flush = async () => {
+    const mine = chunks; chunks = []; samples = 0;
+    const { wav, rms } = chunkToWav(mine, ctx.sampleRate);
+    if (rms < 0.004) { S.listen.status = 'No sound picked up yet. Is the call on speaker, with the volume up?'; paintListen(); return; }
+    if (sending) return;
+    sending = true;
+    try {
+      const { text } = await call('watch:listen', { wav }, 15000);
+      S.listen.status = text ? 'Listening through Vouch.' : 'Listening through Vouch. Waiting for words…';
+      if (text) {
+        S.heard = `${S.heard} ${text}`.trim().slice(-1500);
+        S.listen.words = S.heard.split(/\s+/).filter(Boolean).length;
+        S.listen.status = `Listening through Vouch. Heard ${S.listen.words} words.`;
+        scanCall();
+      }
+    } catch (err) {
+      const c = err && err.message;
+      if (c === 'NO_STT') fail('The Vouch server has no speech key, so it can\'t listen. Type what the caller says in the box.');
+      else if (c === 'RATE_LIMITED') S.listen.status = 'Catching up. One moment…';
+      else if (c === 'OFFLINE') S.listen.status = "You're offline. Reconnecting…";
+      else S.listen.status = "Couldn't turn that into words. Still listening.";
+    } finally { sending = false; paintListen(); }
+  };
+  proc.onaudioprocess = (e) => {
+    const d = new Float32Array(e.inputBuffer.getChannelData(0));
+    chunks.push(d); samples += d.length;
+    let sum = 0;
+    for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    S.listen.level = Math.min(1, Math.sqrt(sum / d.length) * 8);
+    const bar = document.getElementById('micbar');
+    if (bar) bar.style.width = `${Math.round(S.listen.level * 100)}%`;
+    if (samples >= ctx.sampleRate * 6) flush();
+  };
+  src.connect(proc);
+  proc.connect(ctx.destination);
+  S.audio = { stream, ctx, proc, src };
+  S.listen.status = 'Listening through Vouch. Put the call on speaker.';
+  paintListen();
+}
+
+function stopEngine() {
+  if (S.listen && S.listen.timer) clearTimeout(S.listen.timer);
+  const rec = S.rec; S.rec = null;
+  try { if (rec) { rec.onend = null; rec.stop(); } } catch { /* already stopped */ }
+  const a = S.audio; S.audio = null;
+  if (a) {
+    try { a.proc.disconnect(); a.src.disconnect(); } catch { /* fine */ }
+    try { a.stream.getTracks().forEach((t) => t.stop()); } catch { /* fine */ }
+    try { a.ctx.close(); } catch { /* fine */ }
+  }
+}
+
+function fail(message) {
+  stopEngine();
+  S.listening = false;
+  S.listen = { mode: 'off', status: message, level: 0, words: 0, hint: '' };
+  if (A.source === 'call') clearAlert();
   paintStatus();
   renderMain();
 }
 
 function stopListening() {
+  stopEngine();
   S.listening = false;
-  try { if (S.rec) S.rec.stop(); } catch { /* already stopped */ }
-  S.rec = null; S.heard = ''; S.cur = '';
+  S.heard = ''; S.cur = '';
+  S.listen = { mode: 'off', status: '', level: 0, words: 0, hint: '' };
   if (A.source === 'call') clearAlert();
   paintStatus();
   renderMain();
@@ -717,7 +962,7 @@ function scanCall() {
   const r = callRisk(`${S.heard || ''} ${S.cur || ''}`);
   if (r.level <= (S.callLevel || 0)) return;
   S.callLevel = r.level;
-  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags } });
+  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags, institution: r.institution } });
   raiseAlert(r.level, r.level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
   attention(r.level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
     r.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
@@ -725,20 +970,61 @@ function scanCall() {
   renderOverlay();
 }
 
-function callScamOverlay({ level, tags }) {
-  const f = friendById(S.wordFriendId) || S.friends[0];
+function callScamOverlay({ level, tags, institution }) {
+  const f = institution ? null : (friendById(S.wordFriendId) || S.friends[0]); // an "institution" has no code word
   const hard = level === 2;
+  const guide = classify(`${S.heard || ''} ${S.cur || ''}`);
   return h('div', { class: `overlay alert${hard ? '' : ' soft'}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Scam warning' },
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
-      h('p', { class: 'big' }, hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.'),
-      tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null,
+      h('p', { class: 'big' }, guide ? guide.why : (hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.')),
+      guide ? h('ol', { class: 'steps big' }, guide.steps.map((s) => h('li', null, s)))
+        : (tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
       f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
       f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
       h('button', { class: 'ghost', onclick: dismiss }, 'Keep listening')));
 }
 
 // ---------- my people + pairing ----------
+
+// iPhone Safari can erase the saved keys of a website it thinks is unused; an app on the Home Screen is kept.
+function installCard() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+  const standalone = navigator.standalone === true || (globalThis.matchMedia && globalThis.matchMedia('(display-mode: standalone)').matches);
+  if (!ios || standalone) return null;
+  return h('div', { class: 'card' }, h('b', null, 'Keep Vouch on this iPhone'),
+    h('p', null, 'Safari can erase the saved keys of a website you have not opened for a while. An app on your Home Screen is kept. Tap Share, then Add to Home Screen, and open Vouch from there.'));
+}
+
+// The message bot: forward any message from any app, get the answer there, and a warning flashes in this app.
+async function loadWatch() {
+  try { S.watch = await call('watch:status', {}, 3000); } catch { S.watch = null; } // null: this server has no Watch service
+}
+async function makeLinkCode() {
+  try { S.linkCode = await call('watch:link', {}, 5000); renderMain(); } catch (e) { toast(friendly(e)); }
+}
+function botCard() {
+  const W = S.watch;
+  if (W === undefined) return h('p', { class: 'muted' }, 'Checking…');
+  if (!W || !W.channels || !W.channels.length) {
+    return h('div', null, h('p', null, 'No message bot is set up on this server yet.'),
+      h('p', { class: 'muted' }, 'A bot lets you forward any message from any app to Vouch and get a warning in that chat and here. Whoever runs this server adds a Telegram, text or WhatsApp number (see bot/README.md).'));
+  }
+  const kids = [h('p', null, 'Forward any suspicious message from any app to one of these. You get the answer in that chat, and a warning flashes here.')];
+  for (const c of W.channels) {
+    const linked = (W.linked || []).includes(c.id);
+    kids.push(h('div', { class: 'friend' }, h('span', null, `${c.name}: ${c.handle}`), h('span', { class: linked ? 'ok' : 'muted' }, linked ? 'Linked' : 'Not linked')));
+    if (linked) kids.push(h('button', { class: 'ghost', onclick: async () => { try { await call('watch:unlink', { channel: c.id }); await loadWatch(); renderMain(); } catch (e) { toast(friendly(e)); } } }, `Unlink ${c.name}`));
+  }
+  if (S.linkCode) {
+    const L = S.linkCode;
+    kids.push(h('div', { class: 'card' }, h('b', null, 'Your link code'), h('div', { class: 'code' }, L.code),
+      h('p', null, 'Send this to the bot from the chat you want linked. It works once, for 10 minutes:'),
+      ...L.channels.map((c) => h('p', { class: 'muted' }, c.id === 'telegram' ? `Telegram ${c.handle}: /link ${L.code}` : `${c.name} ${c.handle}: link ${L.code}`))));
+  }
+  kids.push(h('button', { onclick: makeLinkCode }, S.linkCode ? 'Get a new code' : 'Link a chat'));
+  return h('div', null, ...kids);
+}
 
 function alertsCard() {
   if (!('Notification' in globalThis)) return h('p', { class: 'muted' }, 'This browser cannot show alerts. Keep Vouch open.');
@@ -750,6 +1036,23 @@ function alertsCard() {
     h('p', { class: 'muted' }, 'On iPhone: tap Share, then Add to Home Screen, and open Vouch from there first.'),
     h('button', { onclick: requestAlerts }, 'Turn on alerts'));
 }
+// How a real message gets into Vouch. A web app can't read your Messages app, so you hand it the message.
+function shareCard() {
+  return h('div', null,
+    h('p', null, 'Got a message asking for money? Hand it to Vouch and it warns you right away.'),
+    h('p', { class: 'muted' }, 'Sharing opens Vouch with the message in the web address. Your phone clears it right away, but the web host can see it in its logs. Copy and paste avoids this.'),
+    h('p', null, h('b', null, 'Any phone: '), 'copy the message, open Vouch, tap Check a message, then Paste the message.'),
+    h('p', null, h('b', null, 'Android: '), 'install Vouch (browser menu, Install app). Then press and hold a message, tap Share, and choose Vouch.'),
+    h('details', null, h('summary', null, 'iPhone: add Vouch to the Share sheet (1 minute, once)'),
+      h('ol', { class: 'steps' },
+        h('li', null, 'Open the Shortcuts app, tap +, and name it "Check with Vouch".'),
+        h('li', null, 'Tap the info button and turn on Show in Share Sheet. Allow Text only.'),
+        h('li', null, 'Add the action URL Encode and set it to the Shortcut Input.'),
+        h('li', null, `Add the action Text. Type ${location.origin}/?text= and then insert the URL Encoded Text.`),
+        h('li', null, 'Add the action Open URLs and give it that Text.'),
+        h('li', null, 'Now select text in any app, tap Share, and choose Check with Vouch.'))));
+}
+
 function requestAlerts() {
   try { Notification.requestPermission().then(() => renderMain()); } catch { /* not supported */ }
 }
@@ -773,13 +1076,15 @@ function friendsView() {
         h('button', { class: 'no', onclick: async () => { try { await store.resetAll(); } catch { /* reload anyway */ } location.reload(); } }, 'Erase'),
         h('button', { class: 'ghost', onclick: () => { S.forgetAsk = false; renderMain(); } }, 'Keep')))
     : h('button', { class: 'ghost', onclick: () => { S.forgetAsk = true; renderMain(); } }, 'Erase everything on this phone');
-  return h('section', null, h('h2', null, `Hello, ${S.me.name}`),
+  return h('section', null, h('h2', null, `Hello, ${S.me.name}`), installCard(),
     h('h2', null, 'People I trust'), list,
     h('button', { onclick: showMyCode }, 'Add someone: show my code'),
     h('label', { for: 'code' }, 'Have a code from someone?'), input,
     h('div', { class: 'row' },
       h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join'),
       h('button', { class: 'ghost', onclick: openScanner }, 'Scan a code')),
+    h('h2', null, 'Message bot'), h('div', { class: 'card' }, botCard()),
+    h('h2', null, 'Send messages to Vouch'), h('div', { class: 'card' }, shareCard()),
     h('h2', null, 'Alerts'), h('div', { class: 'card' }, alertsCard()),
     h('h2', null, 'Your privacy'),
     h('div', { class: 'card' },
@@ -798,8 +1103,8 @@ function extractToken(text) {
 
 async function showMyCode() {
   try {
-    const { token } = await call('pair:offer', {});
-    S.codeView = token;
+    const { token, expiresAt } = await call('pair:offer', {});
+    S.codeView = token; S.codeExpires = expiresAt || Date.now() + 5 * 60 * 1000; S.codeExpired = false;
     renderOverlay();
   } catch (e) { toast(friendly(e)); }
 }
@@ -849,9 +1154,17 @@ function scanOverlay() {
   video.setAttribute('webkit-playsinline', '');
   const msg = h('p', { role: 'status' }, 'Starting the camera…');
   const frame = h('div', { class: 'frame' }, h('i'), h('i'), h('i'), h('i'));
-  const typeIt = h('button', { onclick: closeScanner }, 'Cancel');
+  const typed = h('input', { placeholder: 'Or type the code, like ABCD-2345', autocapitalize: 'characters', autocomplete: 'off', 'aria-label': 'Type the code instead' });
+  const join = h('button', { onclick: async () => {
+    const t = extractToken(typed.value);
+    if (!t) { msg.textContent = 'That code should be 8 letters or numbers.'; return; }
+    closeScanner();
+    await acceptToken(t);
+  } }, 'Join with this code');
+  const cancel = h('button', { class: 'ghost', onclick: closeScanner }, 'Cancel');
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let lastWarn = 0;
 
   const loop = async () => {
     if (!S.scanning || !S.stream) return;
@@ -863,29 +1176,43 @@ function scanOverlay() {
       ctx.drawImage(video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, size, size);
       const img = ctx.getImageData(0, 0, size, size);
       const r = globalThis.jsQR(img.data, size, size, { inversionAttempts: 'attemptBoth' });
-      const token = r && r.data && extractToken(r.data);
-      if (token) { closeScanner(); await acceptToken(token); return; }
+      if (r && r.data) {
+        const token = extractToken(r.data);
+        if (token) { closeScanner(); await acceptToken(token); return; }
+        if (Date.now() - lastWarn > 1500) { lastWarn = Date.now(); msg.textContent = "That QR code isn't a Vouch code. Try the one on your friend's screen."; }
+      }
     }
     requestAnimationFrame(loop);
   };
 
-  navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } } })
-    .then((stream) => {
-      if (!S.scanning) { stream.getTracks().forEach((t) => t.stop()); return null; }
-      S.stream = stream;
-      video.srcObject = stream;
-      return video.play();
-    })
-    .then(() => { if (S.stream) { msg.textContent = 'Point the camera at the code'; loop(); } })
-    .catch((err) => {
-      msg.textContent = err && err.name === 'NotAllowedError'
-        ? 'The camera is blocked. Allow it in your browser settings, or close this and type the code.'
-        : "Couldn't start the camera. Close this and type the code instead.";
-      typeIt.textContent = 'Close';
-    });
+  const fail = (err) => {
+    const name = err && err.name;
+    msg.textContent = name === 'NotAllowedError' || name === 'SecurityError'
+      ? 'The camera is blocked. Allow it in your browser settings, or type the code below.'
+      : (name === 'NotFoundError' || name === 'DevicesNotFoundError' ? 'No camera found. Type the code below.'
+        : (name === 'NotReadableError' ? 'The camera is being used by another app. Close it, or type the code below.'
+          : "Couldn't start the camera. Type the code below."));
+  };
+
+  const md = navigator.mediaDevices;
+  if (!md || !md.getUserMedia) {
+    msg.textContent = "This browser can't open the camera here. Type the code below.";
+  } else {
+    // Prefer the back camera; if the phone refuses that, take whatever camera it has.
+    md.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } } })
+      .catch((err) => (err && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError') ? md.getUserMedia({ audio: false, video: true }) : Promise.reject(err)))
+      .then((stream) => {
+        if (!S.scanning) { stream.getTracks().forEach((t) => t.stop()); return null; }
+        S.stream = stream;
+        video.srcObject = stream;
+        return video.play();
+      })
+      .then(() => { if (S.stream) { msg.textContent = 'Point the camera at the code'; loop(); } })
+      .catch(fail);
+  }
 
   return h('div', { class: 'overlay scan', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Scan a code' },
-    video, frame, h('div', { class: 'scanbottom' }, msg, typeIt));
+    video, frame, h('div', { class: 'scanbottom' }, msg, typed, join, cancel));
 }
 
 // ---------- overlays: scanner, pairing code, incoming prompts ----------
@@ -897,10 +1224,12 @@ function renderOverlay() {
   if (item) {
     key = `${item.kind}:${(item.data && item.data.requestId) || (item.data && item.data.u && item.data.u.requestId) || (item.peer && item.peer.id)}`;
   } else if (S.scanning) key = 'scan';
-  else if (S.codeView) key = `code:${S.codeView}`;
+  else if (S.codeView) key = `code:${S.codeView}:${S.codeExpired ? 'x' : 'ok'}`;
   if ($overlay.dataset.key === key) return; // already showing it; don't wipe what the person is typing
   if ($overlay.dataset.key === 'scan' && key !== 'scan') stopStream();
   $overlay.dataset.key = key;
+  // While a dialog is up, the page behind it can't be reached by keyboard, screen reader or tap.
+  for (const el of [$conn, $sticky, $banners, $toast, $content, document.getElementById('nav')]) if (el) el.inert = !!key;
   if (item) $overlay.replaceChildren(overlayFor(item));
   else if (S.scanning) $overlay.replaceChildren(scanOverlay());
   else if (S.codeView) $overlay.replaceChildren(codeOverlay(S.codeView));
@@ -923,20 +1252,25 @@ function overlayFor(item) {
 }
 
 // Shown the instant a risky message is pasted or shared.
-function scamOverlay({ tags }) {
+function scamOverlay({ tags, institution, guide: given, source }) {
   const F = S.form;
+  const guide = given || classify(F.text);
   const friend = friendById(F.friendId) || S.friends[0];
-  const go = friend ? h('button', { onclick: async () => {
+  // An impostor "institution" isn't someone you can pair with, so the advice is to hang up and call a number you trust.
+  // A message that arrived through a bot isn't in the form, so there we open the Check screen instead of sending it.
+  const go = friend && !institution ? h('button', { onclick: async () => {
     dismiss();
     setTab('check');
+    if (source) return;
     try { await submitCheck(); renderMain(); document.getElementById('result')?.scrollIntoView({ block: 'start' }); } catch (e) { toast(friendly(e)); }
-  } }, `Ask ${friend.name}'s phone now`) : null;
+  } }, source ? `Check it with ${friend.name}'s phone` : `Ask ${friend.name}'s phone now`) : null;
   return h('div', { class: 'overlay alert', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
     h('div', { class: 'inner' },
-      h('div', { class: 'stop' }, 'This looks like a scam.'),
-      h('p', { class: 'big' }, 'Do not send anything yet.'),
-      h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))),
-      h('p', null, 'Check it with someone you trust. It takes a few seconds.'),
+      source ? h('p', { class: 'muted' }, `Sent to Vouch from ${SOURCE_NAMES[source] || 'a message'}`) : null,
+      h('div', { class: 'stop' }, guide ? guide.title : 'This looks like a scam.'),
+      h('p', { class: 'big' }, guide ? guide.why : 'Do not send anything yet.'),
+      guide ? h('ol', { class: 'steps big' }, guide.steps.map((s) => h('li', null, s)))
+        : (tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
       go, h('button', { class: 'ghost', onclick: dismiss }, 'Not now')));
 }
 
@@ -965,7 +1299,23 @@ function alertOverlay({ u, soft }) {
       soft ? h('button', { onclick: dismiss }, 'I understand') : pauseButton('I understand', PAUSE_SECONDS, dismiss)));
 }
 
+// Counts the pairing code down, and when it runs out offers a fresh one in a tap.
+function tickCode() {
+  if (!S.codeView || S.codeExpired) return;
+  const left = Math.ceil((S.codeExpires - Date.now()) / 1000);
+  if (left <= 0) { S.codeExpired = true; renderOverlay(); return; }
+  const el = document.getElementById('codeleft');
+  if (el) el.textContent = `Waiting for your friend. This code works once and expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}.`;
+}
+
 function codeOverlay(token) {
+  if (S.codeExpired) {
+    return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
+      h('h2', null, 'That code expired'),
+      h('p', null, 'Codes only last 5 minutes so nobody else can use one. Get a new one.'),
+      h('button', { onclick: showMyCode }, 'Get a new code'),
+      h('button', { class: 'ghost', onclick: () => { S.codeView = null; S.codeExpired = false; renderOverlay(); } }, 'Cancel')));
+  }
   const url = `${location.origin}/#pair=${token}`;
   const canvas = h('canvas', { class: 'qr', 'aria-label': 'QR code to link with me' });
   drawQr(canvas, url);
@@ -976,7 +1326,7 @@ function codeOverlay(token) {
     h('div', { class: 'qrbox' }, canvas),
     h('p', { class: 'muted', style: 'text-align:center' }, 'Or type this code:'),
     h('div', { class: 'code' }, shown),
-    h('p', { class: 'muted' }, 'Waiting for your friend. The code works once and expires in 5 minutes.'),
+    h('p', { class: 'muted', id: 'codeleft', role: 'status' }, 'Waiting for your friend. This code works once and expires in 5:00.'),
     h('button', { class: 'ghost', onclick: () => { S.codeView = null; renderOverlay(); } }, 'Cancel')));
 }
 
@@ -999,7 +1349,15 @@ function pairedOverlay({ peer, code }) {
     h('h2', null, `Linked with ${peer.name}`),
     h('p', null, 'Read this code out loud to each other. If it matches on both phones, you are safely linked.'),
     h('div', { class: 'code' }, code),
-    h('button', { onclick: () => { dismiss(); if ('Notification' in globalThis && Notification.permission === 'default') requestAlerts(); } }, 'It matches')));
+    h('button', { onclick: () => { dismiss(); if ('Notification' in globalThis && Notification.permission === 'default') requestAlerts(); } }, 'It matches'),
+    h('button', { class: 'no', onclick: async () => {
+      // A different code means someone may have tampered with the link. Remove it here and start over in person.
+      await store.deleteFriend(peer.id);
+      S.friends = await store.listFriends();
+      dismiss();
+      renderMain();
+      toast('Link removed. Link up again in person and compare the codes.');
+    } }, "It doesn't match")));
 }
 
 function promptOverlay(p) {
@@ -1031,6 +1389,7 @@ function promptOverlay(p) {
   return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
     h('p', { class: 'muted' }, 'Vouch check'),
     h('div', { class: 'big' }, `Did you just ask ${p.checker.name} for ${fmt(p.amountCents)} via ${label(METHODS, p.method)}?`),
+    logos(METHOD_LOGOS[p.method], 'lg'),
     retype ? [h('label', null, 'Confirm the amount'), retype] : null, yes, no, msg));
 }
 
@@ -1075,6 +1434,17 @@ function wireEvents() {
     renderOverlay();
   });
   on('pair:completed', (msg) => { if (msg && msg.peer) onPeerPaired(msg.peer); });
+  // A message bot (Telegram, text, WhatsApp) flagged something sent to a chat linked to this account.
+  on('scam:alert', (a) => {
+    if (!a) return;
+    const id = `bot-${a.ts || Date.now()}`;
+    const guide = { title: a.title, why: a.why, steps: a.steps || [] };
+    S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source } });
+    raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);
+    attention(a.level === 2 ? `Warning. ${a.title}. Do not send anything.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+    notify(a.level === 2 ? 'Vouch: this message looks like a scam' : 'Vouch: this message asks for money', a.title, `bot-${a.source}`);
+    renderOverlay();
+  });
   on('circle:alert', (a) => {
     const box = h('div', { class: 'banner' }, `Warning: someone may be pretending to be ${a.impersonatedName}. Don't send money.`);
     box.append(h('button', { onclick: () => box.remove() }, 'Dismiss'));

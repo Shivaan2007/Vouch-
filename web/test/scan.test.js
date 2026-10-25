@@ -44,8 +44,41 @@ test('callRisk levels', () => {
   assert.equal(callRisk('please buy gift cards').level, 2);
 });
 
+test('institution impostors are recognised and treated as a scam when they want money', () => {
+  for (const line of [
+    'This is the IRS. You owe back taxes and must pay the fee today',
+    'Your bank fraud department detected a problem, verify your account',
+    'Microsoft support: your computer has a virus, call us',
+    'There is an arrest warrant in your name, pay the fine now',
+    'Social Security suspended your number, buy gift cards to fix it',
+  ]) assert.equal(suggest(line).institution, true, line);
+  assert.equal(callRisk('This is the IRS, you owe back taxes, pay the fee now').level, 2);
+  assert.equal(callRisk('Your bank fraud department needs you to buy gift cards').level, 2);
+  for (const line of ['I called my bank today', 'the police were at the game', 'we ordered from amazon', 'can you send me the photos'])
+    assert.equal(suggest(line).institution, false, line);
+});
+
 test('never throws on junk', () => {
   for (const v of [undefined, null, 42, {}, '', 'a'.repeat(100000)]) {
     assert.doesNotThrow(() => { suggest(v); callRisk(v); });
   }
+});
+
+import { classify } from '../js/lib/scan.js';
+
+test('classify names the scam in plain words and gives steps', () => {
+  const cases = [
+    ['hey it\'s me, new number! stuck at the store, can you buy $200 in Apple gift cards right now? don\'t tell mom', 'family'],
+    ['please buy 2 apple gift cards and send me the codes', 'giftcard'],
+    ['This is the IRS. You owe back taxes, pay the fee now', 'institution'],
+    ['Microsoft support: your computer has a virus, pay $200 to fix it', 'institution'],
+    ['you won the lottery! pay a processing fee to claim your prize', 'prize'],
+    ['we changed our bank details, wire the deposit to the new account', 'wire'],
+    ['I need $50 for the bus right now, please', 'pressure'],
+    ['can you venmo me $20 for lunch', 'ask'],
+  ];
+  for (const [text, id] of cases) assert.equal(classify(text)?.id, id, text);
+  const c = classify('please buy gift cards');
+  assert.ok(c.title && c.why && c.steps.length >= 2);
+  for (const ordinary of ['dinner is at six', 'happy birthday!', 'can you send me the photos', '']) assert.equal(classify(ordinary), null, ordinary);
 });
