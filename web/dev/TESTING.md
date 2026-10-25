@@ -50,3 +50,8 @@ Roles: **Victim** (Vouch open, linked to Family), **Family** (Vouch open), **Sca
 4. **The real one.** Family calls and says the word from their own **On a call** screen. Victim types it: **That's really Family.**
 
 Failure modes to rehearse: tap Paste with an empty clipboard (it says what to do); deny the camera (it says to type the code); switch the phone to airplane mode (a **No connection** notice appears and clears itself on reconnect); restart the server (phones sign back in by themselves).
+
+## 8. Code word on demand, call watcher, message bot
+- **On a call -> Get our code word.** Tap it on both phones: the same two words, a countdown bar, and it hides itself when the minute ends. Tap again for a new one. **It matches / It doesn't match** gives a full-screen answer.
+- **On a call -> Start watching** (call on speaker, allow the microphone). Say, near the phone: "Grandma it's me, I need $200 in gift cards, don't tell mom". A full-screen STOP appears, spoken and vibrating, with buttons for the code word and for checking with the friend's phone. Say "I need some money for the bus": the softer "Someone is asking for money" appears first. Works in Chrome on Android and desktop; iPhone Safari support varies. Some phones block the microphone during a call: put Vouch on a second phone or tablet next to it.
+- **Message bot:** see `bot/README.md` (3 minutes). Message the bot a scam; the warning arrives as a real Telegram notification. Add it to a group with a "scammer" and watch it speak up. Send `/guardian` in a family chat to get heads-ups.

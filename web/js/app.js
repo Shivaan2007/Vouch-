@@ -8,6 +8,7 @@ import {
 import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
+import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk } from './lib/scan.js';
 
 // ---------- helpers ----------
 
@@ -36,11 +37,6 @@ const METHODS = [
 ];
 const CHANNELS = [['text', 'Text'], ['call', 'Call'], ['dm', 'App / DM'], ['email', 'Email']];
 const label = (list, key) => (list.find(([k]) => k === key) || [key, key])[1];
-const TAGS = {
-  URGENCY: 'Pressure to act fast', SECRECY: 'Asks you to keep it secret', NEW_NUMBER: 'New number',
-  GIFT_CARD: 'Gift cards', WIRE: 'Wire transfer', CRYPTO: 'Crypto', PAYBACK_PROMISE: 'Promises to pay back',
-  FIRST_REQUEST: "First time they've asked",
-};
 const ERRORS = {
   OFFLINE: "You're offline. Reconnecting…", TIMEOUT: 'The server took too long. Try again.',
   TOKEN_INVALID: 'That code is invalid or expired.', ALREADY_PAIRED: "You're already linked.",
@@ -51,30 +47,6 @@ const ERRORS = {
   NEED_AMOUNT: 'Please type how much they asked for, like 60 or 60.50.', NEED_FRIEND: 'Link up with someone you trust first.',
 };
 const friendly = (e) => ERRORS[e && e.message] || `Something went wrong (${e && e.message})`;
-
-// Instant, on-phone hints while reading a message. These only WARN and pre-fill the form;
-// they never clear anything. Only the friend's signed answer can make a request green.
-const RULES = [
-  [/gift\s*card|itunes|apple card|google play|steam card/i, 'GIFT_CARD'],
-  [/\bwire\b|western union|moneygram/i, 'WIRE'],
-  [/bitcoin|\bbtc\b|crypto|ethereum|usdt/i, 'CRYPTO'],
-  [/urgent|right now|asap|immediately|hurry|emergency|stuck|stranded|today only/i, 'URGENCY'],
-  [/don'?t tell|do not tell|keep (this|it)( a)? secret|between us|tell no one|don'?t say anything/i, 'SECRECY'],
-  [/new number|lost my phone|changed my number|my new (phone|number)/i, 'NEW_NUMBER'],
-  [/pay (you )?back|repay|reimburse|i'?ll (send|give) it back/i, 'PAYBACK_PROMISE'],
-];
-function suggest(text) {
-  const tags = RULES.filter(([re]) => re.test(text)).map(([, t]) => t);
-  const m = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/.exec(text) || /(\d{1,6})\s*(?:dollars|bucks|usd)/i.exec(text);
-  let amount = '';
-  if (m) amount = m[1].replace(/,/g, '') + (m[2] !== undefined ? `.${m[2]}` : '');
-  let method = null;
-  if (tags.includes('GIFT_CARD')) method = 'gift_card';
-  else if (tags.includes('WIRE')) method = 'wire';
-  else if (tags.includes('CRYPTO')) method = 'crypto';
-  else if (/venmo|zelle|cash\s?app/i.test(text)) method = 'venmo_cashapp_zelle';
-  return { tags, amount, method };
-}
 
 // Big radio cards (native inputs, so screen readers and keyboards work).
 let choiceSeq = 0;
@@ -280,7 +252,7 @@ function buildShell() {
 
 function paintStatus() {
   if (!$status) return;
-  $status.textContent = S.online ? (S.authed ? 'Online' : 'Signing in…') : 'Offline';
+  $status.textContent = (S.listening ? 'Watching call · ' : '') + (S.online ? (S.authed ? 'Online' : 'Signing in…') : 'Offline');
   $status.className = 'pill' + (S.online && S.authed ? '' : ' off');
   // Only warn once we've been connected before, so the first second of loading isn't an error.
   if (!S.online && S.everConnected) {
@@ -329,9 +301,6 @@ function setupView() {
 
 // ---------- check a message ----------
 
-// Worth interrupting someone for: a risky payment method, or two or more warning signs together.
-const riskyEnough = (tags) => tags.some((t) => ['GIFT_CARD', 'WIRE', 'CRYPTO'].includes(t)) || tags.length >= 2;
-
 // The moment a risky message lands (pasted or shared), warn right away, aloud, before anyone has to ask.
 // This is an on-phone warning only; it never clears anything.
 function flashIfRisky() {
@@ -373,8 +342,10 @@ function checkView() {
 
   const flags = h('div', { class: 'flagbar', 'aria-live': 'polite' });
   const paintFlags = () => {
-    const tags = suggest(F.text).tags;
-    flags.replaceChildren(...(tags.length ? [h('span', null, 'Looks risky:'), ...tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))] : []));
+    const s = suggest(F.text);
+    if (s.tags.length) flags.replaceChildren(h('span', null, 'Looks risky:'), ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t])));
+    else if (s.ask) flags.replaceChildren(h('span', null, 'This asks for money. Check who it is before you send anything.'));
+    else flags.replaceChildren();
   };
   const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
   const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; } });
@@ -525,6 +496,61 @@ function wordBox(u, name) {
 
 // ---------- on a call ----------
 
+// The code word is generated on demand, like an authenticator app: tap to see it, it expires with the minute.
+function revealWord() {
+  S.wordShown = true;
+  S.wordExpired = false;
+  S.wordMinute = Math.floor(Date.now() / 60000);
+  paintWordArea();
+  tickWord();
+}
+
+function callResult(ok) {
+  const f = friendById(S.wordFriendId);
+  if (!f) return;
+  S.queue.push({ kind: 'call', data: { requestId: `call-${Date.now()}`, ok, name: f.name } });
+  attention(ok ? `That's really ${f.name}.` : `No match. This is not ${f.name}. Hang up.`, ok ? 80 : [400, 150, 400, 150, 400]);
+  notify(ok ? 'Vouch: word matched' : 'Vouch: NO MATCH', ok ? `That's really ${f.name}.` : `This is not ${f.name}. Hang up.`, 'call-check');
+  renderOverlay();
+}
+
+// They're asking for money on the call: open the check, already set up for a call.
+function askAboutCall() {
+  S.form.channel = 'call';
+  const amt = callRisk(`${S.heard || ''} ${S.cur || ''}`).amount;
+  if (amt && !S.form.amountTouched) S.form.amount = amt;
+  setTab('check');
+}
+
+function paintWordArea() {
+  const box = document.getElementById('wordarea');
+  const f = friendById(S.wordFriendId);
+  if (!box || !f) return;
+  if (!S.wordShown) {
+    box.replaceChildren(
+      h('p', { class: S.wordExpired ? 'err' : 'muted' }, S.wordExpired ? 'That word expired. Get a new one.' : `Tap to see the code word you and ${f.name} share right now.`),
+      h('button', { onclick: revealWord }, 'Get our code word'));
+    return;
+  }
+  const said = h('input', { id: 'said', placeholder: 'The two words they said', autocapitalize: 'none', autocomplete: 'off' });
+  const typedMsg = h('div', { role: 'alert' });
+  box.replaceChildren(
+    h('div', { class: 'bigword', id: 'bigword' }, '…'),
+    h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'wordbar' })),
+    h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
+    h('p', null, 'Ask them: "What\'s our word?" Let them say it first. Never read it out first.'),
+    h('div', { class: 'row' },
+      h('button', { class: 'yes', onclick: () => callResult(true) }, 'It matches'),
+      h('button', { class: 'no', onclick: () => callResult(false) }, "It doesn't match")),
+    h('details', null, h('summary', null, 'Type what they said instead'),
+      h('label', { for: 'said' }, 'The two words'), said,
+      h('button', { class: 'ghost', onclick: async () => {
+        if (!said.value.trim()) { typedMsg.replaceChildren(h('p', { class: 'err' }, 'Type the two words they said.')); return; }
+        callResult(await checkWord(f.wordKey, said.value));
+      } }, 'Check it'), typedMsg),
+    h('button', { class: 'ghost', onclick: () => { S.wordShown = false; paintWordArea(); } }, 'Hide the word'));
+}
+
 function wordView() {
   if (!S.friends.length) {
     return h('section', null, h('h2', null, 'On a call'), h('p', null, 'Link up with someone first to get a word only you two know.'),
@@ -532,38 +558,110 @@ function wordView() {
   }
   if (!S.wordFriendId || !friendById(S.wordFriendId)) S.wordFriendId = S.friends[0].id;
   const who = S.friends.length > 1
-    ? choice('Who is calling?', S.friends.map((f) => [f.id, f.name]), S.wordFriendId, (v) => { S.wordFriendId = v; tickWord(); })
+    ? choice('Who is calling?', S.friends.map((f) => [f.id, f.name]), S.wordFriendId, (v) => { S.wordFriendId = v; S.wordShown = false; S.wordExpired = false; paintWordArea(); })
     : null;
-  const input = h('input', { id: 'said', placeholder: 'The two words they said', autocapitalize: 'none', autocomplete: 'off' });
-  const res = h('div', { role: 'alert' });
-  const btn = h('button', { onclick: async () => {
-    const f = friendById(S.wordFriendId);
-    if (!f) return;
-    if (!input.value.trim()) { res.replaceChildren(h('p', { class: 'err' }, 'Type the two words they said.')); return; }
-    const ok = await checkWord(f.wordKey, input.value);
-    res.replaceChildren();
-    S.queue.push({ kind: 'call', data: { requestId: `call-${Date.now()}`, ok, name: f.name } });
-    attention(ok ? `That's really ${f.name}.` : `No match. This is not ${f.name}. Hang up.`, ok ? 80 : [400, 150, 400, 150, 400]);
-    notify(ok ? 'Vouch: word matched' : 'Vouch: NO MATCH', ok ? `That's really ${f.name}.` : `This is not ${f.name}. Hang up.`, 'call-check');
-    renderOverlay();
-  } }, 'Check what they said');
-  queueMicrotask(tickWord);
+  queueMicrotask(() => { paintWordArea(); tickWord(); });
   return h('section', null, h('h2', null, 'On a call'),
-    h('p', null, 'Ask them: "What\'s our word?" Let them say it first. Never read it out first.'),
-    who, h('p', { class: 'muted', style: 'margin-top:1rem' }, 'Your shared word right now:'),
-    h('div', { class: 'bigword', id: 'bigword' }, '…'), h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
-    h('label', { for: 'said' }, 'Check what they said'), input, btn, res);
+    h('p', null, 'Not sure who is really calling? Get your code word and ask them for it.'),
+    who, h('div', { id: 'wordarea' }),
+    listenCard(),
+    h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money"));
 }
 
 async function tickWord() {
-  const big = document.getElementById('bigword');
-  if (!big || S.tab !== 'word') return;
+  if (S.tab !== 'word' || !S.wordShown) return;
   const f = friendById(S.wordFriendId);
   if (!f) return;
-  const { word, secondsLeft } = await currentWord(f.wordKey);
+  const { word, minute, secondsLeft } = await currentWord(f.wordKey);
+  if (minute !== S.wordMinute) { S.wordShown = false; S.wordExpired = true; paintWordArea(); return; }
+  const big = document.getElementById('bigword');
+  if (!big) return;
   big.textContent = word;
   const left = document.getElementById('wordleft');
-  if (left) left.textContent = `changes in ${secondsLeft}s`;
+  if (left) left.textContent = `expires in ${secondsLeft}s`;
+  const bar = document.getElementById('wordbar');
+  if (bar) bar.style.width = `${(secondsLeft / 60) * 100}%`;
+}
+
+// ---------- watch a call ----------
+// Uses the browser's own speech recognition on the speakerphone. The words are checked on this phone, then dropped:
+// nothing is recorded, saved or sent by Vouch. (The browser's speech service may process the audio to make text.)
+
+function listenCard() {
+  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+  if (S.listening) {
+    return h('div', { class: 'card' }, h('b', null, 'Watching this call'),
+      h('p', { class: 'muted', id: 'transcript' }, (S.cur || S.heard || '').slice(-200) || 'Listening…'),
+      h('button', { class: 'ghost', onclick: stopListening }, 'Stop watching'));
+  }
+  return h('div', { class: 'card' }, h('b', null, 'Watch this call for scams'),
+    h('p', null, 'Put the call on speaker, then start. Vouch warns you the moment someone asks for money. Nothing is recorded or saved.'),
+    SR ? h('button', { onclick: startListening }, 'Start watching')
+      : h('p', { class: 'muted' }, "This browser can't listen. Use Check a message instead."),
+    h('p', { class: 'muted' }, 'Some phones block the microphone during a call. If yours does, put Vouch on a second phone or tablet next to the call.'));
+}
+
+function startListening() {
+  const SR = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+  if (!SR) return;
+  const rec = new SR();
+  rec.lang = 'en-US';
+  rec.continuous = true;
+  rec.interimResults = true;
+  S.listening = true; S.heard = ''; S.cur = ''; S.callLevel = 0; S.rec = rec;
+  rec.onresult = (e) => {
+    let text = '';
+    for (let i = 0; i < e.results.length; i++) text += `${e.results[i][0].transcript} `;
+    S.cur = text.slice(-1500);
+    const t = document.getElementById('transcript');
+    if (t) t.textContent = S.cur.slice(-200);
+    scanCall();
+  };
+  rec.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { stopListening(); toast('The microphone is blocked. Allow it in your browser settings.'); }
+    else if (e.error === 'audio-capture') { stopListening(); toast("Couldn't use the microphone. Some phones block it during a call; use a second phone next to the call."); }
+  };
+  rec.onend = () => { // browsers end a session after a pause; start again while the person is still watching
+    if (!S.listening) return;
+    S.heard = `${S.heard} ${S.cur}`.slice(-1500); S.cur = '';
+    try { rec.start(); } catch { /* already starting */ }
+  };
+  try { rec.start(); } catch (e) { S.listening = false; toast("Couldn't start listening."); }
+  paintStatus();
+  renderMain();
+}
+
+function stopListening() {
+  S.listening = false;
+  try { if (S.rec) S.rec.stop(); } catch { /* already stopped */ }
+  S.rec = null; S.heard = ''; S.cur = '';
+  paintStatus();
+  renderMain();
+}
+
+// 0 = nothing; 1 = someone is asking for money (check who it is); 2 = asking for money with scam warning signs.
+function scanCall() {
+  const r = callRisk(`${S.heard || ''} ${S.cur || ''}`);
+  if (r.level <= (S.callLevel || 0)) return;
+  S.callLevel = r.level;
+  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags } });
+  attention(r.level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
+    r.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+  notify(r.level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
+  renderOverlay();
+}
+
+function callScamOverlay({ level, tags }) {
+  const f = friendById(S.wordFriendId) || S.friends[0];
+  const hard = level === 2;
+  return h('div', { class: `overlay alert${hard ? '' : ' soft'}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Scam warning' },
+    h('div', { class: 'inner' },
+      h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
+      h('p', { class: 'big' }, hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.'),
+      tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null,
+      f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
+      f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
+      h('button', { class: 'ghost', onclick: dismiss }, 'Keep listening')));
 }
 
 // ---------- my people + pairing ----------
@@ -733,6 +831,7 @@ function overlayFor(item) {
   if (item.kind === 'alert') return alertOverlay(item.data);
   if (item.kind === 'scam') return scamOverlay(item.data);
   if (item.kind === 'call') return callOverlay(item.data);
+  if (item.kind === 'callscam') return callScamOverlay(item.data);
   return pairedOverlay(item);
 }
 
