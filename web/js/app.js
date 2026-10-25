@@ -8,7 +8,7 @@ import {
 import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
-import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify, highlight } from './lib/scan.js';
+import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify, highlight, callInit, callStep, callWhy } from './lib/scan.js';
 import { chunkToWav } from './lib/audio.js';
 
 // ---------- helpers ----------
@@ -990,7 +990,7 @@ function wordView() {
   const typed = h('textarea', { id: 'callsays', placeholder: 'Type or paste what the caller is saying', 'aria-label': 'What the caller is saying',
     oninput: () => {
       S.heard = typed.value; S.cur = '';
-      if (!typed.value.trim()) { S.callLevel = 0; S.callAi = null; }
+      if (!typed.value.trim()) { S.callLevel = 0; S.callAi = null; S.callState = null; }
       S.listen.mode = typed.value.trim() ? 'typed' : 'off';
       paintListen();
       scanCall();
@@ -1076,6 +1076,8 @@ function paintListen() {
     // On the call screen show the guide only once there is something to say.
     g.replaceChildren(...(c && (id === 'listenguide' || level >= 1) ? [guideCard(c, !!S.callAi)] : []));
   }
+  const whyBox = document.getElementById('lv-why');
+  if (whyBox) whyBox.replaceChildren(...whyNodes());
   const cap = document.getElementById('lv-cap');
   if (cap) cap.replaceChildren(...(heard ? highlight(heard.slice(-240)).map((p) => (p.hit ? h('mark', null, p.text) : p.text)) : [h('span', { class: 'dim' }, L.mode === 'recording' ? 'Playing the recording…' : 'Listening… words will appear here.')]));
   const risk = document.getElementById('lv-risk');
@@ -1122,6 +1124,7 @@ function liveCallOverlay() {
       h('div', { class: 'livetop' }, h('span', null, rec ? 'Analyzing a recording' : (f ? `Listening to your call with ${f.name}` : 'Listening to your call')),
         h('span', { class: 'calltime', id: 'lv-time' }, fmtClock(Date.now() - ((S.call && S.call.startedAt) || Date.now())))),
       h('div', { id: 'lv-risk', class: `riskbadge r${level}`, role: 'status', 'aria-live': 'assertive' }, RISK_TEXT[level]),
+      h('div', { id: 'lv-why' }),
       h('div', { class: 'captions', id: 'lv-cap', 'aria-live': 'off' }),
       h('div', { id: 'lv-guide' }),
       f ? h('div', { id: 'livewordarea' }) : null,
@@ -1137,7 +1140,7 @@ function liveCallOverlay() {
 function newCall(mode, status) {
   stopEngine();
   holdScreen();
-  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '' });
+  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '', callState: null });
   S.call = { startedAt: Date.now() };
   S.listen = { mode, status, level: 0, words: 0 };
   S.stt = { q: [], busy: false, retries: 0 };
@@ -1378,7 +1381,7 @@ function fail(message) {
 function stopListening() {
   stopEngine();
   S.listening = false;
-  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; // the next call starts calm, so it can warn again
+  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; S.callState = null; // the next call starts calm, so it can warn again
   S.listen = { mode: 'off', status: '', level: 0, words: 0 };
   clearAlert('call');
   paintStatus();
@@ -1387,10 +1390,27 @@ function stopListening() {
 
 // 0 = nothing; 1 = someone is asking for money (check who it is); 2 = asking for money with scam warning signs.
 function scanCall() {
-  const r = callRisk(`${S.heard || ''} ${S.cur || ''}`);
+  const text = `${S.heard || ''} ${S.cur || ''}`;
+  // The call engine listens for the shape of a scam script over time (see web/js/lib/scan.js); the older money rules stay as a
+  // second opinion, and whichever is higher wins. The AI read below can raise it further, never lower it.
+  const st = S.callState || (S.callState = callInit());
+  callStep(st, text, Date.now());
+  const r = callRisk(text);
+  const level = Math.max(st.level, r.level);
   aiScanCall(); // the AI reads the same words a moment later and can raise this itself
-  if (r.level <= (S.callLevel || 0)) return;
-  escalateCall(r.level, r.tags, r.institution, null);
+  if (level <= (S.callLevel || 0)) { paintListen(); return; }
+  escalateCall(level, r.tags, r.institution, null);
+}
+
+// Why, in plain words: which of the four steps of a scam call have been heard, the top reasons, and the one thing to do.
+function whyNodes() {
+  const w = callWhy(S.callState);
+  if (!(S.callState && S.callState.level >= 1)) return [];
+  return [
+    h('ul', { class: 'ladder', 'aria-label': 'What Vouch has heard so far' }, w.steps.map((s) => h('li', { class: s.on ? 'on' : '' }, h('span', { class: 'tickmark', 'aria-hidden': 'true' }, s.on ? '\u2713' : '\u25CB'), s.text, s.on ? h('span', { class: 'sr' }, ' (heard)') : null))),
+    ...w.reasons.map((r) => h('p', { class: 'reason' }, r)),
+    w.action ? h('p', { class: 'doit' }, w.action) : null,
+  ].filter(Boolean);
 }
 
 // Warn about the call at a given level. While the call screen is up the screen itself turns amber or red, with vibration and no
@@ -1442,6 +1462,7 @@ function callScamOverlay({ level, tags, institution, ai }) {
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
       ai ? h('p', { class: 'sender' }, ai.title) : null,
+      ...whyNodes(),
       ...scamBody(guide, ai && ai.signals, ai && ai.impersonating, tags),
       // One main thing to do: make sure it is really them. The code word comes first, because it works on a live call.
       actions(anyone ? h('button', { onclick: () => { dismiss(); if (f) { S.callWith = f.id; S.wordFriendId = f.id; setTab('word'); revealWord(); } else setTab('word'); } }, f ? `Ask ${f.name} for our code word` : 'Check the code word') : null,

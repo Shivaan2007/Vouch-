@@ -306,3 +306,12 @@ button:active:not(:disabled) { transform: scale(0.98); }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .tick path { stroke-dashoffset: 0; }
 }
+
+/* What Vouch heard on a call: four steps, ticked. Each step has a mark and words, so colour is never the only signal. */
+.ladder { list-style: none; padding: 0; margin: 0.6rem 0; text-align: left; }
+.ladder li { display: flex; gap: 0.6rem; align-items: baseline; padding: 0.3rem 0; opacity: 0.6; }
+.ladder li.on { opacity: 1; font-weight: 700; }
+.ladder .tickmark { width: 1.2rem; flex: none; text-align: center; font-weight: 800; }
+.reason { font-weight: 600; text-align: left; margin: 0.3rem 0; }
+.doit { font-weight: 800; text-align: left; margin: 0.6rem 0; padding: 0.7rem 0.9rem; border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.14); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
