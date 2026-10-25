@@ -183,6 +183,7 @@ function speakBuiltIn(text) {
 // `phrase` (optional) names one of the fixed ElevenLabs clips; `text` is always the built-in fallback.
 function attention(text, pattern, phrase) {
   try { if (navigator.vibrate) navigator.vibrate(pattern); } catch { /* not supported */ }
+  if (!(S.display && S.display.aloud === true)) return; // by default: the screen and a vibration only, no voice
   const clip = phrase && voice.clips.get(phrase);
   if (!clip) { speakBuiltIn(text); return; }
   try {
@@ -205,13 +206,29 @@ function notify(title, body, tag) {
   } catch { /* not supported */ }
 }
 
-// Text size: three steps, remembered on this phone only.
-function applySize(n) {
-  document.documentElement.classList.remove('size-2', 'size-3');
-  if (n > 1) document.documentElement.classList.add(`size-${n}`);
+// Display: text size, colours, reading mode, less motion, and whether warnings are spoken. One place, remembered on this phone only.
+const DISPLAY_KEY = 'vouch-display';
+// Nothing is spoken unless the person asks (the "Read this to me" button) or switches spoken warnings on. A voice that talks on its
+// own, "don't send money" out of nowhere, is more frightening than helpful; the screen and a vibration are enough by default.
+const DISPLAY_DEFAULT = { size: 1, theme: 'auto', reading: false, calm: false, aloud: false };
+function loadDisplay() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DISPLAY_KEY) || 'null');
+    if (saved && typeof saved === 'object') return { ...DISPLAY_DEFAULT, ...saved };
+    const old = Number(localStorage.getItem('vouch-size')); // the old three-step setting
+    if (old >= 1 && old <= 3) return { ...DISPLAY_DEFAULT, size: old };
+  } catch { /* unreadable: use the defaults */ }
+  return { ...DISPLAY_DEFAULT };
 }
-function loadSize() { try { return Number(localStorage.getItem('vouch-size')) || 1; } catch { return 1; } }
-function saveSize(n) { try { localStorage.setItem('vouch-size', String(n)); } catch { /* ignore */ } }
+function saveDisplay(d) { try { localStorage.setItem(DISPLAY_KEY, JSON.stringify(d)); } catch { /* ignore */ } }
+function applyDisplay(d) {
+  const c = document.documentElement.classList;
+  for (const name of ['size-2', 'size-3', 'size-4', 'theme-light', 'theme-dark', 'theme-hc', 'reading', 'calm']) c.remove(name);
+  if (d.size > 1) c.add(`size-${d.size}`);
+  if (d.theme && d.theme !== 'auto') c.add(`theme-${d.theme}`);
+  if (d.reading) c.add('reading');
+  if (d.calm) c.add('calm');
+}
 
 // ---------- state ----------
 
@@ -357,8 +374,8 @@ async function boot() {
     S.tab = 'check';
     history.replaceState(null, '', location.pathname + location.hash);
   }
-  S.size = loadSize();
-  applySize(S.size);
+  S.display = loadDisplay();
+  applyDisplay(S.display);
   try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {}); } catch { /* optional */ }
   buildShell();
   loadAlerts(); paintSticky(); // a warning that was up before a reload is still up after it
@@ -490,11 +507,7 @@ function buildShell() {
   $toast = h('div', { role: 'status', 'aria-live': 'polite' });
   $content = h('main');
   $overlay = h('div');
-  const size = h('button', { class: 'ghost size', 'aria-label': 'Change text size', onclick: () => {
-    S.size = (S.size % 3) + 1;
-    applySize(S.size);
-    saveSize(S.size);
-  } }, 'A+');
+  const size = h('button', { class: 'ghost size', 'aria-label': 'Display and reading settings', onclick: () => { S.displayOpen = true; renderOverlay(); } }, 'Aa');
   $app.replaceChildren(h('header', null, h('h1', { class: 'brand' }, h('img', { src: 'icon.svg', alt: '', width: '28', height: '28' }), 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $callbar, $sticky, $banners, $toast, $content, $overlay);
   paintStatus();
 }
@@ -1467,7 +1480,7 @@ function callScamOverlay({ level, tags, institution, ai }) {
       // One main thing to do: make sure it is really them. The code word comes first, because it works on a live call.
       actions(anyone ? h('button', { onclick: () => { dismiss(); if (f) { S.callWith = f.id; S.wordFriendId = f.id; setTab('word'); revealWord(); } else setTab('word'); } }, f ? `Ask ${f.name} for our code word` : 'Check the code word') : null,
         anyone ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, f ? `Check with ${f.name}'s phone` : "Check with a trusted person's phone") : null,
-        quiet(S.listening ? 'Keep listening' : 'Close', dismiss))));
+        readAloud(guide), quiet(S.listening ? 'Keep listening' : 'Close', dismiss))));
 }
 
 // ---------- my people + pairing ----------
@@ -1757,7 +1770,8 @@ function renderOverlay() {
   let key = '';
   if (item) {
     key = `${item.kind}:${(item.data && item.data.requestId) || (item.data && item.data.u && item.data.u.requestId) || (item.peer && item.peer.id)}`;
-  } else if (S.listening && !S.callMin) key = 'live';
+  } else if (S.displayOpen) key = 'display';
+  else if (S.listening && !S.callMin) key = 'live';
   else if (S.scanning) key = 'scan';
   else if (S.codeView) key = `code:${S.codeView}:${S.codeExpired ? 'x' : 'ok'}`;
   if ($overlay.dataset.key === key) return; // already showing it; don't wipe what the person is typing
@@ -1767,6 +1781,7 @@ function renderOverlay() {
   // While a dialog is up, the page behind it can't be reached by keyboard, screen reader or tap.
   for (const el of [$conn, $sticky, $banners, $toast, $content, document.getElementById('nav')]) if (el) el.inert = !!key;
   if (item) $overlay.replaceChildren(overlayFor(item));
+  else if (key === 'display') $overlay.replaceChildren(displayOverlay());
   else if (key === 'live') $overlay.replaceChildren(liveCallOverlay());
   else if (S.scanning) $overlay.replaceChildren(scanOverlay());
   else if (S.codeView) $overlay.replaceChildren(codeOverlay(S.codeView));
@@ -1778,12 +1793,14 @@ function renderOverlay() {
 
 // Close one message. With the message's own data it closes exactly that one, even if the queue changed while an answer was in
 // flight; with nothing it closes the one on screen.
+function stopSpeaking() { try { if ('speechSynthesis' in globalThis) speechSynthesis.cancel(); } catch { /* none */ } }
 function dismissItem(data) {
+  stopSpeaking();
   const i = S.queue.findIndex((q) => q.data === data);
   if (i >= 0) S.queue.splice(i, 1);
   renderOverlay();
 }
-function dismiss() { S.queue.shift(); renderOverlay(); } // used straight as a click handler, so it takes no argument
+function dismiss() { stopSpeaking(); S.queue.shift(); renderOverlay(); } // used straight as a click handler, so it takes no argument
 
 // A question with a clock on it (a friend asking "did you ask for this?") goes ahead of warnings and reminders, never ahead of
 // another question that arrived first.
@@ -1793,6 +1810,27 @@ function enqueueUrgent(item) {
   S.queue.splice(i, 0, item);
 }
 const PROMPT_MS = 120000; // how long the server waits for an answer
+
+// "Read this to me": on a warning, speaks its title, why and steps. Not while a call is being listened to: the phone's own voice
+// would be picked up by its microphone.
+const readAloud = (g) => (S.listening || !g ? null : quiet('Read this to me', () => speakBuiltIn(`${g.title}. ${g.why || ''} ${(g.steps || []).slice(0, 3).join('. ')}`)));
+
+// The Display sheet: findable (always in the header), one screen, big buttons that say what they are.
+function displayOverlay() {
+  const d = S.display;
+  const set = (patch) => { S.display = { ...S.display, ...patch }; applyDisplay(S.display); saveDisplay(S.display); $overlay.dataset.key = ''; renderOverlay(); };
+  const group = (legend, options, current, onpick) => h('div', { class: 'people', role: 'group', 'aria-label': legend },
+    h('p', { class: 'peoplelabel' }, legend),
+    h('div', { class: 'chips' }, options.map(([v, t]) => h('button', { class: 'chipbtn', 'aria-pressed': String(v === current), onclick: () => onpick(v) }, t))));
+  const toggle = (label, on, patch) => h('button', { class: 'chipbtn wide', 'aria-pressed': String(on), onclick: () => set(patch) }, `${label}: ${on ? 'On' : 'Off'}`);
+  return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Display and reading settings' }, h('div', { class: 'inner' },
+    h('h2', null, 'Display'),
+    group('Text size', [[1, 'Normal'], [2, 'Large'], [3, 'Larger'], [4, 'Largest']], d.size, (v) => set({ size: v })),
+    group('Colours', [['auto', 'Match my phone'], ['light', 'Light'], ['dark', 'Dark'], ['hc', 'High contrast']], d.theme, (v) => set({ theme: v })),
+    h('div', { class: 'people' }, toggle('Reading mode', d.reading, { reading: !d.reading }), toggle('Less motion', d.calm, { calm: !d.calm }), toggle('Speak warnings aloud', d.aloud, { aloud: !d.aloud })),
+    h('p', { class: 'muted' }, 'Reading mode: calmer layout, wider spacing, bigger buttons. Saved on this phone only.'),
+    actions(h('button', { onclick: () => { S.displayOpen = false; renderOverlay(); } }, 'Done'))));
+}
 
 // Every full-screen message ends the same way: the buttons are pinned to the bottom of the screen, the main one first and big,
 // the way out last and quiet, so nobody has to scroll or hunt to find where to tap. Details above can be as long as they like.
@@ -1854,7 +1892,7 @@ function scamOverlay({ tags, institution, danger, guide: given, source, sender, 
       h('div', { class: 'stop', id: aid ? `t-${aid}` : undefined }, guide ? guide.title : 'This looks like a scam.'),
       sender ? h('p', { class: 'sender' }, senderLine(sender, repeat)) : null,
       h('div', { id: aid ? `g-${aid}` : undefined }, ...scamBody(guide, (ai && ai.signals) || signals, (ai && ai.impersonating) || impersonating, tags)),
-      actions(go, quiet(go ? 'Close' : (danger ? "OK, I won't act on it" : "OK, I won't send anything"), dismiss))));
+      actions(go, readAloud(guide), quiet(go ? 'Close' : (danger ? "OK, I won't act on it" : "OK, I won't send anything"), dismiss))));
 }
 // Full-screen result of the live-call word check.
 function callOverlay({ ok, name }) {

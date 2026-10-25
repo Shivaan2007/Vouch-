@@ -8,6 +8,10 @@ import { installFakeDom } from '../dev/fakedom.js';
 import { authString } from '../js/lib/canonical.js';
 import { createIdentityKeys, exportPub, signString, signAnswer } from '../js/lib/crypto.js';
 
+// A spy on the browser's voice: the app must never speak on its own.
+globalThis.__spoken = 0;
+globalThis.SpeechSynthesisUtterance = class { constructor(t) { this.text = t; } };
+globalThis.speechSynthesis = { speak() { globalThis.__spoken += 1; }, cancel() {} };
 const server = createMockServer();
 const clients = [];
 let url = '';
@@ -165,4 +169,30 @@ test('a bad code from the scanner is explained, not silent', async () => {
   await btn('Join with this code').fire('click');
   assert.ok(text().includes('8 letters or numbers'));
   await btn('Cancel').fire('click');
+});
+
+test('Display: one findable control sets text size, colours, reading mode and spoken warnings, and remembers them', async () => {
+  await go('My people'); // any screen: the control is in the header on all of them
+  const aa = btn('Aa');
+  assert.ok(aa, 'the Aa button is in the header');
+  await aa.fire('click');
+  await wait(60);
+  assert.ok(text().includes('Display') && text().includes('Text size') && text().includes('Colours'));
+  await btn('Largest').fire('click');
+  await btn('High contrast').fire('click');
+  await btn('Reading mode').fire('click');
+  const saved = JSON.parse(localStorage.getItem('vouch-display'));
+  assert.equal(saved.size, 4);
+  assert.equal(saved.theme, 'hc');
+  assert.equal(saved.reading, true);
+  assert.equal(saved.aloud, false, 'nothing is spoken unless the person turns it on');
+  const cls = document.documentElement.classList;
+  assert.ok(cls.contains ? cls.contains('theme-hc') && cls.contains('reading') && cls.contains('size-4') : true);
+  await btn('Done').fire('click');
+  await wait(40);
+  assert.ok(!text().includes('Text size'), 'and it closes');
+});
+
+test('nothing is ever spoken on its own: warnings, results and prompts are silent unless the person asks', () => {
+  assert.equal(globalThis.__spoken, 0, 'no text-to-speech during the whole run, scam warnings included');
 });

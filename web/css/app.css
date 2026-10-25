@@ -315,3 +315,44 @@ button:active:not(:disabled) { transform: scale(0.98); }
 .reason { font-weight: 600; text-align: left; margin: 0.3rem 0; }
 .doit { font-weight: 800; text-align: left; margin: 0.6rem 0; padding: 0.7rem 0.9rem; border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.14); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* ---------- Display: themes, reading mode, status that never relies on colour alone ----------
+   Contrast measured with the WCAG relative-luminance formula: body text 19:1 (light) and 18:1 (dark); status text 7.7:1 or better;
+   high contrast is black and white at 21:1 with a yellow focus ring (19.6:1). */
+:root { --amber: #663d00; } /* was #7a4a00 (6.7:1); this is 8.4:1 on the amber background */
+html.size-4 { font-size: 200%; }
+:root.theme-light {
+  --bg: #ffffff; --surface: #f4f4f5; --surface-2: #e9e9ec; --ink: #0f0f10; --muted: #55555d; --line: #dcdce0; --accent: #0f0f10; --accent-ink: #ffffff;
+  --green: #14532d; --green-bg: #e3f4e9; --amber: #663d00; --amber-bg: #fdf1d3; --red: #8f1d14; --red-bg: #fdeae8; color-scheme: light;
+}
+:root.theme-dark {
+  --bg: #0b0b0c; --surface: #18181a; --surface-2: #232326; --ink: #f4f4f5; --muted: #a1a1aa; --line: #2e2e33; --accent: #f4f4f5; --accent-ink: #0b0b0c;
+  --green: #86efac; --green-bg: #11261a; --amber: #fcd34d; --amber-bg: #2a2007; --red: #fca5a5; --red-bg: #2d1210; color-scheme: dark;
+}
+:root.theme-hc {
+  --bg: #000000; --surface: #000000; --surface-2: #1a1a1a; --ink: #ffffff; --muted: #ffffff; --line: #ffffff; --accent: #ffffff; --accent-ink: #000000;
+  --green: #000000; --green-bg: #7dff9e; --amber: #000000; --amber-bg: #ffd23f; --red: #000000; --red-bg: #ff9a9a; color-scheme: dark;
+}
+:root.theme-hc .card, :root.theme-hc input, :root.theme-hc textarea, :root.theme-hc button.ghost, :root.theme-hc .chipbtn, :root.theme-hc details.more, :root.theme-hc .homecard.small { border: 2px solid #ffffff; }
+:root.theme-hc :focus-visible { outline: 4px solid #ffff00; outline-offset: 2px; }
+:root.theme-hc .overlay { background: #000000; color: #ffffff; }
+:root.theme-hc .overlay.alert { background: #ff9a9a; color: #000000; border: 6px solid #000000; }
+:root.theme-hc .overlay.alert.soft { background: #ffd23f; }
+:root.theme-hc .overlay.good { background: #7dff9e; color: #000000; }
+:root.theme-hc .overlay.alert button { background: #000000; color: #ffffff; }
+
+/* Status is a word AND a shape, so it still reads in grey or with colour-blindness. */
+.riskbadge.r0::before { content: "\2713\00a0"; } .riskbadge.r1::before { content: "\25B2\00a0"; } .riskbadge.r2::before { content: "\25A0\00a0"; }
+.verdict.green h3::before { content: "\2713\00a0"; } .verdict.amber h3::before { content: "\25B2\00a0"; } .verdict.red h3::before { content: "\25A0\00a0"; }
+.banner .bannerhead::before { content: "\25A0\00a0"; } .banner.soft .bannerhead::before { content: "\25B2\00a0"; }
+.chipbtn.wide { flex: 1 1 100%; }
+
+/* Reading mode: a calmer, more spacious page with bigger targets. */
+html.reading p, html.reading li, html.reading .big, html.reading label { max-width: 60ch; line-height: 1.7; letter-spacing: 0.02em; word-spacing: 0.08em; }
+html.reading p { margin: 1em 0; }
+html.reading button, html.reading input, html.reading textarea, html.reading .chipbtn { min-height: 3.5rem; }
+html.reading .logos, html.reading .wave, html.reading .logo { display: none; }
+html.reading #app { max-width: 40rem; }
+
+/* Less motion: the same as the phone's own setting, but one switch inside the app. */
+html.calm *, html.calm *::before, html.calm *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

@@ -30,7 +30,7 @@ Grandma has a **real Telegram account** (Telegram Premium, for the Business feat
 
 *(They type something like: "This is Chase fraud dept. Your account is compromised. Please verify your login at chase-secure-verify.top." Send.)*
 
-**Within a second or two:** the bot warns **Grandma**, in her chat with it. (It never writes back to the judge, who sees nothing unusual.) **Her phone goes red, speaks, and a banner stays on the screen.** The judge's own Telegram name shows up as the sender.
+**Within a second or two:** the bot warns **Grandma**, in her chat with it. (It never writes back to the judge, who sees nothing unusual.) **Her phone flashes red and vibrates, and a banner stays on the screen.** The judge's own Telegram name shows up as the sender.
 
 > "Look at her phone. She didn't have to ask anything. Vouch sits on her Telegram account and reads what comes in, and only she sees the warning. It tells her what it is, a fake bank alert, why it thinks so, that the link is a lookalike of Chase, and what to do. And this banner doesn't go away until she deals with it. We made it hard to swipe off on purpose, because scams work by rushing you."
 
