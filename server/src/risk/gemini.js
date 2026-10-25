@@ -7,9 +7,17 @@ import { TAG_LIST } from '../config.js';
 
 // FIRST_REQUEST comes from the server's database, not from a model.
 export const GEMINI_TAGS = TAG_LIST.filter((t) => t !== 'FIRST_REQUEST');
-const DEFAULT_MODEL = 'gemini-2.5-flash'; // from the runbook; confirm the name in AI Studio
-const DEFAULT_TIMEOUT_MS = 2500;          // under the server's 3 s race, so we hand back a clean null first
+const DEFAULT_TIMEOUT_MS = 2700; // whole chain; the server gives analyze() 3 s in total
 const MAX_EXPLANATION = 140;
+
+// Checked live on a free key (Oct 24): gemini-2.5-flash returns 404 for new keys; the free tier allows 5 requests per
+// minute PER MODEL, so a busy minute gets 429 on one model. A 429/404 comes back in ~150 ms, so we just try the next
+// model inside the same time budget. Thinking is switched off for speed (each model wants a different setting).
+export const DEFAULT_MODELS = [
+  { name: 'gemini-3.5-flash-lite', thinking: { thinkingLevel: 'low' } },  // fastest in testing: ~0.7 s
+  { name: 'gemini-3.1-flash-lite', thinking: { thinkingBudget: 0 } },    // ~1-3 s
+  { name: 'gemini-3.5-flash', thinking: { thinkingBudget: 0 } },         // ~1.5 s, but easily rate-limited
+];
 
 const RESPONSE_SCHEMA = {
   type: 'OBJECT',
@@ -32,6 +40,7 @@ let dotenvLoaded = false;
 function loadDotEnv() {
   if (dotenvLoaded) return;
   dotenvLoaded = true;
+  if (process.env.NODE_TEST_CONTEXT) return; // `node --test` must never spend the live key (slow, and it eats the free quota)
   try {
     const raw = readFileSync(new URL('../../../.env', import.meta.url), 'utf8');
     for (const line of raw.split(/\r?\n/)) {
@@ -43,7 +52,14 @@ function loadDotEnv() {
 
 export function geminiConfig() {
   loadDotEnv();
-  return { apiKey: process.env.GEMINI_API_KEY || '', model: process.env.GEMINI_MODEL || DEFAULT_MODEL };
+  return { apiKey: process.env.GEMINI_API_KEY || '', model: process.env.GEMINI_MODEL || '' };
+}
+
+// GEMINI_MODEL (if set) is tried first, then the defaults. A stale name just fails fast and the chain moves on.
+function modelChain(preferred) {
+  if (!preferred) return DEFAULT_MODELS;
+  const known = DEFAULT_MODELS.find((m) => m.name === preferred);
+  return [known || { name: preferred, thinking: { thinkingBudget: 0 } }, ...DEFAULT_MODELS.filter((m) => m.name !== preferred)];
 }
 
 function imageMime(b64) {
@@ -67,11 +83,11 @@ export function cleanGeminiOutput(raw) {
   return { tags: [...new Set(tags)], explanation };
 }
 
-// -> { tags, explanation } or null on any problem (no key, nothing to read, timeout, HTTP error, bad JSON).
+// -> { tags, explanation } or null on any problem (no key, nothing to read, timeout, every model failed, bad JSON).
 export async function geminiAnalyze({ text, imageBase64 } = {}, opts = {}) {
   const cfg = geminiConfig();
   const apiKey = opts.apiKey ?? cfg.apiKey;
-  const model = opts.model ?? cfg.model;
+  const models = opts.models ?? modelChain(opts.model ?? cfg.model);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const doFetch = opts.fetchImpl ?? globalThis.fetch;
   const mime = imageMime(imageBase64);
@@ -83,32 +99,39 @@ export async function geminiAnalyze({ text, imageBase64 } = {}, opts = {}) {
   if (mime) parts.push({ inline_data: { mime_type: mime, data: imageBase64 } });
 
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs); // one budget for the whole chain
   try {
-    const res = await doFetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, // header, so the key never sits in a URL
-        signal: ctrl.signal,
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts }],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 300,
-            responseMimeType: 'application/json',
-            responseSchema: RESPONSE_SCHEMA,
-            thinkingConfig: { thinkingBudget: 0 }, // speed: no hidden reasoning tokens inside a 3 s budget
+    for (const model of models) {
+      if (ctrl.signal.aborted) return null;
+      try {
+        const res = await doFetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.name)}:generateContent`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, // header, so the key never sits in a URL
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts }],
+              generationConfig: {
+                temperature: 0,
+                maxOutputTokens: 300,
+                responseMimeType: 'application/json',
+                responseSchema: RESPONSE_SCHEMA,
+                thinkingConfig: model.thinking,
+              },
+            }),
           },
-        }),
-      },
-    );
-    if (!res || !res.ok) return null;
-    const body = await res.json();
-    const out = body?.candidates?.[0]?.content?.parts?.map((p) => p?.text ?? '').join('');
-    return typeof out === 'string' && out ? cleanGeminiOutput(out) : null;
-  } catch {
-    return null; // timeout, network error, bad envelope
+        );
+        if (!res || !res.ok) continue; // 429 (this model's minute is used up), 404 (retired model), 5xx: try the next model
+        const body = await res.json();
+        const out = body?.candidates?.[0]?.content?.parts?.map((p) => p?.text ?? '').join('');
+        const clean = typeof out === 'string' && out ? cleanGeminiOutput(out) : null;
+        if (clean) return clean;
+      } catch {
+        if (ctrl.signal.aborted) return null; // out of time: stop
+      }
+    }
+    return null;
   } finally {
     clearTimeout(timer);
   }

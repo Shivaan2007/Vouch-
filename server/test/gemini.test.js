@@ -121,3 +121,50 @@ test('cleanGeminiOutput accepts an object or a JSON string', () => {
   assert.equal(cleanGeminiOutput('nope'), null);
   assert.equal(cleanGeminiOutput(undefined), null);
 });
+
+// ---- model chain: free tier is 5 requests/min PER MODEL, and retired models answer 404 ----
+const statusReply = (status) => async () => ({ ok: false, status, json: async () => ({}) });
+const goodReply = reply(JSON.stringify({ tags: ['URGENCY'], explanation: 'Pressure to hurry.' }));
+const modelOf = (url) => /models\/([^:]+):/.exec(url)[1];
+
+test('a 429 on one model moves on to the next model', async () => {
+  const tried = [];
+  const fetchImpl = async (url, init) => { tried.push(modelOf(url)); return tried.length === 1 ? statusReply(429)() : goodReply(url, init); };
+  const out = await analyze(base, { apiKey: 'k', timeoutMs: 500, fetchImpl });
+  assert.equal(tried.length, 2);
+  assert.equal(tried[0], 'gemini-3.5-flash-lite');
+  assert.equal(out.source, 'gemini');
+  assert.deepEqual(out.tags, ['URGENCY']);
+});
+
+test('a retired model name in GEMINI_MODEL fails fast and the defaults still work', async () => {
+  const tried = [];
+  const fetchImpl = async (url, init) => { tried.push(modelOf(url)); return modelOf(url) === 'gemini-2.5-flash' ? statusReply(404)() : goodReply(url, init); };
+  const out = await analyze(base, { apiKey: 'k', model: 'gemini-2.5-flash', timeoutMs: 500, fetchImpl });
+  assert.deepEqual(tried.slice(0, 2), ['gemini-2.5-flash', 'gemini-3.5-flash-lite']);
+  assert.equal(out.source, 'gemini');
+});
+
+test('every model rate-limited: rules-only result, tries each model once', async () => {
+  let n = 0;
+  const out = await analyze({ ...base, text: 'urgent' }, { apiKey: 'k', timeoutMs: 500, fetchImpl: async () => { n++; return statusReply(429)(); } });
+  assert.equal(n, 3);
+  assert.equal(out.source, 'rules');
+  assert.deepEqual(out.tags, ['URGENCY']);
+});
+
+test('timeout stops the chain: no more models are tried after the budget is spent', async () => {
+  let n = 0;
+  const hang = (_u, { signal }) => { n++; return new Promise((_, rej) => signal.addEventListener('abort', () => rej(new Error('aborted')))); };
+  const out = await analyze({ ...base, text: 'urgent' }, { apiKey: 'k', timeoutMs: 50, fetchImpl: hang });
+  assert.equal(n, 1);
+  assert.equal(out.source, 'rules');
+});
+
+test('each model gets its own thinking setting', async () => {
+  const seen = {};
+  const fetchImpl = async (url, init) => { seen[modelOf(url)] = JSON.parse(init.body).generationConfig.thinkingConfig; return statusReply(429)(); };
+  await geminiAnalyze({ text: 'hi' }, { apiKey: 'k', timeoutMs: 500, fetchImpl });
+  assert.deepEqual(seen['gemini-3.5-flash'], { thinkingBudget: 0 });
+  assert.deepEqual(seen['gemini-3.5-flash-lite'], { thinkingLevel: 'low' });
+});
