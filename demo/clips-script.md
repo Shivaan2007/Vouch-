@@ -2,7 +2,7 @@
 
 Five short lines for the soundboard (`web/dev/soundboard.js` expects these file names in `web/dev/audio/`). Keep each under about 8 seconds. Character: a scared grandchild on a bad phone line. The audio files are git-ignored; this text file is only the words.
 
-Before you record or clone: written consent from the speaker (`demo/voice-consent.md`), and check ElevenLabs' voice-cloning terms. Plan B for every clip: Tejasv says the line live.
+Made with an ElevenLabs **stock voice** ("Liam", model `eleven_multilingual_v2`), not a clone, so no consent is needed. Each clip was transcribed back to check it says the right words. To regenerate or change the voice: `node demo/make-clips.mjs` (needs `ELEVENLABS_API_KEY` in `.env`; optional `CLIP_VOICE_ID`). A cloned voice would need the written consent in `demo/voice-consent.md` first. Plan B for every clip: Tejasv says the line live.
 
 | File | Title on the soundboard | Line | When |
 | --- | --- | --- | --- |

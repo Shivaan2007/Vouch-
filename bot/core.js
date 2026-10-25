@@ -54,7 +54,7 @@ export function createContext({ keep = 5, ttlMs = 15 * 60 * 1000 } = {}) {
  * @param {{analyze?: Function, infer?: Function, vouchUrl?: string}} [opts]
  */
 export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl = '' } = {}) {
-  const levelOf = (tags, risk, local) => (riskyEnough(tags) || risk === 'high' || (local.institution && local.ask) ? 2 : (local.ask || tags.length ? 1 : 0));
+  const levelOf = (tags, risk, local) => (riskyEnough(tags) || risk === 'high' || (local.institution && local.ask) || local.danger ? 2 : (local.ask || tags.length ? 1 : 0));
 
   /**
    * The instant read: on-phone rules only.

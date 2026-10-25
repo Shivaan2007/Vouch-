@@ -1,7 +1,7 @@
 {
   "name": "vouch",
   "version": "1.0.0",
-  "description": "",
+  "description": "Two-factor authentication for people: a friend's real phone confirms a money request with a signed answer.",
   "main": "index.js",
   "scripts": {
     "test": "node --test",

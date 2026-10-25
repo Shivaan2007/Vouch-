@@ -55,7 +55,7 @@ test('sign up; the shared scam raises the "message" danger, and it is saved so a
   find(appEl, (n) => n.id === 'name').value = 'Ada';
   await btn('Get started').fire('click');
   await wait(900);
-  assert.ok(text().includes('DO NOT SEND ANYTHING'));
+  assert.ok(text().includes('DO NOT ACT ON THIS'));
   const saved = JSON.parse(localStorage.getItem('vouch-alerts'));
   assert.equal(saved.length, 1);
   assert.equal(saved[0].source, 'message');
@@ -113,7 +113,7 @@ test("a friend's yes resolves that request only: the scam warning from earlier i
   const s = await signAnswer(sam.keys.signKeyPair.privateKey, { requestId: p.requestId, checkerId: p.checker.id, claimedId: sam.id, amountCents: p.amountCents, method: p.method, answer: 'yes' });
   await sam.call('verify:answer', { requestId: p.requestId, answer: 'yes', ...s });
   await wait(600);
-  assert.ok(text().includes('DO NOT SEND ANYTHING') || JSON.parse(localStorage.getItem('vouch-alerts')).some((a) => a.source === 'message'),
+  assert.ok(text().includes('DO NOT ACT ON THIS') || JSON.parse(localStorage.getItem('vouch-alerts')).some((a) => a.source === 'message'),
     'the earlier warning about the shared message was not wiped by Sam saying yes');
 });
 

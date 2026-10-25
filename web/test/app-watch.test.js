@@ -75,7 +75,7 @@ test('a message forwarded to the linked bot chat flashes a warning in the app', 
   await wait(400);
   assert.ok(text().includes('Sent to Vouch from Telegram'), 'says where it came from');
   assert.ok(text().includes('Possible family-emergency scam'), 'names the scam type');
-  assert.ok(text().includes('DO NOT SEND ANYTHING'), 'and the sticky banner is up');
+  assert.ok(text().includes('DO NOT ACT ON THIS'), 'and the sticky banner is up');
   assert.ok(!text().includes('zebra') && !text().includes('$200'), 'the message itself never reached the app');
   await dismissAll();
 });

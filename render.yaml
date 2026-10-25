@@ -8,7 +8,8 @@ services:
     runtime: node
     plan: free
     buildCommand: npm ci
-    startCommand: npm start
+    # Vouch WITH Watch: the Telegram bot, the AI read, call listening and app alerts. "npm start" runs the core server alone.
+    startCommand: node bot/serve.js
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -20,5 +21,14 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: GEMINI_MODEL
-        value: gemini-2.5-flash
+      # Watch (optional; each one switches a feature on). Never commit values; set them in the dashboard.
+      - key: BOT_TOKEN
+        sync: false
+      - key: VOUCH_URL
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: WATCH_SALT
+        generateValue: true
