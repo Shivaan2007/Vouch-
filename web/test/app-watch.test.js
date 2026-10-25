@@ -120,7 +120,7 @@ test('listening through the Vouch server: audio goes up, words come back, the ca
   const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
   for (let i = 0; i < 25; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } }); // about six seconds
   await wait(800);
-  assert.ok(text().includes('STOP. Scam signs'), 'the call screen turns to the warning from what the server heard');
+  assert.ok(text().includes('STOP. This looks like a scam'), 'the call screen turns to the warning from what the server heard');
   assert.ok(text().includes('Watching call'), 'the header shows it is watching');
   await btn('Stop listening').fire('click');
   await wait(100);
@@ -153,7 +153,7 @@ test('the call screen: caller, clock, captions with the risky words marked, risk
   assert.ok(text().includes('Nothing suspicious so far'), 'and a risk badge that starts calm');
   await wait(5600); // the first five-second window finishes "playing" and goes to the server
   await wait(900);
-  assert.ok(text().includes('STOP. Scam signs'), 'the call is flagged as the words come in, on the call screen itself');
+  assert.ok(text().includes('STOP. This looks like a scam'), 'the call is flagged as the words come in, on the call screen itself');
   assert.ok(text().includes('gift cards'), 'the captions show what was heard');
   assert.ok(dom.findAll(appEl, (n) => n.tag === 'mark').length >= 1, 'with the risky words marked');
   await btn('Stop listening').fire('click');
@@ -293,4 +293,52 @@ test('a call, end to end: the call engine stops a "read me the code" call, expla
   await box.fire('input');
   await wait(300);
   assert.ok(!text().includes('STOP'), 'a genuine call from a doctor does not raise an alarm');
+});
+
+test('on a live call that turns suspicious, the code word is already on screen to ask the caller for', async () => {
+  await dismissAll();
+  let proc;
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 16000; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { proc = { connect() {}, disconnect() {}, onaudioprocess: null }; return proc; }
+    close() {}
+  };
+  dom.nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) };
+  await go('My people'); await wait(150);
+  await go('On a call'); await wait(100);
+  const sam = btn('Sam');
+  if (sam) { await sam.fire('click'); await wait(150); }
+  await btn('Listen for scams').fire('click');
+  await wait(300);
+  assert.ok(proc && typeof proc.onaudioprocess === 'function', 'the microphone is wired up');
+  const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
+  for (let i = 0; i < 25; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } });
+  await wait(900);
+  assert.ok(text().includes('STOP. This looks like a scam'), 'the call screen turns to the warning');
+  assert.ok(text().includes("What's our word?"), 'and says to ask for the code word');
+  assert.ok(find(appEl, (n) => n.id === 'bigword'), 'with the word itself on screen');
+  await btn('Stop listening').fire('click');
+  await wait(100);
+});
+
+test('the AI read alone raises a call warning: no scam words and no code words anywhere in what was said', async () => {
+  await dismissAll();
+  await go('On a call');
+  const box = find(appEl, (n) => n.id === 'callsays');
+  box.value = '';
+  await box.fire('input');
+  await wait(4400); // the app asks the AI at most every four seconds
+  aiNext = async () => ({ moneyRequest: false, amountUSD: null, paymentMethod: 'unknown', risk: 'high', scamType: 'Impersonating a relative', impersonating: 'a grandchild',
+    signals: ["calls from a 'friend's phone'", 'builds a story before any ask'], why: 'A caller pretending to be a grandchild is building a story to ask for help.',
+    steps: ['Hang up.', 'Call them on the number you know.'], tags: [], intent: 'message', reply: '', links: [], image: null, heard: '' });
+  try {
+    box.value = "Hi Grandma, it's me. My phone broke so I'm calling from a friend's and I've had a really rough night.";
+    await box.fire('input');
+    await wait(1800);
+    assert.ok(text().includes('STOP. This call looks like a scam'), 'raised by the AI read, since the rules saw nothing');
+    assert.ok(text().includes('Impersonating a relative'), 'and it names what it inferred');
+  } finally { aiNext = null; }
+  await dismissAll();
 });

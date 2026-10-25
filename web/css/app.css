@@ -356,3 +356,24 @@ html.reading #app { max-width: 40rem; }
 
 /* Less motion: the same as the phone's own setting, but one switch inside the app. */
 html.calm *, html.calm *::before, html.calm *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+
+/* Warnings: a clear label above the title, and the danger banner kept slim and readable on every screen. */
+.kicker { font-size: 0.85rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin: 0.4rem 0 0; }
+.kicker::before { content: "\25A0\00a0"; }
+.overlay.alert.soft .kicker::before { content: "\25B2\00a0"; }
+.banner { padding: 0.7rem 1rem; margin: 0.5rem 0; }
+.banner p { margin: 0.2rem 0 0.1rem; font-size: 0.95rem; font-weight: 600; }
+.banner button { min-height: 2.9rem; margin-top: 0.45rem; font-size: 0.98rem; }
+.banner button:disabled { opacity: 1; color: rgba(255, 255, 255, 0.78); box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5); }
+.chips .chipbtn.wide { flex: 1 1 100%; text-align: left; padding-left: 1.1rem; }
+.overlay .inner > p.muted { margin-bottom: 5.5rem; }
+.pill.wait { background: var(--surface-2); color: var(--muted); }
+
+/* The pinned button bar needs a solid floor, or the text scrolling under it shows through (seen on the live call screen). */
+.overlay { --sheet: var(--bg); }
+.overlay.alert { --sheet: var(--red-bg); } .overlay.alert.soft { --sheet: var(--amber-bg); } .overlay.good { --sheet: var(--green-bg); }
+.overlay.live { --sheet: #0b0b0c; } .overlay.live.lv1 { --sheet: #2a2107; } .overlay.live.lv2 { --sheet: #3b0d0a; }
+:root.theme-hc .overlay { --sheet: #000000; } :root.theme-hc .overlay.alert { --sheet: #ff9a9a; } :root.theme-hc .overlay.alert.soft { --sheet: #ffd23f; } :root.theme-hc .overlay.good { --sheet: #7dff9e; }
+.actions { background: var(--sheet); box-shadow: 0 -14px 14px -8px var(--sheet); }
+.livetop { display: flex; justify-content: space-between; align-items: baseline; gap: 0.8rem; text-align: left; }
+.calltime { font-variant-numeric: tabular-nums; font-weight: 700; }

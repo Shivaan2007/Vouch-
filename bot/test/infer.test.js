@@ -255,3 +255,14 @@ test('when every model fails, the read is null and nothing is left running', asy
   const r = await inferScam({ text: 'please send $100 in gift cards' }, { fetchImpl: async () => ({ ok: false }), apiKey: 'k', hedgeMs: 20, timeoutMs: 500 });
   assert.equal(r, null);
 });
+
+test('a picture the AI thinks was computer-generated raises a hedged check, never a stop by itself', async () => {
+  const calm = { ...GOOD, moneyRequest: false, risk: 'none', scamType: 'Ordinary message', signals: [], steps: [], why: '', tags: [], links: [], heard: '' };
+  const core = createCore({ analyze: rules, infer: async () => ({ ...calm, image: { kind: 'Profile photo', aiGenerated: 'likely', risk: 'none', concerns: [] } }) });
+  const a = await core.assess({ text: '', imageBase64: 'iVBOR' });
+  assert.equal(a.level, 1);
+  assert.equal(a.guide.title, 'Possibly an AI-made picture');
+  assert.match(a.guide.why, /only a hint/);
+  const maybe = createCore({ analyze: rules, infer: async () => ({ ...calm, image: { kind: 'Photo', aiGenerated: 'possible', risk: 'none', concerns: [] } }) });
+  assert.equal((await maybe.assess({ text: '', imageBase64: 'iVBOR' })).level, 0, 'only "likely" counts; "possible" is too weak to bother anyone');
+});

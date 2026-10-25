@@ -3,6 +3,7 @@
 //   node --env-file=.env bot/serve.js
 import fs from 'node:fs';
 import { createVouchServer } from '../server/src/app.js';
+import { geminiConfig } from '../server/src/risk/gemini.js';
 import { attachWatch } from './watch.js';
 
 // Keys in a .env file work whether or not the process was started with --env-file.
@@ -15,6 +16,6 @@ server.listen(port).then(async (p) => {
   console.log(`Vouch (with Watch) listening on :${p}.`);
   await watch.ready; // wait for Telegram to answer, so this line tells the truth
   const ch = watch.channels().map((c) => c.name).join(', ') || 'none configured';
-  console.log(`Message doors: ${ch}. Call listening: ${process.env.GEMINI_API_KEY || process.env.ELEVENLABS_API_KEY ? 'on' : 'off (no GEMINI_API_KEY)'}.`);
+  console.log(`Message doors: ${ch}. Call listening: ${geminiConfig().apiKey || process.env.ELEVENLABS_API_KEY ? 'on' : 'off (no GEMINI_API_KEY)'}.`);
 });
 process.on('SIGTERM', () => { watch.stop(); process.exit(0); });

@@ -364,6 +364,27 @@ async function boot() {
     S.me = null; S.keys = null; S.pubs = null; S.friends = [];
     S.bootError = (e && (e.name + ': ' + e.message)) || String(e);
   }
+  // Set the display once from a link, so a demo phone never has to be set up by hand (and a reset or re-pair does not undo it):
+  //   https://<address>/?aloud=1            speak warnings aloud
+  //   also size=1..4, theme=auto|light|dark|hc, reading=1, calm=1   (combine them with &)
+  // It is saved on the phone like any Display setting, then removed from the address bar. It never touches keys or people.
+  try {
+    const p = new URLSearchParams(location.search);
+    const patch = {};
+    if (p.has('aloud')) patch.aloud = p.get('aloud') === '1';
+    if (p.has('size') && [1, 2, 3, 4].includes(Number(p.get('size')))) patch.size = Number(p.get('size'));
+    if (p.has('theme') && ['auto', 'light', 'dark', 'hc'].includes(p.get('theme'))) patch.theme = p.get('theme');
+    if (p.has('reading')) patch.reading = p.get('reading') === '1';
+    if (p.has('calm')) patch.calm = p.get('calm') === '1';
+    if (Object.keys(patch).length) {
+      saveDisplay({ ...loadDisplay(), ...patch });
+      for (const k of ['aloud', 'size', 'theme', 'reading', 'calm']) p.delete(k);
+      const rest = p.toString();
+      history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
+      const clean = rest ? `?${rest}` : '';
+      if (location.search !== clean) location.search = clean; // a real browser already shows the cleaned address after replaceState, so this never reloads the page
+    }
+  } catch { /* a malformed address must never stop the app from starting */ }
   const m = /pair=([A-Za-z0-9]+)/.exec(location.hash);
   if (m) S.pendingPair = m[1].toUpperCase();
   // Android "Share to Vouch": the shared message arrives as ?text=...
@@ -514,8 +535,9 @@ function buildShell() {
 
 function paintStatus() {
   if (!$status) return;
-  $status.textContent = (S.listening ? 'Watching call · ' : '') + (S.online ? (S.authed ? 'Online' : 'Signing in…') : 'Offline');
-  $status.className = 'pill' + (S.online && S.authed ? '' : ' off');
+  // A phone that has not signed up yet is simply "Ready"; "Signing in…" is only for an existing account reconnecting. Neither is an error.
+  $status.textContent = (S.listening ? 'Watching call · ' : '') + (S.online ? (S.authed ? 'Online' : (S.me ? 'Signing in…' : 'Ready')) : 'Offline');
+  $status.className = 'pill' + (S.online && S.authed ? '' : S.online ? ' wait' : ' off');
   // Only warn once we've been connected before, so the first second of loading isn't an error.
   if (!S.online && S.everConnected) {
     $conn.replaceChildren(h('div', { class: 'card' },
@@ -1073,7 +1095,7 @@ async function tickWord() {
 // The words are scanned on this phone and nothing is saved. The phone never speaks during a call (its own voice would be heard).
 
 const speechCtor = () => globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
-const RISK_TEXT = ['Nothing suspicious so far', 'Someone is asking for money', 'STOP. Scam signs'];
+const RISK_TEXT = ['Listening. Nothing suspicious so far', 'Noticing something. Be careful', 'STOP. This looks like a scam'];
 
 function paintListen() {
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
@@ -1291,7 +1313,7 @@ async function startServerListening() {
   if (!ctx.createScriptProcessor) { stream.getTracks().forEach((t) => t.stop()); fail("This browser can't capture audio. Open More ways and type what the caller says."); return; }
   const src = ctx.createMediaStreamSource(stream);
   const proc = ctx.createScriptProcessor(4096, 1, 1);
-  let chunks = []; let samples = 0;
+  let chunks = []; let samples = 0; let flushes = 0;
   const flush = () => {
     const mine = chunks; chunks = []; samples = 0;
     const { wav, rms } = chunkToWav(mine, ctx.sampleRate);
@@ -1305,7 +1327,9 @@ async function startServerListening() {
     for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
     S.listen.level = Math.min(1, Math.sqrt(sum / d.length) * 8);
     setWave(S.listen.level);
-    if (samples >= ctx.sampleRate * 5) flush();
+    // 4 seconds per slice: short enough to feel live, long enough for the speech-to-text to hear whole phrases. (3 s slices were
+    // tried: the transcript repeated words and lost a line, so they were put back.)
+    if (samples >= ctx.sampleRate * 4) flush();
   };
   src.connect(proc);
   proc.connect(ctx.destination);
@@ -1442,6 +1466,13 @@ function escalateCall(level, tags, institution, ai) {
     call('watch:alert', { level, title: g ? g.title : 'a call' }, 4000).catch(() => {});
   }
   if (ai) S.callAi = ai;
+  // The moment a call turns suspicious, the code word is already on screen for the person it is about: ask the caller for it.
+  const who = likelyFriend();
+  if (S.listening && who && level >= 1 && !S.wordShown) {
+    S.callWith = who.id; S.wordFriendId = who.id;
+    revealWord();
+    $overlay.dataset.key = ''; // rebuild the call screen so the word area is part of it
+  }
   paintListen();
   renderOverlay();
 }
@@ -1480,7 +1511,7 @@ function callScamOverlay({ level, tags, institution, ai }) {
       // One main thing to do: make sure it is really them. The code word comes first, because it works on a live call.
       actions(anyone ? h('button', { onclick: () => { dismiss(); if (f) { S.callWith = f.id; S.wordFriendId = f.id; setTab('word'); revealWord(); } else setTab('word'); } }, f ? `Ask ${f.name} for our code word` : 'Check the code word') : null,
         anyone ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, f ? `Check with ${f.name}'s phone` : "Check with a trusted person's phone") : null,
-        readAloud(guide), quiet(S.listening ? 'Keep listening' : 'Close', dismiss))));
+        closer(S.listening ? 'Keep listening' : 'Close', anyone), readAloud(guide))));
 }
 
 // ---------- my people + pairing ----------
@@ -1813,7 +1844,9 @@ const PROMPT_MS = 120000; // how long the server waits for an answer
 
 // "Read this to me": on a warning, speaks its title, why and steps. Not while a call is being listened to: the phone's own voice
 // would be picked up by its microphone.
-const readAloud = (g) => (S.listening || !g ? null : quiet('Read this to me', () => speakBuiltIn(`${g.title}. ${g.why || ''} ${(g.steps || []).slice(0, 3).join('. ')}`)));
+const readAloud = (g) => (S.listening || !g ? null : h('button', { class: 'ghost', onclick: () => speakBuiltIn(`${g.title}. ${g.why || ''} ${(g.steps || []).slice(0, 3).join('. ')}`) }, 'Read this to me'));
+// When a warning has nothing else to offer, closing it is THE button: big and solid, never a small link.
+const closer = (label, hasPrimary, onclick = dismiss) => (hasPrimary ? quiet(label, onclick) : h('button', { onclick }, label));
 
 // The Display sheet: findable (always in the header), one screen, big buttons that say what they are.
 function displayOverlay() {
@@ -1827,8 +1860,8 @@ function displayOverlay() {
     h('h2', null, 'Display'),
     group('Text size', [[1, 'Normal'], [2, 'Large'], [3, 'Larger'], [4, 'Largest']], d.size, (v) => set({ size: v })),
     group('Colours', [['auto', 'Match my phone'], ['light', 'Light'], ['dark', 'Dark'], ['hc', 'High contrast']], d.theme, (v) => set({ theme: v })),
-    h('div', { class: 'people' }, toggle('Reading mode', d.reading, { reading: !d.reading }), toggle('Less motion', d.calm, { calm: !d.calm }), toggle('Speak warnings aloud', d.aloud, { aloud: !d.aloud })),
-    h('p', { class: 'muted' }, 'Reading mode: calmer layout, wider spacing, bigger buttons. Saved on this phone only.'),
+    h('div', { class: 'people' }, h('div', { class: 'chips' }, toggle('Reading mode', d.reading, { reading: !d.reading }), toggle('Less motion', d.calm, { calm: !d.calm }), toggle('Speak warnings aloud', d.aloud, { aloud: !d.aloud }))),
+    h('p', { class: 'muted' }, 'Saved on this phone only.'),
     actions(h('button', { onclick: () => { S.displayOpen = false; renderOverlay(); } }, 'Done'))));
 }
 
@@ -1889,10 +1922,11 @@ function scamOverlay({ tags, institution, danger, guide: given, source, sender, 
   return h('div', { class: `overlay alert${soft ? ' soft' : ''}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
     h('div', { class: 'inner' },
       source ? h('p', { class: 'muted', id: aid ? `s-${aid}` : undefined }, `Sent to Vouch from ${SOURCE_NAMES[source] || 'a message'}${ai ? ' · read by AI' : ''}`) : null,
+      h('div', { class: 'kicker' }, soft ? 'Check first' : 'Scam warning'),
       h('div', { class: 'stop', id: aid ? `t-${aid}` : undefined }, guide ? guide.title : 'This looks like a scam.'),
       sender ? h('p', { class: 'sender' }, senderLine(sender, repeat)) : null,
       h('div', { id: aid ? `g-${aid}` : undefined }, ...scamBody(guide, (ai && ai.signals) || signals, (ai && ai.impersonating) || impersonating, tags)),
-      actions(go, readAloud(guide), quiet(go ? 'Close' : (danger ? "OK, I won't act on it" : "OK, I won't send anything"), dismiss))));
+      actions(go, closer(go ? 'Close' : (danger ? "OK, I won't act on it" : "OK, I won't send anything"), !!go), readAloud(guide))));
 }
 // Full-screen result of the live-call word check.
 function callOverlay({ ok, name }) {
