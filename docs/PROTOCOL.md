@@ -52,7 +52,7 @@ deriveKey). Stored in IndexedDB on the phone. Only public keys ever leave the ph
   text ≤ 2000 chars; imageDataUrl ≤ 4 MB jpeg/png. Must be paired with `claimedId`, else `NOT_PAIRED`. Neither text nor image is stored.
 - Server → claimed: `verify:prompt { requestId, checker:{ id, name }, amountCents, method, channel, tier, ts }`.
 - Claimed → server: `verify:answer { requestId, answer:"yes"|"not_me", retypedCents?, ts, nonce, sig }`
-  (sig over `answerString`; for `answer:"yes"` at tier ≥ 2, `retypedCents === amountCents` is required, else error `AMOUNT_MISMATCH`; `not_me` never requires it, so denying a scam is always one tap).
+  (sig over `answerString`; tier ≥ 2 requires `retypedCents === amountCents`, else error `AMOUNT_MISMATCH`).
   Errors: `BAD_SIGNATURE`, `ALREADY_ANSWERED`, `NOT_ALLOWED`.
 - Tier 2+: checker's phone checks the word locally, then `verify:wordcheck { requestId, passed:true }`.
 - Tier 3: server picks one other circle member of the claimed person (not the checker) and emits

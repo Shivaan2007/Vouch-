@@ -34,7 +34,7 @@ const METHODS = [
   ['venmo_cashapp_zelle', 'Venmo / Cash App / Zelle'], ['gift_card', 'Gift cards'], ['wire', 'Wire transfer'],
   ['crypto', 'Crypto'], ['cash_in_person', 'Cash in person'], ['other', 'Other'], ['unknown', "I don't know"],
 ];
-const CHANNELS = [['text', 'Text'], ['call', 'Call'], ['dm', 'App / DM'], ['email', 'Email']];
+const CHANNELS = [['text', 'Text message'], ['call', 'Phone call'], ['dm', 'Direct message'], ['email', 'Email']];
 const label = (list, key) => (list.find(([k]) => k === key) || [key, key])[1];
 const TAGS = {
   URGENCY: 'Pressure to act fast', SECRECY: 'Asks you to keep it secret', NEW_NUMBER: 'New number',
@@ -43,37 +43,13 @@ const TAGS = {
 };
 const ERRORS = {
   OFFLINE: "You're offline. Reconnecting…", TIMEOUT: 'The server took too long. Try again.',
-  TOKEN_INVALID: 'That code is invalid or expired.', ALREADY_PAIRED: "You're already linked.",
-  SELF_PAIR: "That's your own code.", NOT_PAIRED: "You aren't linked with them.",
+  TOKEN_INVALID: 'That code is invalid or expired.', ALREADY_PAIRED: "You're already paired.",
+  SELF_PAIR: "That's your own code.", NOT_PAIRED: "You aren't paired with them.",
   AMOUNT_MISMATCH: "The amount you typed doesn't match.", BAD_SIGNATURE: "Your signature wasn't accepted.",
   ALREADY_ANSWERED: 'This was already answered.', NOT_FOUND: 'This request is gone.',
   RATE_LIMITED: 'Slow down a little.', BAD_INPUT: 'Check what you entered.',
 };
 const friendly = (e) => ERRORS[e && e.message] || `Something went wrong (${e && e.message})`;
-
-// Instant, on-phone hints while reading a message. These only WARN and pre-fill the form;
-// they never clear anything. Only the friend's signed answer can make a request green.
-const RULES = [
-  [/gift\s*card|itunes|apple card|google play|steam card/i, 'GIFT_CARD'],
-  [/\bwire\b|western union|moneygram/i, 'WIRE'],
-  [/bitcoin|\bbtc\b|crypto|ethereum|usdt/i, 'CRYPTO'],
-  [/urgent|right now|asap|immediately|hurry|emergency|stuck|stranded|today only/i, 'URGENCY'],
-  [/don'?t tell|do not tell|keep (this|it)( a)? secret|between us|tell no one|don'?t say anything/i, 'SECRECY'],
-  [/new number|lost my phone|changed my number|my new (phone|number)/i, 'NEW_NUMBER'],
-  [/pay (you )?back|repay|reimburse|i'?ll (send|give) it back/i, 'PAYBACK_PROMISE'],
-];
-function suggest(text) {
-  const tags = RULES.filter(([re]) => re.test(text)).map(([, t]) => t);
-  const m = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/.exec(text) || /(\d{1,6})\s*(?:dollars|bucks|usd)/i.exec(text);
-  let amount = '';
-  if (m) amount = m[1].replace(/,/g, '') + (m[2] !== undefined ? `.${m[2]}` : '');
-  let method = null;
-  if (tags.includes('GIFT_CARD')) method = 'gift_card';
-  else if (tags.includes('WIRE')) method = 'wire';
-  else if (tags.includes('CRYPTO')) method = 'crypto';
-  else if (/venmo|zelle|cash\s?app/i.test(text)) method = 'venmo_cashapp_zelle';
-  return { tags, amount, method };
-}
 
 // Big radio cards (native inputs, so screen readers and keyboards work).
 let choiceSeq = 0;
@@ -99,17 +75,6 @@ function attention(text, pattern) {
   } catch { /* not supported */ }
 }
 
-// System notification when Vouch is in the background (needs permission; see "Alerts" under My people).
-function notify(title, body, tag) {
-  try {
-    if (!('Notification' in globalThis) || Notification.permission !== 'granted' || !document.hidden) return;
-    navigator.serviceWorker.getRegistration().then((reg) => {
-      if (reg) reg.showNotification(title, { body, tag, renotify: true, requireInteraction: true, icon: './icon.svg' });
-      else new Notification(title, { body, tag });
-    }).catch(() => {});
-  } catch { /* not supported */ }
-}
-
 // Text size: three steps, remembered on this phone only.
 function applySize(n) {
   document.documentElement.classList.remove('size-2', 'size-3');
@@ -122,10 +87,9 @@ function saveSize(n) { try { localStorage.setItem('vouch-size', String(n)); } ca
 
 const S = {
   me: null, keys: null, pubs: null, nonce: null, authed: false, online: false,
-  friends: [], tab: 'check', pendingPair: null, current: null, results: new Map(), texts: new Map(),
-  drafts: {}, queue: [], codeView: null, scanning: false, stream: null, wordFriendId: null,
-  announced: new Map(), size: 1, forgetAsk: false, bootError: '',
-  form: { friendId: '', method: 'venmo_cashapp_zelle', channel: 'text', amount: '', text: '', amountTouched: false, methodTouched: false },
+  friends: [], tab: 'check', pendingPair: null, current: null, results: new Map(),
+  drafts: {}, queue: [], codeView: null, wordFriendId: null, announced: new Map(), size: 1, forgetAsk: false,
+  form: { friendId: '', method: 'venmo_cashapp_zelle', channel: 'text', amount: '', text: '' },
 };
 const $app = document.getElementById('app');
 let $content, $status, $banners, $overlay, $toast;
@@ -159,10 +123,7 @@ async function boot() {
   // Android "Share to Vouch": the shared message arrives as ?text=...
   const q = new URLSearchParams(location.search);
   const shared = q.get('text') || q.get('title') || q.get('url');
-  if (shared) {
-    S.form.text = shared.slice(0, 2000);
-    history.replaceState(null, '', location.pathname + location.hash);
-  }
+  if (shared) { S.form.text = shared.slice(0, 2000); history.replaceState(null, '', location.pathname + location.hash); }
   S.size = loadSize();
   applySize(S.size);
   try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js'); } catch { /* optional */ }
@@ -256,12 +217,12 @@ async function syncFriends() {
 // ---------- shell ----------
 
 function buildShell() {
-  $status = h('span', { class: 'pill off', role: 'status' }, 'Offline');
+  $status = h('span', { class: 'pill off', role: 'status' }, 'offline');
   $banners = h('div', { role: 'alert' });
   $toast = h('div', { role: 'status', 'aria-live': 'polite' });
   $content = h('main');
   $overlay = h('div');
-  const tabs = [['check', 'Check a message'], ['word', 'On a call'], ['friends', 'My people']];
+  const tabs = [['check', '✉️ Check a message'], ['word', '☎️ On a call?'], ['friends', '👪 My people']];
   const nav = h('nav', { id: 'nav', 'aria-label': 'Main' }, tabs.map(([key, text]) =>
     h('button', { 'data-tab': key, onclick: () => setTab(key) }, text)));
   const size = h('button', { class: 'ghost size', 'aria-label': 'Change text size', onclick: () => {
@@ -275,7 +236,7 @@ function buildShell() {
 
 function paintStatus() {
   if (!$status) return;
-  $status.textContent = S.online ? (S.authed ? 'Online' : 'Signing in…') : 'Offline';
+  $status.textContent = S.online ? (S.authed ? 'online' : 'signing in…') : 'offline';
   $status.className = 'pill' + (S.online && S.authed ? '' : ' off');
 }
 
@@ -310,13 +271,13 @@ function setupView() {
   } }, 'Get started');
   return h('section', null,
     h('h2', null, 'Welcome to Vouch'),
-    h('p', null, 'Vouch checks that a message or call asking for money is really from someone you trust.'),
+    h('p', null, 'Vouch checks that a message or call asking for money is really from your family or friend.'),
     h('p', { class: 'muted' }, 'Your phone makes a private key. It never leaves this phone.'),
     S.pendingPair ? h('p', { class: 'ok' }, "You'll be linked to your friend right after this.") : null,
     h('label', { for: 'name' }, 'Your name'), name, btn, msg);
 }
 
-// ---------- check a message ----------
+// ---------- check (the "someone is asking me for money" side) ----------
 
 function checkView() {
   if (!S.friends.length) {
@@ -326,45 +287,20 @@ function checkView() {
   }
   const F = S.form;
   if (!F.friendId || !friendById(F.friendId)) F.friendId = S.friends[0].id;
-
-  const flags = h('div', { class: 'flagbar', 'aria-live': 'polite' });
-  const paintFlags = () => {
-    const tags = suggest(F.text).tags;
-    flags.replaceChildren(...(tags.length ? [h('span', null, 'Looks risky:'), ...tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))] : []));
-  };
-  const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
-  const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; } });
-  const method = h('select', { id: 'method', onchange: () => { F.method = method.value; F.methodTouched = true; } },
-    METHODS.map(([k, t]) => h('option', { value: k }, t)));
-  text.value = F.text; amount.value = F.amount; method.value = F.method;
-  function onText() {
-    F.text = text.value;
-    const s = suggest(F.text);
-    if (s.amount && !F.amountTouched) { F.amount = s.amount; amount.value = s.amount; }
-    if (s.method && !F.methodTouched) { F.method = s.method; method.value = s.method; }
-    paintFlags();
-  }
-  paintFlags();
-
   const who = S.friends.length > 1
     ? choice('Who does it say it is?', S.friends.map((f) => [f.id, f.name]), F.friendId, (v) => { F.friendId = v; })
     : h('p', { class: 'big' }, `It says it's ${S.friends[0].name}.`);
-  const channel = choice('How did they reach you?', CHANNELS, F.channel, (v) => { F.channel = v; }, 'two');
+  const channel = choice('How did they reach you?', CHANNELS.map(([k, t]) => [k, t]), F.channel, (v) => { F.channel = v; }, 'two');
+  const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', value: F.amount, oninput: () => { F.amount = amount.value; } });
+  const method = h('select', { id: 'method', onchange: () => { F.method = method.value; } },
+    METHODS.map(([k, t]) => h('option', { value: k, selected: k === F.method }, t)));
+  const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Optional. Paste what they sent.', value: F.text, oninput: () => { F.text = text.value; } });
+  text.value = F.text;
   const msg = h('div', { role: 'alert' });
   const paste = h('button', { class: 'ghost', onclick: async () => {
-    try { text.value = (await navigator.clipboard.readText()).slice(0, 2000); onText(); msg.replaceChildren(); }
+    try { text.value = (await navigator.clipboard.readText()).slice(0, 2000); F.text = text.value; msg.replaceChildren(); }
     catch { msg.replaceChildren(h('p', { class: 'err' }, 'Press and hold in the box, then tap Paste.')); }
   } }, 'Paste the message');
-  const example = h('button', { class: 'ghost', onclick: () => {
-    Object.assign(F, { channel: 'text', amountTouched: false, methodTouched: false, amount: '', method: 'venmo_cashapp_zelle',
-      text: "hey it's me, new number! I'm stuck at the store and my card got declined. Can you buy $200 in Apple gift cards right now? Please don't tell mom, I'll pay you back tonight." });
-    onTextAfterExample();
-  } }, 'Try an example scam');
-  function onTextAfterExample() {
-    const s = suggest(F.text);
-    F.amount = s.amount; if (s.method) F.method = s.method;
-    renderMain();
-  }
   const btn = h('button', { onclick: async () => {
     const cents = parseCents(F.amount);
     if (!cents) { msg.replaceChildren(h('p', { class: 'err' }, 'Please type how much they asked for, like 60 or 60.50.')); return; }
@@ -372,25 +308,26 @@ function checkView() {
     msg.replaceChildren();
     try {
       const body = { claimedId: F.friendId, amountCents: cents, method: F.method, channel: F.channel };
-      const sent = F.text.trim();
-      if (sent) body.text = sent;
+      if (F.text.trim()) body.text = F.text.trim();
       const { requestId } = await call('verify:request', body);
-      if (sent) S.texts.set(requestId, sent); // kept in this tab's memory only
       S.current = requestId;
-      Object.assign(F, { text: '', amount: '', amountTouched: false, methodTouched: false });
-      text.value = ''; amount.value = ''; paintFlags();
+      F.text = ''; F.amount = ''; text.value = ''; amount.value = '';
       renderResult();
       document.getElementById('result')?.scrollIntoView({ block: 'start' });
     } catch (e) { msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
     btn.disabled = false;
   } }, 'Check now');
-
   return h('section', null, h('h2', null, 'Is this request real?'),
-    h('p', { class: 'muted' }, "We'll ask their real phone. Your message is checked and not saved."),
-    h('label', { for: 'text' }, '1. The message'), text, flags, h('div', { class: 'row' }, paste, example),
-    h('div', null, who), h('div', null, channel),
-    h('label', { for: 'amount' }, '2. How much do they want? ($)'), amount,
-    h('label', { for: 'method' }, '3. How do they want it?'), method,
+    h('p', { class: 'muted' }, "We'll ask their real phone. Nothing is sent to them but this question."),
+    who, channel,
+    h('label', { for: 'amount' }, 'How much do they want? ($)'), amount,
+    h('label', { for: 'method' }, 'How do they want it?'), method,
+    h('label', { for: 'text' }, 'The message'), text, paste,
+    h('button', { class: 'ghost', onclick: () => {
+      Object.assign(F, { amount: '200', method: 'gift_card', channel: 'text',
+        text: "hey it's me, new number! I'm stuck at the store and my card got declined. Can you buy 2 Apple gift cards for me right now? Please don't tell mom, I'll pay you back tonight." });
+      renderMain();
+    } }, 'Try an example scam'),
     btn, msg,
     h('div', { id: 'result', 'aria-live': 'polite' }));
 }
@@ -417,16 +354,12 @@ function announce(u) {
   const name = u.stages.information.claimedName;
   if (u.verdict === 'red') {
     S.queue.push({ kind: 'alert', data: { u, soft: false } });
-    const line = `Stop. Do not send money. ${conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.'}`;
-    attention(line, [400, 150, 400, 150, 400]);
-    notify('Vouch: do not send money', conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.', `res-${u.requestId}`);
+    attention(`Stop. Do not send money. ${conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.'}`, [400, 150, 400, 150, 400]);
   } else if (u.verdict === 'amber' && conf.answer === 'timeout') {
     S.queue.push({ kind: 'alert', data: { u, soft: true } });
     attention(`Wait. ${name} has not answered. Do not send money yet.`, [300, 150, 300]);
-    notify('Vouch: wait', `${name} has not answered yet.`, `res-${u.requestId}`);
   } else if (u.verdict === 'green') {
     attention(`Verified. ${name} confirmed this on their own phone.`, 80);
-    notify('Vouch: verified', `${name} confirmed this on their own phone.`, `res-${u.requestId}`);
   }
   renderOverlay();
 }
@@ -440,29 +373,26 @@ function renderResult() {
   const und = u.stages.understanding || {};
   const conf = u.stages.confidence || {};
   const name = info.claimedName;
-  const sent = S.texts.get(u.requestId);
-  const tags = [...new Set([...(und.tags || []), ...(sent ? suggest(sent).tags : [])])];
-  const title = { green: 'Verified. Safe to send.', amber: 'Wait.', red: 'Do not send.' }[u.verdict];
+  const title = { green: '✔ Verified. Safe to send.', amber: '✋ Wait.', red: '✖ Do not send.' }[u.verdict];
   const answerText = {
     none: `Waiting for ${name}'s phone…`, yes: `${name} confirmed on their own phone.`,
     not_me: `${name} says this was NOT them.`, timeout: `No reply from ${name}.`,
   }[conf.answer];
   const reasons = (u.reasons || []).length ? h('ul', null, u.reasons.map((r) => h('li', null, r))) : null;
-  const thread = sent ? h('div', { class: 'thread' }, h('div', { class: 'from' }, name), h('div', { class: 'bubble' }, sent)) : null;
   const card = h('div', { class: 'card' },
     h('div', { class: 'stage' }, h('b', null, '1 · What they asked'),
       h('p', null, `${name} · ${fmt(info.amountCents)} · ${label(METHODS, info.method)} · ${label(CHANNELS, info.channel)}`)),
     h('div', { class: 'stage' }, h('b', null, '2 · What looks suspicious'),
-      tags.length ? tags.map((t) => h('span', { class: 'chip' }, TAGS[t] || t)) : h('p', null, 'Nothing stands out.'),
+      (und.tags || []).length ? (und.tags).map((t) => h('span', { class: 'chip' }, TAGS[t] || t)) : h('p', null, 'Nothing stands out.'),
       und.paymentRisk ? h('p', null, `Payment risk: ${und.paymentRisk}`) : null,
       und.explanation ? h('p', { class: 'muted' }, und.explanation) : null),
     h('div', { class: 'stage' }, h('b', null, '3 · Did they confirm?'),
       h('p', null, answerText),
       u.needs && u.needs.word ? h('p', null, conf.wordOk ? 'Shared word matched.' : 'Shared word still needed.') : null,
       conf.approvals && conf.approvals.needed ? h('p', null, `Second person: ${conf.approvals.received} of ${conf.approvals.needed}`) : null));
-  const parts = [thread, h('div', { class: `verdict ${u.verdict}` }, h('h3', null, title), reasons), card];
+  const parts = [h('div', { class: `verdict ${u.verdict}` }, h('h3', null, title), reasons), card];
   if (u.verdict === 'amber' && conf.answer === 'yes' && u.needs && u.needs.word && !conf.wordOk) parts.push(wordBox(u, name));
-  box.replaceChildren(...parts.filter(Boolean));
+  box.replaceChildren(...parts);
 }
 
 function wordBox(u, name) {
@@ -482,11 +412,11 @@ function wordBox(u, name) {
     h('p', null, `Ask ${name}: "What's our word?" Type exactly what they say.`), input, btn, msg);
 }
 
-// ---------- on a call ----------
+// ---------- word (the "live call" side) ----------
 
 function wordView() {
   if (!S.friends.length) {
-    return h('section', null, h('h2', null, 'On a call'), h('p', null, 'Link up with someone first to get a word only you two know.'),
+    return h('section', null, h('h2', null, 'On a call?'), h('p', null, 'Link up with someone first to get a word only you two know.'),
       h('button', { onclick: () => setTab('friends') }, 'Add someone'));
   }
   if (!S.wordFriendId || !friendById(S.wordFriendId)) S.wordFriendId = S.friends[0].id;
@@ -498,11 +428,11 @@ function wordView() {
   const btn = h('button', { onclick: async () => {
     const f = friendById(S.wordFriendId);
     const ok = f && await checkWord(f.wordKey, input.value);
-    res.replaceChildren(h('p', { class: ok ? 'ok' : 'err' }, ok ? 'Match. This is really them.' : "No match. Don't trust this call."));
+    res.replaceChildren(h('p', { class: ok ? 'ok' : 'err' }, ok ? '✔ Match. This is really them.' : "✖ No match. Don't trust this call."));
     if (!ok) attention("No match. Don't trust this call.", [400, 150, 400]);
   } }, 'Check what they said');
   queueMicrotask(tickWord);
-  return h('section', null, h('h2', null, 'On a call'),
+  return h('section', null, h('h2', null, 'On a call?'),
     h('p', null, 'Ask them: "What\'s our word?" Let them say it first. Never read it out first.'),
     who, h('p', { class: 'muted', style: 'margin-top:1rem' }, 'Your shared word right now:'),
     h('div', { class: 'bigword', id: 'bigword' }, '…'), h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
@@ -520,27 +450,14 @@ async function tickWord() {
   if (left) left.textContent = `changes in ${secondsLeft}s`;
 }
 
-// ---------- my people + pairing ----------
-
-function alertsCard() {
-  if (!('Notification' in globalThis)) return h('p', { class: 'muted' }, 'This browser cannot show alerts. Keep Vouch open.');
-  const p = Notification.permission;
-  if (p === 'granted') return h('p', null, 'Alerts are on. You get a notification when someone asks you to confirm a request.');
-  if (p === 'denied') return h('p', { class: 'muted' }, 'Alerts are blocked. Turn them on for this site in your browser settings.');
-  return h('div', null,
-    h('p', null, 'Get a notification when a friend needs you to confirm a request, even if Vouch is in the background.'),
-    h('p', { class: 'muted' }, 'On iPhone: tap Share, then Add to Home Screen, and open Vouch from there first.'),
-    h('button', { onclick: requestAlerts }, 'Turn on alerts'));
-}
-function requestAlerts() {
-  try { Notification.requestPermission().then(() => renderMain()); } catch { /* not supported */ }
-}
+// ---------- friends + pairing ----------
 
 function friendsView() {
   const list = S.friends.length
-    ? h('div', { class: 'card' }, S.friends.map((f) => h('div', { class: 'friend' }, h('span', null, f.name), h('span', { class: 'muted' }, 'Linked'))))
+    ? h('div', { class: 'card' }, S.friends.map((f) => h('div', { class: 'friend' }, h('span', null, f.name), h('span', { class: 'muted' }, 'linked'))))
     : h('p', { class: 'muted' }, 'Nobody yet.');
   const input = h('input', { id: 'code', placeholder: 'XXXX-XXXX', autocapitalize: 'characters', autocomplete: 'off' });
+  const scanBox = h('div');
   const forget = S.forgetAsk
     ? h('div', { class: 'card' }, h('p', { class: 'err' }, 'This erases your keys and everyone you linked from this phone. It cannot be undone.'),
       h('div', { class: 'row' },
@@ -553,13 +470,13 @@ function friendsView() {
     h('label', { for: 'code' }, 'Have a code from someone?'), input,
     h('div', { class: 'row' },
       h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join'),
-      h('button', { class: 'ghost', onclick: openScanner }, 'Scan a code')),
-    h('h2', null, 'Alerts'), h('div', { class: 'card' }, alertsCard()),
+      h('button', { class: 'ghost', onclick: () => startScan(scanBox) }, 'Scan a code')),
+    scanBox,
     h('h2', null, 'Your privacy'),
     h('div', { class: 'card' },
-      h('p', null, 'Your private key stays on this phone. It cannot be copied out.'),
-      h('p', null, 'Messages you check are never saved. Only the answer is.'),
-      h('p', null, 'Only people you linked with can ever be asked.')),
+      h('p', null, '🔒 Your private key stays on this phone. It cannot be copied out.'),
+      h('p', null, '🗑️ Messages you check are never saved. Only the answer is.'),
+      h('p', null, '👪 Only people you linked with can ever be asked.')),
     forget);
 }
 
@@ -594,88 +511,48 @@ async function onPeerPaired(peer) {
   renderMain();
 }
 
-// ---------- camera scanner ----------
-
-function openScanner() {
-  S.scanning = true;
-  renderOverlay();
+async function startScan(box) {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const video = h('video', { class: 'scan', playsinline: true, autoplay: true });
+    video.muted = true;
+    video.srcObject = stream;
+    box.replaceChildren(video);
+    await video.play();
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let stopped = false;
+    const stop = () => { stopped = true; stream.getTracks().forEach((t) => t.stop()); box.replaceChildren(); };
+    const loop = async () => {
+      if (stopped) return;
+      if (video.readyState >= 2 && video.videoWidth) {
+        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const r = globalThis.jsQR(img.data, img.width, img.height);
+        const token = r && r.data && extractToken(r.data);
+        if (token) { stop(); await acceptToken(token); return; }
+      }
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) { toast("Couldn't open the camera. Type the code instead."); }
 }
 
-function stopStream() {
-  if (S.stream) S.stream.getTracks().forEach((t) => t.stop());
-  S.stream = null;
-}
-
-function closeScanner() {
-  S.scanning = false;
-  stopStream();
-  renderOverlay();
-}
-
-function scanOverlay() {
-  const video = h('video', { class: 'scanvideo', playsinline: true, autoplay: true });
-  video.muted = true;
-  video.setAttribute('webkit-playsinline', '');
-  const msg = h('p', { role: 'status' }, 'Starting the camera…');
-  const frame = h('div', { class: 'frame' }, h('i'), h('i'), h('i'), h('i'));
-  const typeIt = h('button', { onclick: closeScanner }, 'Cancel');
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-  const loop = async () => {
-    if (!S.scanning || !S.stream) return;
-    if (video.readyState >= 2 && video.videoWidth) {
-      // Scan the middle of the picture (where the frame is) at a reduced size so it stays quick.
-      const side = Math.min(video.videoWidth, video.videoHeight);
-      const size = Math.min(side, 640);
-      canvas.width = size; canvas.height = size;
-      ctx.drawImage(video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, size, size);
-      const img = ctx.getImageData(0, 0, size, size);
-      const r = globalThis.jsQR(img.data, size, size, { inversionAttempts: 'attemptBoth' });
-      const token = r && r.data && extractToken(r.data);
-      if (token) { closeScanner(); await acceptToken(token); return; }
-    }
-    requestAnimationFrame(loop);
-  };
-
-  navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } } })
-    .then((stream) => {
-      if (!S.scanning) { stream.getTracks().forEach((t) => t.stop()); return null; }
-      S.stream = stream;
-      video.srcObject = stream;
-      return video.play();
-    })
-    .then(() => { if (S.stream) { msg.textContent = 'Point the camera at the code'; loop(); } })
-    .catch((err) => {
-      msg.textContent = err && err.name === 'NotAllowedError'
-        ? 'The camera is blocked. Allow it in your browser settings, or close this and type the code.'
-        : "Couldn't start the camera. Close this and type the code instead.";
-      typeIt.textContent = 'Close';
-    });
-
-  return h('div', { class: 'overlay scan', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Scan a code' },
-    video, frame, h('div', { class: 'scanbottom' }, msg, typeIt));
-}
-
-// ---------- overlays: scanner, pairing code, incoming prompts ----------
+// ---------- overlays: pairing code, incoming prompts ----------
 
 function renderOverlay() {
   if (!$overlay) return;
   const item = S.queue[0];
-  let key = '';
-  if (item) {
-    key = `${item.kind}:${(item.data && item.data.requestId) || (item.data && item.data.u && item.data.u.requestId) || (item.peer && item.peer.id)}`;
-  } else if (S.scanning) key = 'scan';
-  else if (S.codeView) key = `code:${S.codeView}`;
+  const key = item ? `${item.kind}:${(item.data && item.data.requestId) || (item.data && item.data.u && item.data.u.requestId) || (item.peer && item.peer.id)}`
+    : (S.codeView ? `code:${S.codeView}` : '');
   if ($overlay.dataset.key === key) return; // already showing it; don't wipe what the person is typing
-  if ($overlay.dataset.key === 'scan' && key !== 'scan') stopStream();
   $overlay.dataset.key = key;
   if (item) $overlay.replaceChildren(overlayFor(item));
-  else if (S.scanning) $overlay.replaceChildren(scanOverlay());
   else if (S.codeView) $overlay.replaceChildren(codeOverlay(S.codeView));
   else $overlay.replaceChildren();
   // Move focus into the dialog so screen readers read it first.
-  const first = key !== 'scan' && $overlay.querySelector('.inner > *');
+  const first = $overlay.querySelector('.inner > *');
   if (first) { first.setAttribute('tabindex', '-1'); first.focus({ preventScroll: true }); }
 }
 
@@ -704,16 +581,12 @@ function alertOverlay({ u, soft }) {
 
 function codeOverlay(token) {
   const url = `${location.origin}/#pair=${token}`;
-  const canvas = h('canvas', { class: 'qr', 'aria-label': 'QR code to link with me' });
+  const canvas = h('canvas', { class: 'qr' });
   drawQr(canvas, url);
   const shown = `${token.slice(0, 4)}-${token.slice(4)}`;
   return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
-    h('h2', null, 'Add someone'),
-    h('p', null, 'On their phone: open Vouch, tap My people, then Scan a code. Or use their camera app.'),
-    h('div', { class: 'qrbox' }, canvas),
-    h('p', { class: 'muted', style: 'text-align:center' }, 'Or type this code:'),
-    h('div', { class: 'code' }, shown),
-    h('p', { class: 'muted' }, 'Waiting for your friend. The code works once and expires in 5 minutes.'),
+    h('h2', null, 'Add a friend'), h('p', null, 'Have them scan this, or type the code.'), canvas,
+    h('div', { class: 'code' }, shown), h('p', { class: 'muted' }, 'Waiting for your friend… The code works once and expires in 5 minutes.'),
     h('button', { class: 'ghost', onclick: () => { S.codeView = null; renderOverlay(); } }, 'Cancel')));
 }
 
@@ -722,7 +595,7 @@ function drawQr(canvas, text) {
   qr.addData(text);
   qr.make();
   const n = qr.getModuleCount();
-  const cell = 10, margin = 4; // 4-module quiet zone, as the QR spec asks
+  const cell = 8, margin = 2;
   canvas.width = canvas.height = (n + margin * 2) * cell;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#fff';
@@ -733,10 +606,10 @@ function drawQr(canvas, text) {
 
 function pairedOverlay({ peer, code }) {
   return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
-    h('h2', null, `Linked with ${peer.name}`),
-    h('p', null, 'Read this code out loud to each other. If it matches on both phones, you are safely linked.'),
+    h('h2', null, `Paired with ${peer.name}`),
+    h('p', null, 'Read this code out loud to each other. If it matches on both phones, you are safely paired.'),
     h('div', { class: 'code' }, code),
-    h('button', { onclick: () => { dismiss(); if ('Notification' in globalThis && Notification.permission === 'default') requestAlerts(); } }, 'It matches')));
+    h('button', { onclick: dismiss }, 'It matches')));
 }
 
 function promptOverlay(p) {
@@ -748,8 +621,6 @@ function promptOverlay(p) {
     if (needRetype && answer === 'yes') {
       retypedCents = parseCents(retype.value);
       if (retypedCents !== p.amountCents) { msg.replaceChildren(h('p', { class: 'err' }, 'Type the exact amount to confirm.')); return; }
-    } else if (needRetype) {
-      retypedCents = p.amountCents; // "Not me" never makes anyone type anything; the server just wants the field at tier 2+
     }
     btns.forEach((b) => { b.disabled = true; });
     try {
@@ -801,14 +672,12 @@ function wireEvents() {
     if (S.queue.some((q) => q.kind === 'prompt' && q.data.requestId === p.requestId)) return;
     S.queue.push({ kind: 'prompt', data: p });
     attention(`Did you just ask ${p.checker.name} for ${fmt(p.amountCents)}?`, [300, 150, 300]);
-    notify('Vouch: please confirm', `Did you just ask ${p.checker.name} for ${fmt(p.amountCents)}?`, `req-${p.requestId}`);
     renderOverlay();
   });
   on('verify:confirm_prompt', (p) => {
     if (S.queue.some((q) => q.kind === 'confirm' && q.data.requestId === p.requestId)) return;
     S.queue.push({ kind: 'confirm', data: p });
     attention(`${p.checkerName} needs a second opinion about ${p.claimedName}.`, [300, 150, 300]);
-    notify('Vouch: second opinion needed', `${p.checkerName} needs you to confirm a request from ${p.claimedName}.`, `conf-${p.requestId}`);
     renderOverlay();
   });
   on('pair:completed', (msg) => { if (msg && msg.peer) onPeerPaired(msg.peer); });
@@ -816,12 +685,10 @@ function wireEvents() {
     const box = h('div', { class: 'banner' }, `Warning: someone may be pretending to be ${a.impersonatedName}. Don't send money.`);
     box.append(h('button', { onclick: () => box.remove() }, 'Dismiss'));
     $banners.append(box);
-    attention(`Warning. Someone may be pretending to be ${a.impersonatedName}.`, [300, 150, 300]);
-    notify('Vouch: warning', `Someone may be pretending to be ${a.impersonatedName}. Don't send money.`, `alert-${a.requestId}`);
   });
   on('demo:reset', async (d) => {
     if (d && d.hard) { try { await store.resetAll(); } catch { /* reload anyway */ } location.reload(); return; }
-    S.results.clear(); S.texts.clear(); S.current = null; S.queue.length = 0;
+    S.results.clear(); S.current = null; S.queue.length = 0;
     renderMain();
   });
 }
