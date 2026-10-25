@@ -76,7 +76,7 @@ export function createVouchServer({
   const tts = createTts({ log, ...ttsOptions });
   app.get('/tts/:id', async (req, res) => {
     const out = await tts.get(req.params.id);
-    if (out.status !== 200) return res.status(out.status).json({ ok: false, error: out.error });
+    if (out.status !== 200) return res.status(out.status).json({ ok: false, error: out.error, ...(out.detail ? { detail: out.detail } : {}) });
     return res.set({ 'Content-Type': 'audio/mpeg', 'Cache-Control': 'public, max-age=86400' }).send(out.audio);
   });
   app.use(express.static(webDir));
