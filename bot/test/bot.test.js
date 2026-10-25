@@ -289,13 +289,20 @@ test('a flagged sender whose profile picture looks AI-generated gets a hedged hi
     const body = init && init.body ? JSON.parse(init.body) : {};
     if (u.endsWith('/getUserProfilePhotos')) { photoCalls += 1; return { json: async () => ({ ok: true, result: { photos: [[{ file_id: 'a', file_size: 100 }, { file_id: 'b', file_size: 900 }]] } }) }; }
     if (u.endsWith('/getFile')) return { json: async () => ({ ok: true, result: { file_path: 'photos/f.jpg' } }) };
+    if (u.endsWith('/getBusinessConnection')) return { json: async () => ({ ok: true, result: { id: 'bc9', user: { id: 1, first_name: 'Grandma' }, user_chat_id: 1, is_enabled: true } }) };
     if (body.text) said.push(body.text);
     return { json: async () => ({ ok: true, result: { message_id: 1 } }) };
   };
   const base = { moneyRequest: true, amountUSD: 200, paymentMethod: 'gift_card', risk: 'high', scamType: 'Gift card scam', impersonating: '', signals: [], why: 'Asks for gift cards.', steps: ['Do not buy any.'], tags: [], intent: 'message', reply: '', links: [], image: null };
   const infer = async (i) => (i.imageBase64 ? { ...base, moneyRequest: false, risk: 'none', scamType: 'Ordinary photo', why: '', steps: [], image: { kind: 'Profile photo', aiGenerated: 'likely', risk: 'low', concerns: [] } } : base);
   const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
-  const msg = (id) => ({ update_id: id, message: { chat: { id: -100, type: 'group' }, from: { id: 555, first_name: 'Pat', is_bot: false }, text: 'Buy Apple gift cards for $200 right now and send me the codes' } });
+  const TEXT = 'Buy Apple gift cards for $200 right now and send me the codes';
+  // In a group everyone would read it, including the sender, so the hint is never posted there.
+  await bot.handleUpdate({ update_id: 90, message: { chat: { id: -100, type: 'group' }, from: { id: 556, first_name: 'Pat', is_bot: false }, text: TEXT } });
+  assert.ok(!said.some((s) => /profile picture/.test(s)), 'not in a group');
+  assert.equal(photoCalls, 0, 'and the picture was not even fetched');
+  // Where only the protected person reads it (their own account, through Business), it is shown.
+  const msg = (id) => ({ update_id: id, business_message: { business_connection_id: 'bc9', chat: { id: 555, type: 'private' }, from: { id: 555, first_name: 'Pat', is_bot: false }, text: TEXT } });
   await bot.handleUpdate(msg(1));
   assert.ok(said.some((s) => /profile picture looks AI-generated/.test(s) && /only a hint/.test(s)), 'hedged, not certain');
   await bot.handleUpdate(msg(2));

@@ -33,7 +33,7 @@ header { position: sticky; top: 0; z-index: 5; display: flex; align-items: cente
 .pill.off { background: var(--red-bg); color: var(--red); }
 .peoplebtn { width: auto; margin: 0; padding: 0.25rem 0.8rem; min-height: 0; font-size: 0.9rem; border-radius: 99px; }
 .peoplebtn.on { background: var(--ink); color: var(--bg); }
-.size { width: auto; margin: 0; padding: 0.25rem 0.75rem; min-height: 0; font-size: 0.9rem; border-radius: 99px; }
+.size { width: auto; margin: 0; padding: 0.25rem 0.9rem; min-height: 44px; min-width: 44px; font-size: 1rem; border-radius: 99px; } /* a real tap target */
 
 /* type */
 h2 { font-size: 1.9rem; margin: 1.4rem 0 0.5rem; line-height: 1.15; font-weight: 700; letter-spacing: -0.02em; }

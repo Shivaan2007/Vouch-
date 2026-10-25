@@ -320,6 +320,9 @@ function clearAlert(source) {
 function paintSticky() {
   if (!$sticky) return;
   if (!A.active) { $sticky.replaceChildren(); return; }
+  // While a call is being listened to, the call screen and its "back to call" bar already carry the warning; a third banner on top
+  // would stack three red things on one screen.
+  if (A.source === 'call' && S.listening) { $sticky.replaceChildren(); return; }
   // Name a person only when this warning is really about them; otherwise the button says "a trusted person".
   const f = A.friendId ? friendById(A.friendId) : (S.friends.length === 1 ? S.friends[0] : null);
   const src = A.source;

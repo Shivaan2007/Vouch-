@@ -377,7 +377,9 @@ export function createBot({
       if (messageId) await api('editMessageText', { chat_id: chatId, message_id: messageId, text: final, disable_web_page_preview: true, ...kb });
       else if (full.level >= 1 && (isPrivate || business || full.level === 2 || full.ask)) await say(chatId, final, kb);
     } catch (e) { log('edit failed:', e.message); }
-    if (full.level >= 1 && sender && !sender.hidden && sender.id) {
+    // The profile-picture hint goes only where the person being protected reads it: their own chat with the bot (private or
+    // Business), never into a group where the sender and everyone else would see it.
+    if (full.level >= 1 && sender && !sender.hidden && sender.id && (isPrivate || business)) {
       const hint = await profileHint(sender.id);
       if (hint) await say(chatId, `Their profile picture ${hint === 'likely' ? 'looks AI-generated' : 'might be AI-generated'}. Scammers often use fake faces. This is only a hint, and AI can be wrong.`);
     }
