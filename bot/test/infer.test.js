@@ -266,3 +266,14 @@ test('a picture the AI thinks was computer-generated raises a hedged check, neve
   const maybe = createCore({ analyze: rules, infer: async () => ({ ...calm, image: { kind: 'Photo', aiGenerated: 'possible', risk: 'none', concerns: [] } }) });
   assert.equal((await maybe.assess({ text: '', imageBase64: 'iVBOR' })).level, 0, 'only "likely" counts; "possible" is too weak to bother anyone');
 });
+
+test('the red lines that stop a call also stop a message, and a calm message is untouched', async () => {
+  const core = createCore({ analyze: rules, infer: async () => null });
+  for (const text of ['Your account is compromised. Please read me the six digit code we just texted you.', 'To protect your money, move your savings to a safe account today.', 'Install AnyDesk so I can fix your computer.']) {
+    const a = await core.assess({ text });
+    assert.equal(a.level, 2, text);
+    assert.equal(core.quick(text).level, 2, `and instantly: ${text}`);
+  }
+  assert.equal((await core.assess({ text: 'Never share this code with anyone. Your code is 482913.' })).level, 0, 'a genuine warning not to share a code is left alone');
+  assert.equal((await core.assess({ text: 'dinner at 7 on Friday?' })).level, 0);
+});

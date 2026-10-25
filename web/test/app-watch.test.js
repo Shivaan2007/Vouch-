@@ -27,6 +27,8 @@ const fetchImpl = async (u, init) => {
 
 const dom = installFakeDom({ makeSocket: () => { const s = ioClient(url, { transports: ['websocket'], reconnection: false }); clients.push(s); return s; } });
 const { appEl, loc, wait, text, btn, find } = dom;
+// The settings button in the header has no text, only an icon and an accessible name.
+const displayBtn = () => find(appEl, (n) => n.tag === 'button' && n.attrs && n.attrs['aria-label'] === 'Display and reading settings');
 const go = async (label) => { const home = btn('Home'); if (home) { await home.fire('click'); await wait(30); } await btn(label).fire('click'); };
 
 before(async () => {
@@ -46,7 +48,11 @@ before(async () => {
 after(async () => { process.env.GEMINI_API_KEY = ''; clients.forEach((s) => s.close()); await server.close(); });
 
 const tg = (chat, t) => watch.telegram.handleUpdate({ update_id: 1, message: { chat: { id: chat, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, text: t } });
-const dismissAll = async () => { for (let i = 0; i < 5; i++) { const b = btn('I understand') || btn('Close') || btn("OK, I won't send") || btn('Keep listening'); if (!b) break; await b.fire('click'); } };
+// Wait for something to be true (up to 8 s) instead of sleeping a fixed time, so a busy machine cannot make a test flaky.
+const until = async (fn, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await wait(100); } return false; };
+// End a call the way a person does: tap Stop, then close the summary that follows (it waits for the whole call).
+const stopCall = async () => { await btn('Stop listening').fire('click'); await until(() => !!btn('Done'), 3000); const d = btn('Done'); if (d) await d.fire('click'); await wait(60); };
+const dismissAll = async () => { for (let i = 0; i < 5; i++) { const b = btn('I understand') || btn('Close') || btn("OK, I won't send") || btn('Keep listening') || btn('Done'); if (!b) break; await b.fire('click'); } };
 
 test('sign up, then the message-bot card shows Telegram and a one-time link code', async () => {
   find(appEl, (n) => n.id === 'name').value = 'Gran';
@@ -123,8 +129,7 @@ test('listening through the Vouch server: audio goes up, words come back, the ca
   await wait(800);
   assert.ok(text().includes('STOP. This looks like a scam'), 'the call screen turns to the warning from what the server heard');
   assert.ok(text().includes('Watching call'), 'the header shows it is watching');
-  await btn('Stop listening').fire('click');
-  await wait(100);
+  await stopCall();
   assert.ok(!text().includes('Watching call'));
 });
 
@@ -157,8 +162,7 @@ test('the call screen: caller, clock, captions with the risky words marked, risk
   assert.ok(text().includes('STOP. This looks like a scam'), 'the call is flagged as the words come in, on the call screen itself');
   assert.ok(text().includes('gift cards'), 'the captions show what was heard');
   assert.ok(dom.findAll(appEl, (n) => n.tag === 'mark').length >= 1, 'with the risky words marked');
-  await btn('Stop listening').fire('click');
-  await wait(100);
+  await stopCall();
   assert.ok(!text().includes('Analyzing a recording'));
 });
 
@@ -249,7 +253,7 @@ test('Telegram Business, end to end: a stranger writes to the connected person a
   await watch.telegram.handleUpdate({ update_id: 701, business_message: { business_connection_id: 'bcX', chat: { id: 9100, type: 'private' },
     from: { id: 9101, first_name: 'Pal', username: 'a_friend', is_bot: false }, text: 'are we still on for lunch tomorrow?' } });
   await wait(400);
-  assert.ok(!text().includes('Sent to Vouch from Telegram'), 'a normal message from a friend does nothing');
+  assert.ok(!find(appEl, (n) => n.className === 'actions') && !find(appEl, (n) => String(n.className).startsWith('notice')), 'a normal message from a friend raises nothing new: no warning screen, no pop-up');
 });
 
 test('Telegram group, end to end: /link the group, then what anyone types there reaches the linked phone', async () => {
@@ -320,8 +324,7 @@ test('on a live call that turns suspicious, the code word is already on screen t
   assert.ok(text().includes('STOP. This looks like a scam'), 'the call screen turns to the warning');
   assert.ok(text().includes("What's our word?"), 'and says to ask for the code word');
   assert.ok(find(appEl, (n) => n.id === 'bigword'), 'with the word itself on screen');
-  await btn('Stop listening').fire('click');
-  await wait(100);
+  await stopCall();
 });
 
 test('the AI read alone raises a call warning: no scam words and no code words anywhere in what was said', async () => {
@@ -337,8 +340,14 @@ test('the AI read alone raises a call warning: no scam words and no code words a
   try {
     box.value = "Hi Grandma, it's me. My phone broke so I'm calling from a friend's and I've had a really rough night.";
     await box.fire('input');
-    await wait(1800);
-    assert.ok(text().includes('STOP. This call looks like a scam'), 'raised by the AI read, since the rules saw nothing');
+    await until(() => text().includes('Someone on this call is asking for money') || text().includes('Noticing') || !!find(appEl, (n) => String(n.className).startsWith('notice')), 5000);
+    assert.ok(!text().includes('STOP. This call looks like a scam'), 'a story on its own is not a clear flag: the call carries on, no STOP');
+    // the moment there is an actual ask, the AI's confidence counts and it is a stop
+    await wait(4600); // the app asks the AI at most every four seconds
+    box.value = "Hi Grandma, it's me. My phone broke so I'm calling from a friend's and I've had a really rough night. Can you send me 800 dollars tonight?";
+    await box.fire('input');
+    await until(() => text().includes('STOP. This call looks like a scam'), 7000);
+    assert.ok(text().includes('STOP. This call looks like a scam'), 'story plus an ask, with the AI confident, is a stop');
     assert.ok(text().includes('Impersonating a relative'), 'and it names what it inferred');
   } finally { aiNext = null; }
   await dismissAll();
@@ -394,11 +403,10 @@ test('the caller saying the real rotating code word is heard, and shown as a mat
     await btn('Listen for scams').fire('click'); await wait(300);
     const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
     for (let i = 0; i < 25; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } });
-    await wait(1200);
+    await until(() => text().includes('Code word heard'));
     assert.ok(text().includes('Code word heard') && text().includes('They said our code word, and it matches'), 'the real word, said aloud, is recognised');
     assert.ok(btn('It matches'), 'and the person still has the button to confirm it');
-    await btn('Stop listening').fire('click');
-    await wait(100);
+    await stopCall();
   } finally { sttText = before; wanda.socket.close(); }
 });
 
@@ -419,11 +427,10 @@ test('a wrong word is not mistaken for the code word: the assistant suggests ask
     await btn('Listen for scams').fire('click'); await wait(300);
     const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
     for (let i = 0; i < 25; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } });
-    await wait(1200);
+    await until(() => text().includes('Say this'));
     assert.ok(!text().includes('Code word heard'), 'no match was claimed');
     assert.ok(text().includes('Say this') && text().includes("What's our word?"), 'the assistant says what to ask');
-    await btn('Stop listening').fire('click');
-    await wait(100);
+    await stopCall();
   } finally { sttText = before; }
 });
 
@@ -469,4 +476,121 @@ test('Check my setup: a silent room is reported plainly, not as success', async 
   for (let i = 0; i < 20; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => silence } });
   await run; await wait(4600);
   assert.ok(text().includes('No sound was picked up'), 'it says so, and what to check');
+});
+
+test('a soft check is a pop-up you can open later, not a screen that takes over; a stop takes over', async () => {
+  await dismissAll();
+  await go('Check a message'); await wait(200);
+  // a friendly money request: "someone is asking", worth a look but not a stop
+  await tg(7001, 'hey can you venmo me $15 for the pizza from last night? thanks!');
+  await until(() => !!find(appEl, (n) => String(n.className).startsWith('notice')));
+  const pop = find(appEl, (n) => String(n.className).startsWith('notice'));
+  assert.ok(pop, 'a pop-up notice appeared');
+  assert.ok(!find(appEl, (n) => n.className === 'actions'), 'and no full-screen warning took over');
+  assert.ok(btn('Review') && btn('Dismiss'), 'with big buttons to open it or wave it away');
+  await btn('Review').fire('click');
+  await wait(200);
+  assert.ok(find(appEl, (n) => n.className === 'actions'), 'Review opens the full warning, on the person\'s terms');
+  await dismissAll();
+});
+
+// ---- a call is never cut off, and it ends with a summary and what to do now ----
+const mockMic = () => {
+  let proc;
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = 16000; this.destination = {}; this.state = 'running'; }
+    resume() { return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { proc = { connect() {}, disconnect() {}, onaudioprocess: null }; return proc; }
+    close() {}
+  };
+  dom.nav.mediaDevices = { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) };
+  return () => proc;
+};
+
+test('a hiccup in the browser speech service does not end the call or lose the warning', async () => {
+  await dismissAll();
+  const getProc = mockMic();
+  let sr;
+  globalThis.webkitSpeechRecognition = class { constructor() { sr = this; this.starts = 0; } start() { this.starts += 1; } stop() {} };
+  try {
+    await go('On a call'); await wait(100);
+    await btn('Listen for scams').fire('click'); await wait(200);
+    sr.onresult({ results: [[{ transcript: 'we sent you a code, please read me the six digit code we just texted you' }]] });
+    await until(() => text().includes('STOP. This looks like a scam'));
+    assert.ok(text().includes('STOP. This looks like a scam'), 'a clear flag raised the warning');
+    // the speech service drops out, over and over
+    sr.onerror({ error: 'network' }); sr.onend();
+    await until(() => sr.starts >= 2, 4000);
+    assert.ok(sr.starts >= 2, 'it was quietly started again');
+    assert.ok(btn('Stop listening'), 'still listening, the person has not ended it');
+    assert.ok(text().includes('STOP. This looks like a scam'), 'and the warning is still there');
+    for (let i = 0; i < 4; i++) sr.onerror({ error: 'network' });
+    await wait(500);
+    assert.ok(btn('Stop listening'), 'after repeated drop-outs it carries on with Vouch\'s own listener instead of giving up');
+    assert.ok(text().includes('STOP. This looks like a scam'), 'with the warning and what was heard intact');
+    void getProc;
+  } finally { delete globalThis.webkitSpeechRecognition; await stopCall(); }
+});
+
+test('when the person ends the call, a summary says what happened and what to do now', async () => {
+  await dismissAll();
+  const getProc = mockMic();
+  const before = sttText; sttText = 'this is the fraud team, your account is compromised, please read me the six digit code we just texted you';
+  try {
+    await go('On a call'); await wait(100);
+    await btn('Listen for scams').fire('click'); await wait(250);
+    const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
+    for (let i = 0; i < 25; i++) getProc().onaudioprocess({ inputBuffer: { getChannelData: () => block } });
+    await until(() => text().includes('STOP. This looks like a scam'));
+    await btn('Stop listening').fire('click');
+    await until(() => text().includes('Call summary'));
+    assert.ok(text().includes('Call summary') && text().includes('This call looked like a scam'), 'it says plainly what the call was');
+    assert.ok(text().includes('What to do now') && text().includes('Call your bank on the number on your card'), 'and the correct next steps');
+    assert.ok(text().includes('Do not call back the number that called you'));
+    assert.ok(!text().includes('Recording of this call'), 'with no recording, because recording is off unless the person turned it on');
+    await btn('Done').fire('click');
+  } finally { sttText = before; }
+});
+
+test('with recording switched on, the whole call is saved on this phone, can be played back, and can be deleted', async () => {
+  await dismissAll();
+  globalThis.MediaRecorder = class {
+    static isTypeSupported() { return true; }
+    constructor(stream, opts) { this.mimeType = (opts && opts.mimeType) || 'audio/webm'; }
+    start() { this.t = setTimeout(() => this.ondataavailable && this.ondataavailable({ data: new Blob(['call audio'], { type: this.mimeType }) }), 10); }
+    stop() { clearTimeout(this.t); if (this.ondataavailable) this.ondataavailable({ data: new Blob(['call audio'], { type: this.mimeType }) }); setTimeout(() => this.onstop && this.onstop(), 5); }
+  };
+  globalThis.URL.createObjectURL = () => 'blob:test';
+  globalThis.URL.revokeObjectURL = () => {};
+  const getProc = mockMic();
+  const before = sttText; sttText = 'this is the fraud team, your account is compromised, please read me the six digit code we just texted you';
+  try {
+    await displayBtn().fire('click'); await wait(60);
+    await btn('Keep a recording of calls on this phone').fire('click'); await wait(60);
+    assert.equal(JSON.parse(localStorage.getItem('vouch-display')).record, true, 'switched on, and remembered');
+    assert.ok(text().includes('Tell the other person you are recording'), 'with a plain reminder to tell the other person');
+    await btn('Done').fire('click'); await wait(60);
+    await go('On a call'); await wait(100);
+    await btn('Listen for scams').fire('click'); await wait(250);
+    const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
+    for (let i = 0; i < 25; i++) getProc().onaudioprocess({ inputBuffer: { getChannelData: () => block } });
+    await wait(600);
+    await btn('Stop listening').fire('click');
+    await until(() => text().includes('Recording of this call'), 5000);
+    assert.ok(text().includes('Recording of this call'), 'the recording is there after the call');
+    assert.ok(find(appEl, (n) => n.tag === 'audio'), 'with a player');
+    assert.ok(btn('Delete the recording'), 'and a delete button');
+    const { getLastCall } = await import('../js/lib/store.js');
+    const saved = await getLastCall();
+    assert.ok(saved && saved.blob && saved.ms >= 0, 'stored on the phone (in its own storage, not sent anywhere)');
+    await btn('Delete the recording').fire('click'); await wait(100);
+    assert.equal(await getLastCall(), null, 'deleted for real');
+    await btn('Done').fire('click');
+  } finally {
+    sttText = before; delete globalThis.MediaRecorder;
+    await displayBtn().fire('click'); await wait(40);
+    const off = btn('Keep a recording of calls on this phone'); if (off && JSON.parse(localStorage.getItem('vouch-display')).record) await off.fire('click');
+    const done = btn('Done'); if (done) await done.fire('click');
+  }
 });

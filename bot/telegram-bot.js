@@ -398,6 +398,11 @@ export function createBot({
       { command: 'voice', description: 'Read my answers out loud' }, { command: 'who', description: 'Who this chat warns' },
       { command: 'unlink', description: 'Stop warning the Vouch app' }, { command: 'guardian', description: 'Family chat: get heads-ups' },
     ] }).catch(() => {});
+    // Telegram-native: the bot introduces itself, and its menu button opens Vouch INSIDE Telegram (a mini app), so checking a message,
+    // the code word and the flagged senders are one tap away without leaving the chat. Only a real https address can be a mini app.
+    api('setMyDescription', { description: "Vouch Watch checks messages, links, screenshots, pictures and voice notes for scams, in plain words. Send or forward me anything suspicious, or add me to a group chat and I'll watch it. I can warn you; only a person you trust, on their own phone, can clear a request. Nothing you send is saved." }).catch(() => {});
+    api('setMyShortDescription', { short_description: 'Scam checker for messages, links, pictures and voice notes. I warn; only a person can clear.' }).catch(() => {});
+    if (/^https:\/\//.test(vouchUrl)) api('setChatMenuButton', { menu_button: { type: 'web_app', text: 'Open Vouch', web_app: { url: vouchUrl } } }).catch(() => {});
     let offset = 0;
     while (running) {
       try {
