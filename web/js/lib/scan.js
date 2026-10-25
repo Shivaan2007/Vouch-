@@ -12,10 +12,10 @@ const norm = (text) => String(text ?? '').slice(0, 5000).toLowerCase().replace(/
 
 const RULES = [
   ['GIFT_CARD', [/gift ?cards?/, /\b(itunes|google play|steam|amazon|target|apple|walmart|ebay) (gift )?(cards?|codes?)\b/, /\bitunes\b/]],
-  ['WIRE', [/\bwire (me|it|us|him|her|them|the|a|some|my|your|money|funds|transfer|\$)/, /\bwire transfer\b/, /\bwestern union\b/, /\bmoney ?gram\b/, /\b(bank|international) transfer\b/]],
+  ['WIRE', [/\b(by|via|through|over) (a )?wire\b/, /\bwire (me|it|us|him|her|them|the|a|some|my|your|money|funds|transfer|\$)/, /\bwire transfer\b/, /\bwestern union\b/, /\bmoney ?gram\b/, /\b(bank|international) transfer\b/]],
   ['CRYPTO', [/\b(bitcoin|btc|ethereum|usdt|tether|crypto(currency)?|coinbase|binance|dogecoin)\b/, /\bwallet address\b/]],
-  ['URGENCY', [/\b(urgent(ly)?|asap|immediately|hurry|emergency|right away|right now|quickly|stuck|stranded)\b/, /\bneed(s|ed)? (it|this|that|the money|money|cash)? ?(today|tonight|now)\b/, /\bin the next \d+ (min|mins|minutes|hour|hours)\b/]],
-  ['SECRECY', [/\b(don'?t|do not) (tell|mention|say (anything|a word)|let (anyone|anybody|mom|dad|him|her|them))/, /\bkeep (this|it|that) (a )?(secret|quiet|private|between us)/, /\bbetween (us|you and me)\b/, /\bno ?one (can|needs to|should) know\b/]],
+  ['URGENCY', [/\brn\b/, /\b(urgent(ly)?|asap|immediately|hurry|emergency|right away|right now|quickly)\b/, /\bneed(s|ed)? (it|this|that|the money|money|cash)? ?(today|tonight|now)\b/, /\bin the next \d+ (min|mins|minutes|hour|hours)\b/]],
+  ['SECRECY', [/\bdelete (this|these|the) (message|messages|text|texts|chat)\b/, /\b(don'?t|do not) (tell|mention|say (anything|a word)|let (anyone|anybody|mom|dad|him|her|them))/, /\bkeep (this|it|that) (a )?(secret|quiet|private|between us)/, /\bbetween (us|you and me)\b/, /\bno ?one (can|needs to|should) know\b/]],
   ['NEW_NUMBER', [/\b(new|different) (phone )?number\b/, /\bnew phone\b/, /\bchanged my (phone )?number\b/, /\blost my phone\b/, /\b(my )?phone (broke|died|is broken)\b/, /\b(friend'?s|borrowed) phone\b/]],
   ['PAYBACK_PROMISE', [/\b(pay|paying|paid|repay|send|give|get) (you|it|that|this|the money) back\b/, /\b(venmo|zelle|cash ?app|paypal) (you|it) back\b/, /\brepay(ing)? you\b/, /\b(double|triple) (it|your money)\b/]],
 ];

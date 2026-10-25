@@ -28,10 +28,9 @@ test('gift card and crypto tags agree on every scam fixture', () => {
   for (const f of fixtures.scams) assert.deepEqual(pick(phone(f.text)), pick(server(f.text)), f.text);
 });
 
-// Known drift on main: the phone misses "rn", "delete this message" and "by wire", and flags "stuck"/"stranded" as
-// urgency when the server does not (so "I am stuck in traffic" differs). demo/scan-js-parity.patch fixes all four; apply it, then delete the todo flag.
-test('scam fixtures: phone hints and server rules give the same tags',
-  { todo: 'apply demo/scan-js-parity.patch to web/js/lib/scan.js, then remove this flag' }, () => {
-    for (const f of fixtures.scams) assert.deepEqual(phone(f.text), server(f.text), f.text);
-    assert.deepEqual(phone("I am stuck in traffic, running late"), server("I am stuck in traffic, running late"));
-  });
+// Fixed by demo/scan-js-parity.patch: the phone now catches "rn", "delete this message" and "by wire", and no longer
+// flags "stuck"/"stranded" as urgency (so "I am stuck in traffic" matches the server).
+test('scam fixtures: phone hints and server rules give the same tags', () => {
+  for (const f of fixtures.scams) assert.deepEqual(phone(f.text), server(f.text), f.text);
+  assert.deepEqual(phone("I am stuck in traffic, running late"), server("I am stuck in traffic, running late"));
+});

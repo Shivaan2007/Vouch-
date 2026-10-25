@@ -198,7 +198,7 @@ async function boot() {
   }
   S.size = loadSize();
   applySize(S.size);
-  try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js'); } catch { /* optional */ }
+  try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {}); } catch { /* optional */ }
   buildShell();
   if (!store.isPersistent() || S.bootError) {
     const why = S.bootError || store.storageProblem();
@@ -667,7 +667,8 @@ function listenCard() {
       h('button', { class: 'ghost', onclick: stopListening }, 'Stop watching'));
   }
   return h('div', { class: 'card' }, h('b', null, 'Watch this call for scams'),
-    h('p', null, 'Put the call on speaker, then start. Vouch warns you the moment someone asks for money. Nothing is recorded or saved.'),
+    h('p', null, 'Put the call on speaker, then start. Vouch warns you the moment someone asks for money. Vouch does not record or save the call.'),
+    h('p', { class: 'muted' }, "Your browser's speech service may process the audio. Tell the other person you're using it."),
     SR ? h('button', { onclick: startListening }, 'Start watching')
       : h('p', { class: 'muted' }, "This browser can't listen. Use Check a message instead."),
     h('p', { class: 'muted' }, 'Some phones block the microphone during a call. If yours does, put Vouch on a second phone or tablet next to the call.'));
@@ -754,6 +755,7 @@ function alertsCard() {
 function shareCard() {
   return h('div', null,
     h('p', null, 'Got a message asking for money? Hand it to Vouch and it warns you right away.'),
+    h('p', { class: 'muted' }, 'Sharing opens Vouch with the message in the web address. Your phone clears it right away, but the web host can see it in its logs. Copy and paste avoids this.'),
     h('p', null, h('b', null, 'Any phone: '), 'copy the message, open Vouch, tap Check a message, then Paste the message.'),
     h('p', null, h('b', null, 'Android: '), 'install Vouch (browser menu, Install app). Then press and hold a message, tap Share, and choose Vouch.'),
     h('details', null, h('summary', null, 'iPhone: add Vouch to the Share sheet (1 minute, once)'),
