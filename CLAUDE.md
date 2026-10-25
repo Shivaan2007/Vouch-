@@ -23,7 +23,7 @@ Everything is real (WebCrypto keys, pairing, signatures); nothing is simulated. 
 | Person | Role | Owns |
 | --- | --- | --- |
 | Shivaan (A) | backend + decision engine | `server/src/` (except `server/src/risk/`), `server/test/flow.test.js`, `web/js/lib/net.js`, `package.json`, `.github/`, deployment + DNS |
-| Sayan (B) | frontend + crypto | all of `web/` except `web/js/lib/net.js`, `docs/PROTOCOL.md`, `CLAUDE.md` |
+| Sayan (B) | frontend + crypto | all of `web/` except `web/js/lib/net.js`, `docs/PROTOCOL.md`, `CLAUDE.md`, `bot/` (Vouch Watch message bot; reads, never edits, `server/src/analyze.js`) |
 | Tejasv (C) | AI + rules + story | `server/src/risk/`, `server/test/fixtures/`, `server/test/rules.test.js`, `server/test/decision.test.js`, `docs/DEMO.md`, `demo/`, README credits |
 
 Branches: `<name>/<feature>`; PRs into protected `main` need a passing "test" check.
