@@ -254,3 +254,55 @@ mark { background: #fcd34d; color: #000; border-radius: 5px; padding: 0 0.2em; f
 .linkrow.r-high .riskpill { background: var(--red); color: var(--red-bg); }
 .linkrow.r-medium .riskpill { background: var(--amber); color: var(--amber-bg); }
 .overlay.alert .riskpill { background: rgba(0, 0, 0, 0.18); color: inherit; }
+
+/* ---------- motion ----------
+   Every animation here explains something (a thing arrived, a timer is running, a result is in). None loops for decoration, and
+   anyone who has asked their phone to reduce motion gets none of it. */
+@property --p { syntax: '<number>'; inherits: false; initial-value: 1; }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes sheet { from { opacity: 0; transform: translateY(28px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes pop { 0% { transform: scale(0.86); opacity: 0; } 60% { transform: scale(1.06); opacity: 1; } 100% { transform: none; } }
+@keyframes ripple { from { transform: scale(0.6); opacity: 0.55; } to { transform: scale(2.4); opacity: 0; } }
+@keyframes breathe { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(0.75); } }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes shake { 0%, 100% { transform: none; } 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+
+main > section { animation: rise 0.28s ease-out both; }
+.homecard { animation: rise 0.34s ease-out both; transition: transform 0.12s ease, box-shadow 0.12s ease; }
+.homecard:nth-of-type(1) { animation-delay: 0.04s; } .homecard:nth-of-type(2) { animation-delay: 0.1s; } .homecard:nth-of-type(3) { animation-delay: 0.16s; }
+button { transition: transform 0.1s ease, opacity 0.15s ease, background-color 0.2s ease; }
+button:active:not(:disabled) { transform: scale(0.98); }
+.overlay { animation: sheet 0.26s ease-out both; }
+.overlay.alert .stop { animation: pop 0.4s ease-out both; }
+.overlay.alert:not(.soft) .stop { animation: pop 0.4s ease-out both, shake 0.5s 0.35s ease-in-out; }
+.guide, .card, .verdict, .evidence, .whybox { animation: rise 0.25s ease-out both; }
+.verdict.red { animation: rise 0.25s ease-out both, shake 0.5s 0.25s ease-in-out; }
+.chipbtn { transition: background-color 0.18s ease, color 0.18s ease, transform 0.1s ease; }
+.chipbtn[aria-pressed="true"] { animation: pop 0.25s ease-out; }
+
+/* The code word, like an authenticator app: a ring that runs down with the minute, going amber and then red. */
+.wordcard { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 1rem; margin: 0.8rem 0; }
+.ring { --c: var(--green); position: relative; width: 5.2rem; height: 5.2rem; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(var(--c) calc(var(--p) * 1turn), var(--surface-2) 0); transition: --p 1s linear; font-weight: 800; font-size: 1.15rem; }
+.ring::before { content: ""; position: absolute; inset: 0.42rem; border-radius: 50%; background: var(--bg); }
+.ring > span { position: relative; }
+.ring.warn { --c: #d97706; } .ring.late { --c: var(--red); }
+.bigword.fresh { animation: pop 0.35s ease-out; }
+.wordcard .bigword { text-align: left; margin: 0; }
+
+/* Listening: bars that move with the microphone (and breathe when the browser gives no level), and a ripple behind the badge. */
+.wave { display: flex; align-items: center; justify-content: center; gap: 0.35rem; height: 3.2rem; margin: 0.6rem 0; }
+.wave i { display: block; width: 0.45rem; height: 100%; border-radius: 99px; background: currentColor; opacity: 0.85; transform-origin: center; transform: scaleY(var(--lv, 0.3)); transition: transform 0.12s ease-out; }
+.wave.idle i { animation: breathe 1.4s ease-in-out infinite; } .wave.idle i:nth-child(2) { animation-delay: 0.15s; } .wave.idle i:nth-child(3) { animation-delay: 0.3s; } .wave.idle i:nth-child(4) { animation-delay: 0.45s; } .wave.idle i:nth-child(5) { animation-delay: 0.6s; }
+.riskbadge { transition: background-color 0.4s ease, color 0.4s ease; }
+.overlay.live { transition: background-color 0.5s ease; }
+.riskbadge.r2 { animation: pop 0.4s ease-out; }
+
+/* A finished check draws itself. */
+.tick { width: 4.5rem; height: 4.5rem; display: block; margin: 0.4rem 0; }
+.tick path { fill: none; stroke: currentColor; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 60; stroke-dashoffset: 60; animation: draw 0.5s 0.15s ease-out forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .tick path { stroke-dashoffset: 0; }
+}

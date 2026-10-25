@@ -35,14 +35,14 @@ test('sign-up shows the main app, and a shared scam message triggers the warning
   await wait(900);
   assert.ok(text().includes('Possible family-emergency scam'), 'full-screen warning names the scam type');
   assert.ok(text().includes('Call your family member on the number you already have'), 'and says what to do');
-  assert.ok(text().includes('DO NOT SEND ANYTHING'), 'sticky banner');
+  assert.ok(text().includes('DO NOT ACT ON THIS'), 'sticky banner');
   const bar = find(appEl, (n) => n.className === 'actions');
   assert.ok(bar && bar.children.some((c) => c.tag === 'button'), 'the way out is in a pinned button bar, not buried in the text');
   assert.ok(!btn('Quiet for 2 minutes') && !btn('Get our code word'), 'the banner has just the two things to do');
   const clear = btn('I checked it');
   assert.ok(clear && clear.attrs.disabled !== undefined, 'clear is locked by the pause');
   await (btn('Close') || btn("OK, I won't send")).fire('click');
-  assert.ok(text().includes('DO NOT SEND ANYTHING'), 'banner outlives the overlay');
+  assert.ok(text().includes('DO NOT ACT ON THIS'), 'banner outlives the overlay');
 });
 
 test('Home is two giant buttons and a smaller one, with one obvious first step when nobody is linked', async () => {
@@ -121,6 +121,20 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
   assert.ok(text().includes('Sam says this was NOT them'), 'says who denied it');
 });
 
+test('the code word shows a ring that runs down with the minute, and a person can see whose word it is', async () => {
+  await go('On a call');
+  await wait(80);
+  assert.ok(btn('Sam') || text().includes('Add someone to get a code word'), 'people are name buttons');
+  const sam = btn('Sam');
+  if (sam) {
+    await sam.fire('click');
+    await wait(200);
+    const ring = find(appEl, (n) => n.className.startsWith('ring'));
+    assert.ok(ring, 'the countdown ring is drawn');
+    assert.match(text(), /\d+s/, 'with the seconds left inside it');
+    assert.ok(find(appEl, (n) => n.id === 'bigword' && n.textContent.length > 2), 'and the word beside it');
+  }
+});
 test('scanner with no camera falls back to typing the code; a mismatched safety code removes the link', async () => {
   const tia = await otherPhone('Tia');
   const { token } = await tia.call('pair:offer');

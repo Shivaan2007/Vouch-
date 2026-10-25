@@ -30,7 +30,7 @@ const findAll = (root, pred) => { const r = []; root.walk((n) => { if (pred(n)) 
 export function installFakeDom({ makeSocket }) {
   const body = new Node_('body'); const htmlEl = new Node_('html'); htmlEl.append(body);
   const appEl = new Node_('div'); appEl.setAttribute('id', 'app'); body.append(appEl);
-  globalThis.document = { body, documentElement: htmlEl, createElement: (t) => new Node_(t), getElementById: (id) => find(htmlEl, (n) => n.id === id), hidden: false };
+  globalThis.document = { body, documentElement: htmlEl, createElement: (t) => new Node_(t), getElementById: (id) => find(htmlEl, (n) => n.id === id), querySelectorAll: (sel) => htmlEl.querySelectorAll(sel), querySelector: (sel) => htmlEl.querySelector(sel), hidden: false };
   const loc = { origin: '', hash: '', search: '', pathname: '/' };
   globalThis.location = loc;
   globalThis.history = { replaceState() {} };

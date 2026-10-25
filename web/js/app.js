@@ -156,7 +156,7 @@ async function warmVoice() {
   voice.warmed = true;
   try {
     for (const id of VOICE_PHRASES) {
-      const r = await fetch(`/tts/${id}`);
+      const r = await fetch(`/tts/${id}?v=2`); // ?v= so a phone that kept an older clip fetches the new wording
       if (!r.ok) return; // no key (503), cooling down, or an error: stay on the built-in voice this session
       voice.clips.set(id, URL.createObjectURL(await r.blob()));
     }
@@ -234,12 +234,10 @@ function toast(msg, kind) {
 }
 
 // ---------- danger state: stays in your face until it is resolved ----------
-// Scams work by rushing people. While something risky is unresolved Vouch keeps a red banner on screen, repeats the
-// warning aloud and as a notification, and makes you wait before you can wave it away.
+// Scams work by rushing people. While something risky is unresolved Vouch keeps a red banner on screen and makes you wait
+// before you can wave it away. It speaks the warning once; it does not keep repeating it aloud (that was only annoying).
 
 const PAUSE_SECONDS = 10; // the same cooling-off pause the server config documents
-const REPEAT_MS = 25000;
-const MAX_REPEATS = 8;
 const A = { active: false, level: 0, reason: '', source: '', repeats: 0, mutedUntil: 0 };
 let $sticky;
 
@@ -282,18 +280,10 @@ function paintSticky() {
   if (!A.active) { $sticky.replaceChildren(); return; }
   const f = likelyFriend();
   $sticky.replaceChildren(h('div', { class: `banner${A.level === 2 ? '' : ' soft'}`, role: 'alert' },
-    h('div', { class: 'bannerhead' }, A.level === 2 ? 'DO NOT SEND ANYTHING' : 'WAIT. CHECK FIRST.'),
+    h('div', { class: 'bannerhead' }, A.level === 2 ? 'DO NOT ACT ON THIS' : 'WAIT. CHECK FIRST.'),
     h('p', null, A.reason),
     S.friends.length ? h('button', { onclick: () => { if (A.source === 'call') askAboutCall(); else setTab('check'); } }, f ? `Check with ${f.name}'s phone` : "Check with a trusted person's phone") : null,
     pauseButton('I checked it. Clear this', PAUSE_SECONDS, clearAlert, 'ghost')));
-}
-
-function repeatAlert() {
-  if (!A.active || Date.now() < A.mutedUntil || A.repeats >= MAX_REPEATS) return;
-  A.repeats += 1;
-  const line = A.level === 2 ? 'Still no confirmation. Do not send money.' : 'Reminder. Make sure it is really them before you send anything.';
-  attention(line, A.level === 2 ? [400, 150, 400] : [250, 120, 250]);
-  notify(A.level === 2 ? 'Vouch: do NOT send money' : 'Vouch: check first', A.reason, 'repeat');
 }
 
 // ---------- boot + auth ----------
@@ -342,7 +332,6 @@ async function boot() {
   wireEvents();
   connect({ onChallenge, onStatus });
   setInterval(() => { tickWord(); tickCode(); tickCall(); tickWait(); }, 1000);
-  setInterval(repeatAlert, REPEAT_MS);
   // A link opened while Vouch is already running (for example a scanned QR in the same tab).
   globalThis.addEventListener?.('hashchange', () => {
     const m = /pair=([A-Za-z0-9]+)/.exec(location.hash);
@@ -579,14 +568,14 @@ function guideCard(g, ai = false) {
 function flashIfRisky() {
   if (!S.me) return;
   const text = S.form.text;
-  const { tags, institution, ask } = suggest(text);
+  const { tags, institution, ask, danger } = suggest(text);
   // A "bank" or "tax office" asking for money is a scam on its own, even with no payment keyword.
-  if (!text || !(riskyEnough(tags) || (institution && ask)) || S.flashedFor === text) return;
+  if (!text || !(riskyEnough(tags) || (institution && ask) || danger) || S.flashedFor === text) return;
   S.flashedFor = text;
-  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags, institution } });
-  raiseAlert(2, institution ? 'Banks and government agencies never ask for this. Do not reply.' : 'This message has scam warning signs. Check it before you send anything.', 'message');
-  attention('Warning. This message looks like a scam. Do not send anything yet.', [400, 150, 400, 150, 400]);
-  notify('Vouch: this message looks like a scam', 'Do not send anything yet. Open Vouch to check it.', 'local-scam');
+  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags, institution, danger } });
+  raiseAlert(2, institution ? 'Banks and government agencies never ask for this. Do not reply.' : 'This message has scam warning signs. Do not act on it until you have checked.', 'message');
+  attention('Warning. This message looks like a scam. Do not act on it yet.', [400, 150, 400, 150, 400]);
+  notify('Vouch: this message looks like a scam', 'Do not act on it yet. Open Vouch to check it.', 'local-scam');
   renderOverlay();
 }
 
@@ -809,6 +798,7 @@ function announce(u) {
 function renderResult() {
   const box = document.getElementById('result');
   if (!box) return;
+  if (!S.current) { box.replaceChildren(); return; } // nothing has been asked yet: show nothing (it used to say "Asking their phone…" on a fresh screen)
   const u = S.results.get(S.current);
   if (!u) { box.replaceChildren(h('p', { class: 'muted', id: 'waitleft', role: 'status' }, 'Asking their phone…')); tickWait(); return; }
   const info = u.stages.information;
@@ -923,9 +913,9 @@ function paintWordInto(box) {
   const typedMsg = h('div', { role: 'alert' });
   box.replaceChildren(
     h('p', { class: 'muted', style: 'text-align:center' }, `Ask ${f.name}: "What's our word?" Don't say it first.`),
-    h('div', { class: 'bigword', id: 'bigword' }, '…'),
-    h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'wordbar' })),
-    h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
+    h('div', { class: 'wordcard' },
+      h('div', { class: 'ring', role: 'timer', 'aria-label': 'Time left for this word' }, h('span', { class: 'ringsec' }, '')),
+      h('div', { class: 'bigword', id: 'bigword' }, '…')),
     h('div', { class: 'row' },
       h('button', { class: 'yes', onclick: () => callResult(true) }, 'It matches'),
       h('button', { class: 'no', onclick: () => callResult(false) }, "It doesn't match")),
@@ -990,6 +980,8 @@ function wordView() {
       h('p', { class: 'muted' }, "The browser's speech service or the Vouch server may process the audio; nothing is saved. Tell the other person you're using it.")));
 }
 
+const setVar = (el, name, value) => { if (el.style.setProperty) el.style.setProperty(name, String(value)); else el.style[name] = value; };
+
 async function tickWord() {
   if (!S.wordShown) return;
   const f = friendById(S.wordFriendId);
@@ -998,10 +990,15 @@ async function tickWord() {
   try { cw = await currentWord(f.wordKey); } catch { S.wordShown = false; S.wordProblem = true; paintWordArea(); return; } // a missing or damaged key
   const { word, minute, secondsLeft } = cw;
   if (minute !== S.wordMinute) { S.wordShown = false; S.wordExpired = true; paintWordArea(); return; }
-  for (const el of document.querySelectorAll('.bigword')) el.textContent = word;
-  for (const el of document.querySelectorAll('.meterfill')) if (el.id === 'wordbar') el.style.width = `${(secondsLeft / 60) * 100}%`;
-  const left = document.getElementById('wordleft');
-  if (left) left.textContent = `expires in ${secondsLeft}s`;
+  for (const el of document.querySelectorAll('.bigword')) {
+    if (el.textContent !== word) { el.textContent = word; el.classList.add('fresh'); }
+  }
+  // The ring runs down with the minute and turns amber, then red, so the person sees the word is about to change.
+  for (const el of document.querySelectorAll('.ring')) {
+    setVar(el, '--p', secondsLeft / 60);
+    el.className = `ring${secondsLeft <= 8 ? ' late' : secondsLeft <= 20 ? ' warn' : ''}`;
+  }
+  for (const el of document.querySelectorAll('.ringsec')) el.textContent = `${secondsLeft}s`;
 }
 
 // ---------- watch a call ----------
@@ -1021,7 +1018,7 @@ function paintListen() {
   const heard = `${S.heard || ''} ${S.cur || ''}`.trim();
   const level = S.callLevel || 0;
   set('listenstatus', L.status || ''); set('lv-status', L.status || '');
-  for (const id of ['micbar', 'lv-mic']) { const bar = document.getElementById(id); if (bar) bar.style.width = `${Math.round((L.level || 0) * 100)}%`; }
+  setWave(L.level || 0);
   const c = S.callAi || classify(heard);
   for (const id of ['listenguide', 'lv-guide']) {
     const g = document.getElementById(id);
@@ -1036,6 +1033,17 @@ function paintListen() {
   const root = document.getElementById('livecall');
   if (root) root.className = `overlay live lv${level}`;
   tickCall();
+}
+
+// The bars on the call screen follow the microphone when the Vouch server is listening; with the browser's own engine there is no
+// level to show, so they simply breathe to say that it is listening.
+function setWave(level) {
+  const w = document.getElementById('lv-wave');
+  if (!w) return;
+  const live = !!(S.listen && S.listen.mode === 'server');
+  w.classList.toggle('idle', !live);
+  const shape = [0.6, 0.9, 1, 0.85, 0.65];
+  [...w.children].forEach((bar, i) => setVar(bar, '--lv', Math.min(1, 0.18 + level * shape[i] * 0.95)));
 }
 
 // The clock on the call screen and the "back to call" bar.
@@ -1068,7 +1076,7 @@ function liveCallOverlay() {
       h('div', { id: 'lv-guide' }),
       f ? h('div', { id: 'livewordarea' }) : null,
       h('p', { class: 'livestatus', id: 'lv-status', role: 'status', 'aria-live': 'polite' }, (S.listen && S.listen.status) || ''),
-      S.listen && S.listen.mode === 'server' ? h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'lv-mic' })) : null,
+      h('div', { class: 'wave idle', id: 'lv-wave', 'aria-hidden': 'true' }, [0, 1, 2, 3, 4].map(() => h('i'))),
       actions(h('button', { class: 'no', onclick: stopListening }, 'Stop listening'),
         quiet('Hide this screen (keeps listening)', () => { S.callMin = true; renderOverlay(); tickCall(); }))));
   queueMicrotask(() => { paintListen(); if (f) paintWordArea(); });
@@ -1230,7 +1238,7 @@ async function startServerListening() {
     let sum = 0;
     for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
     S.listen.level = Math.min(1, Math.sqrt(sum / d.length) * 8);
-    for (const id of ['micbar', 'lv-mic']) { const bar = document.getElementById(id); if (bar) bar.style.width = `${Math.round(S.listen.level * 100)}%`; }
+    setWave(S.listen.level);
     if (samples >= ctx.sampleRate * 5) flush();
   };
   src.connect(proc);
@@ -1342,7 +1350,7 @@ function escalateCall(level, tags, institution, ai) {
   const onCallScreen = S.listening && !S.callMin;
   if (!onCallScreen) S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${level}-${Date.now()}`, level, tags, institution, ai } });
   raiseAlert(level, level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
-  attention(level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
+  attention(level === 2 ? 'Stop. This call has scam warning signs. Do not share codes, passwords or money.' : 'Someone on this call is asking for money. Make sure it is really them.',
     level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300], level === 2 ? 'call' : undefined);
   notify(level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
   // Also tell the alert bot, so the person is messaged on their linked apps (and their family if it is serious).
@@ -1722,21 +1730,21 @@ function scamBody(g, signals, impersonating, tags) {
     ...evidenceNodes(g),
   ].filter(Boolean);
   return [
-    h('p', { class: 'big' }, g ? g.why : 'Do not send anything yet.'),
+    h('p', { class: 'big' }, g ? g.why : 'Do not act on it yet.'),
     g ? h('ol', { class: 'steps big' }, (g.steps || []).slice(0, 3).map((s) => h('li', null, s)))
       : (tags && tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
     proof.length ? h('details', { class: 'whybox' }, h('summary', null, 'Why Vouch thinks so'), ...proof) : null,
   ];
 }
 
-function scamOverlay({ tags, institution, guide: given, source, sender, ai, aid, repeat, soft, signals, impersonating }) {
+function scamOverlay({ tags, institution, danger, guide: given, source, sender, ai, aid, repeat, soft, signals, impersonating }) {
   const F = S.form;
   const guide = ai || given || classify(F.text);
   const friend = friendById(F.friendId) || (S.friends.length === 1 ? S.friends[0] : null);
-  // An impostor "institution" isn't someone you can pair with, so the advice is to hang up and call a number you trust.
+  // An impostor "institution" isn't someone you can pair with, and a request for a code, password, ID or a click has no amount to ask a friend about, so there the advice is to hang up and check with the real company.
   // A message that arrived through a bot isn't in the form, so there we open the Check screen instead of sending it.
   // With several trusted people and none picked, we open the Check screen so the person picks, rather than asking the wrong one.
-  const go = S.friends.length && !institution ? h('button', { onclick: async () => {
+  const go = S.friends.length && !institution && !danger ? h('button', { onclick: async () => {
     dismiss();
     setTab('check');
     if (source || !friend) return;
@@ -1748,7 +1756,7 @@ function scamOverlay({ tags, institution, guide: given, source, sender, ai, aid,
       h('div', { class: 'stop', id: aid ? `t-${aid}` : undefined }, guide ? guide.title : 'This looks like a scam.'),
       sender ? h('p', { class: 'sender' }, senderLine(sender, repeat)) : null,
       h('div', { id: aid ? `g-${aid}` : undefined }, ...scamBody(guide, (ai && ai.signals) || signals, (ai && ai.impersonating) || impersonating, tags)),
-      actions(go, quiet(go ? 'Close' : "OK, I won't send anything", dismiss))));
+      actions(go, quiet(go ? 'Close' : (danger ? "OK, I won't act on it" : "OK, I won't send anything"), dismiss))));
 }
 // Full-screen result of the live-call word check.
 function callOverlay({ ok, name }) {
@@ -1938,16 +1946,16 @@ function wireEvents() {
     S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source, sender: a.sender, ai: a.ai, aid: a.id, repeat: a.repeat, soft: a.level !== 2, signals: a.signals, impersonating: a.impersonating } });
     if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends') renderMain(); });
     raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);
-    attention(a.level === 2 ? `Warning. ${a.title}. Do not send anything.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+    attention(a.level === 2 ? `Warning. ${a.title}. Do not act on it.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
     notify(a.level === 2 ? 'Vouch: this message looks like a scam' : 'Vouch: this message asks for money', a.title, `bot-${a.source}`);
     renderOverlay();
   });
   on('circle:alert', (a) => {
-    const box = h('div', { class: 'banner' }, `Warning: someone may be pretending to be ${a.impersonatedName}. Don't send money.`);
+    const box = h('div', { class: 'banner' }, `Warning: someone may be pretending to be ${a.impersonatedName}. Don't send money or share anything.`);
     box.append(h('button', { onclick: () => box.remove() }, 'Dismiss'));
     $banners.append(box);
     attention(`Warning. Someone may be pretending to be ${a.impersonatedName}.`, [300, 150, 300]);
-    notify('Vouch: warning', `Someone may be pretending to be ${a.impersonatedName}. Don't send money.`, `alert-${a.requestId}`);
+    notify('Vouch: warning', `Someone may be pretending to be ${a.impersonatedName}. Don't send money or share anything.`, `alert-${a.requestId}`);
   });
   on('demo:reset', async (d) => {
     if (d && d.hard) { try { await store.resetAll(); } catch { /* reload anyway */ } location.reload(); return; }
