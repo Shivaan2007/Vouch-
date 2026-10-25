@@ -1,9 +1,20 @@
 // IndexedDB storage for the device identity, keys and friends. Browser only, no libraries.
 // CryptoKey objects are stored directly (structured clone) so private keys stay non-extractable.
+// If the browser won't give us IndexedDB (some private modes / locked-down webviews) we fall back to
+// memory for this page session so the app still works; isPersistent() tells the UI so it can warn.
 
 const DB_NAME = 'vouch';
 const DB_VERSION = 1;
 let dbPromise = null;
+let memory = false;
+let lastError = '';
+const mem = { kv: new Map(), friends: new Map() };
+
+/** True when keys survive a reload (IndexedDB works); false in the in-memory fallback. */
+export function isPersistent() { return !memory; }
+
+/** Why persistence is off, for the UI and console. */
+export function storageProblem() { return lastError; }
 
 function openDb() {
   if (dbPromise) return dbPromise;
@@ -12,7 +23,8 @@ function openDb() {
       reject(new Error('IndexedDB is not available in this browser'));
       return;
     }
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    let req;
+    try { req = indexedDB.open(DB_NAME, DB_VERSION); } catch (e) { reject(e); return; }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
@@ -23,69 +35,95 @@ function openDb() {
       db.onversionchange = () => { db.close(); dbPromise = null; };
       resolve(db);
     };
-    req.onerror = () => { dbPromise = null; reject(new Error(`Could not open database: ${req.error && req.error.message}`)); };
-    req.onblocked = () => { dbPromise = null; reject(new Error('Database is blocked by another open tab; close other Vouch tabs')); };
+    req.onerror = () => reject(new Error(`Could not open database: ${req.error && (req.error.name + ' ' + req.error.message)}`));
+    req.onblocked = () => reject(new Error('Database is blocked by another open tab; close other Vouch tabs'));
   });
   return dbPromise;
 }
 
-async function run(storeName, mode, fn) {
-  const db = await openDb();
+// Run one request against a store. Falls back to memory if IndexedDB can't be opened.
+async function run(storeName, mode, method, ...args) {
+  if (!memory) {
+    let db;
+    try { db = await openDb(); } catch (e) {
+      memory = true; dbPromise = null;
+      lastError = (e && e.message) || String(e);
+      console.warn('Vouch: using in-memory storage:', lastError);
+    }
+    if (db) return idbRun(db, storeName, mode, method, args);
+  }
+  return memRun(storeName, method, args);
+}
+
+function idbRun(db, storeName, mode, method, args) {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-    let result;
-    const req = fn(store);
-    if (req) req.onsuccess = () => { result = req.result; };
+    let tx; let result;
+    try {
+      tx = db.transaction(storeName, mode);
+      const req = tx.objectStore(storeName)[method](...args);
+      req.onsuccess = () => { result = req.result; };
+    } catch (e) { reject(e); return; }
     tx.oncomplete = () => resolve(result);
     tx.onerror = () => reject(new Error(`Database error in ${storeName}: ${tx.error && tx.error.message}`));
     tx.onabort = () => reject(new Error(`Database transaction aborted in ${storeName}: ${tx.error && tx.error.message}`));
   });
 }
 
+function memRun(storeName, method, args) {
+  const m = mem[storeName];
+  if (method === 'get') return m.get(args[0]);
+  if (method === 'getAll') return [...m.values()];
+  if (method === 'delete') { m.delete(args[0]); return undefined; }
+  if (method === 'clear') { m.clear(); return undefined; }
+  // put(value, key?) - the friends store uses value.id as the key
+  const [value, key] = args;
+  m.set(storeName === 'friends' ? value.id : key, value);
+  return undefined;
+}
+
 /** @returns {Promise<{id: string, name: string}|null>} */
 export async function getIdentity() {
-  return (await run('kv', 'readonly', (s) => s.get('identity'))) || null;
+  return (await run('kv', 'readonly', 'get', 'identity')) || null;
 }
 
 /** @param {{id: string, name: string}} identity */
 export function saveIdentity({ id, name }) {
-  return run('kv', 'readwrite', (s) => s.put({ id, name }, 'identity'));
+  return run('kv', 'readwrite', 'put', { id, name }, 'identity');
 }
 
 /** @returns {Promise<{signKeyPair: CryptoKeyPair, exchKeyPair: CryptoKeyPair}|null>} */
 export async function getKeys() {
-  return (await run('kv', 'readonly', (s) => s.get('keys'))) || null;
+  return (await run('kv', 'readonly', 'get', 'keys')) || null;
 }
 
 /** @param {{signKeyPair: CryptoKeyPair, exchKeyPair: CryptoKeyPair}} keys */
 export function saveKeys({ signKeyPair, exchKeyPair }) {
-  return run('kv', 'readwrite', (s) => s.put({ signKeyPair, exchKeyPair }, 'keys'));
+  return run('kv', 'readwrite', 'put', { signKeyPair, exchKeyPair }, 'keys');
 }
 
 /** @returns {Promise<object[]>} */
 export async function listFriends() {
-  return (await run('friends', 'readonly', (s) => s.getAll())) || [];
+  return (await run('friends', 'readonly', 'getAll')) || [];
 }
 
 /** @param {string} id */
 export async function getFriend(id) {
-  return (await run('friends', 'readonly', (s) => s.get(id))) || null;
+  return (await run('friends', 'readonly', 'get', id)) || null;
 }
 
 /** @param {{id: string, name: string, signPub: string, exchPub: string, wordKey: CryptoKey, pairedAt: number}} friend */
 export function saveFriend(friend) {
   if (!friend || !friend.id) return Promise.reject(new Error('saveFriend needs an id'));
-  return run('friends', 'readwrite', (s) => s.put(friend));
+  return run('friends', 'readwrite', 'put', friend);
 }
 
 /** @param {string} id */
 export function deleteFriend(id) {
-  return run('friends', 'readwrite', (s) => s.delete(id));
+  return run('friends', 'readwrite', 'delete', id);
 }
 
 /** Wipe identity, keys and friends. */
 export async function resetAll() {
-  await run('kv', 'readwrite', (s) => s.clear());
-  await run('friends', 'readwrite', (s) => s.clear());
+  await run('kv', 'readwrite', 'clear');
+  await run('friends', 'readwrite', 'clear');
 }
