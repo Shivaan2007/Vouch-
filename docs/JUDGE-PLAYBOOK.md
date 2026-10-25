@@ -17,7 +17,7 @@ AI-made links, pictures, profiles and voices. **The AI can warn. Only a person c
 
 ## The run, as the judge sees it (about 2 minutes, no explaining needed)
 1. **Hand the judge a phone** showing Home: two giant buttons. "Check a message" and "On a call". Nothing else to learn.
-2. **"Text Grandma a scam from your own phone."** (Telegram, or the iMessage route below.) Grandma's phone **flashes red, speaks**, and a banner stays on screen: DO NOT SEND ANYTHING. It says what kind of scam, who it claims to be, and what to do.
+2. **"Text Grandma a scam from your own phone."** (Telegram, or the iMessage route below.) Grandma's phone **flashes red and vibrates** (no voice unless she asks: Display, "Speak warnings aloud"), and a banner stays on screen: DO NOT ACT ON THIS. It says what kind of scam, who it claims to be, and what to do.
 3. **"Now it's really Alex asking."** Grandma taps Check, picks Alex, $20. **Alex's phone buzzes: "Did you just ask Grandma for $20?"** Alex taps **Yes**. Grandma's screen turns green: verified, signed by Alex's own phone.
 4. **"Now Alex says it wasn't him."** (Same flow, Alex taps **Not me**.) Grandma gets a full-screen **STOP**.
 5. **"Now a phone call."** Grandma opens On a call, taps Alex's name, and a rotating two-word code appears with a ring counting down. "Ask them for it." The judge, playing the scammer, can't produce it. Then **Listen for scams**: play the scam clip near the phone, and the call screen turns red as the AI hears it.

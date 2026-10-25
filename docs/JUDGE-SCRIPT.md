@@ -112,7 +112,7 @@ Grandma has a **real Telegram account** (Telegram Premium, for the Business feat
 > "No. Not text, images or audio. Just the answer and a one-line summary. If the AI is on, the text goes to Google's Gemini to be read, and the app says so."
 
 **"Where does ElevenLabs come in?"**
-> "It speaks the alerts out loud, so someone who won't read a screen still hears 'Stop, don't send money.' It turns voice notes and call audio into text. And there's an agent piece that answers calls forwarded from unknown numbers and asks us if the caller is a scam. *(If pressed: that last one is built and tested on our side; we haven't run it against a live agent yet.)*"
+> "It can read a warning out loud when you tap 'Read this to me', or always if you switch it on, so someone who won't read a screen still hears it. It never talks on its own. It turns voice notes and call audio into text. And there's an agent piece that answers calls forwarded from unknown numbers and asks us if the caller is a scam. *(If pressed: that last one is built and tested on our side; we haven't run it against a live agent yet.)*"
 
 **"How's this different from Truecaller?"**
 > "Those guess whether a *number* is bad. Scammers use fresh numbers and real people's hacked accounts. We check whether the *person* is real by asking their actual phone, and the AI layer sits on top for everything that looks off."
