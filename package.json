@@ -8,7 +8,8 @@
     "start": "node server/src/index.js",
     "dev": "node --watch server/src/index.js",
     "smoke": "node server/scripts/smoke.js",
-    "stress": "node server/scripts/stress.js"
+    "stress": "node server/scripts/stress.js",
+    "watch": "node server/scripts/watch.js"
   },
   "repository": {
     "type": "git",

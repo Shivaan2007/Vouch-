@@ -23,7 +23,8 @@ The contract is `docs/PROTOCOL.md` (v2). This file only lists what the server do
 - Every reset emits `demo:reset { hard }` to all phones.
 
 ## Scripts
-`npm run smoke -- <url> [--cleanup]` (full flow with 3 fake phones), `npm run stress [-- <url>]` (12 circles at once).
+`npm run smoke -- <url> [--cleanup]` (full flow with 3 fake phones), `npm run stress [-- <url>]` (12 circles at once),
+`DEMO_KEY=... npm run watch -- <url> [--once] [--reset]` (live view of who is online, pairs and open requests; `--reset` does a soft reset first).
 
 ## Env
 `PORT`, `DB_PATH` (default `vouch.db`), `DEMO_KEY`, `GEMINI_API_KEY` / `GEMINI_MODEL` (read by C's analyze()).
