@@ -156,7 +156,7 @@ async function warmVoice() {
   voice.warmed = true;
   try {
     for (const id of VOICE_PHRASES) {
-      const r = await fetch(`/tts/${id}`);
+      const r = await fetch(`/tts/${id}?v=2`); // ?v= so a phone that kept an older clip fetches the new wording
       if (!r.ok) return; // no key (503), cooling down, or an error: stay on the built-in voice this session
       voice.clips.set(id, URL.createObjectURL(await r.blob()));
     }
@@ -280,7 +280,7 @@ function paintSticky() {
   if (!A.active) { $sticky.replaceChildren(); return; }
   const f = likelyFriend();
   $sticky.replaceChildren(h('div', { class: `banner${A.level === 2 ? '' : ' soft'}`, role: 'alert' },
-    h('div', { class: 'bannerhead' }, A.level === 2 ? 'DO NOT SEND ANYTHING' : 'WAIT. CHECK FIRST.'),
+    h('div', { class: 'bannerhead' }, A.level === 2 ? 'DO NOT ACT ON THIS' : 'WAIT. CHECK FIRST.'),
     h('p', null, A.reason),
     S.friends.length ? h('button', { onclick: () => { if (A.source === 'call') askAboutCall(); else setTab('check'); } }, f ? `Check with ${f.name}'s phone` : "Check with a trusted person's phone") : null,
     pauseButton('I checked it. Clear this', PAUSE_SECONDS, clearAlert, 'ghost')));
@@ -568,14 +568,14 @@ function guideCard(g, ai = false) {
 function flashIfRisky() {
   if (!S.me) return;
   const text = S.form.text;
-  const { tags, institution, ask } = suggest(text);
+  const { tags, institution, ask, danger } = suggest(text);
   // A "bank" or "tax office" asking for money is a scam on its own, even with no payment keyword.
-  if (!text || !(riskyEnough(tags) || (institution && ask)) || S.flashedFor === text) return;
+  if (!text || !(riskyEnough(tags) || (institution && ask) || danger) || S.flashedFor === text) return;
   S.flashedFor = text;
-  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags, institution } });
-  raiseAlert(2, institution ? 'Banks and government agencies never ask for this. Do not reply.' : 'This message has scam warning signs. Check it before you send anything.', 'message');
-  attention('Warning. This message looks like a scam. Do not send anything yet.', [400, 150, 400, 150, 400]);
-  notify('Vouch: this message looks like a scam', 'Do not send anything yet. Open Vouch to check it.', 'local-scam');
+  S.queue.push({ kind: 'scam', data: { requestId: `local-${Date.now()}`, tags, institution, danger } });
+  raiseAlert(2, institution ? 'Banks and government agencies never ask for this. Do not reply.' : 'This message has scam warning signs. Do not act on it until you have checked.', 'message');
+  attention('Warning. This message looks like a scam. Do not act on it yet.', [400, 150, 400, 150, 400]);
+  notify('Vouch: this message looks like a scam', 'Do not act on it yet. Open Vouch to check it.', 'local-scam');
   renderOverlay();
 }
 
@@ -1350,7 +1350,7 @@ function escalateCall(level, tags, institution, ai) {
   const onCallScreen = S.listening && !S.callMin;
   if (!onCallScreen) S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${level}-${Date.now()}`, level, tags, institution, ai } });
   raiseAlert(level, level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
-  attention(level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
+  attention(level === 2 ? 'Stop. This call has scam warning signs. Do not share codes, passwords or money.' : 'Someone on this call is asking for money. Make sure it is really them.',
     level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300], level === 2 ? 'call' : undefined);
   notify(level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
   // Also tell the alert bot, so the person is messaged on their linked apps (and their family if it is serious).
@@ -1730,21 +1730,21 @@ function scamBody(g, signals, impersonating, tags) {
     ...evidenceNodes(g),
   ].filter(Boolean);
   return [
-    h('p', { class: 'big' }, g ? g.why : 'Do not send anything yet.'),
+    h('p', { class: 'big' }, g ? g.why : 'Do not act on it yet.'),
     g ? h('ol', { class: 'steps big' }, (g.steps || []).slice(0, 3).map((s) => h('li', null, s)))
       : (tags && tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
     proof.length ? h('details', { class: 'whybox' }, h('summary', null, 'Why Vouch thinks so'), ...proof) : null,
   ];
 }
 
-function scamOverlay({ tags, institution, guide: given, source, sender, ai, aid, repeat, soft, signals, impersonating }) {
+function scamOverlay({ tags, institution, danger, guide: given, source, sender, ai, aid, repeat, soft, signals, impersonating }) {
   const F = S.form;
   const guide = ai || given || classify(F.text);
   const friend = friendById(F.friendId) || (S.friends.length === 1 ? S.friends[0] : null);
-  // An impostor "institution" isn't someone you can pair with, so the advice is to hang up and call a number you trust.
+  // An impostor "institution" isn't someone you can pair with, and a request for a code, password, ID or a click has no amount to ask a friend about, so there the advice is to hang up and check with the real company.
   // A message that arrived through a bot isn't in the form, so there we open the Check screen instead of sending it.
   // With several trusted people and none picked, we open the Check screen so the person picks, rather than asking the wrong one.
-  const go = S.friends.length && !institution ? h('button', { onclick: async () => {
+  const go = S.friends.length && !institution && !danger ? h('button', { onclick: async () => {
     dismiss();
     setTab('check');
     if (source || !friend) return;
@@ -1756,7 +1756,7 @@ function scamOverlay({ tags, institution, guide: given, source, sender, ai, aid,
       h('div', { class: 'stop', id: aid ? `t-${aid}` : undefined }, guide ? guide.title : 'This looks like a scam.'),
       sender ? h('p', { class: 'sender' }, senderLine(sender, repeat)) : null,
       h('div', { id: aid ? `g-${aid}` : undefined }, ...scamBody(guide, (ai && ai.signals) || signals, (ai && ai.impersonating) || impersonating, tags)),
-      actions(go, quiet(go ? 'Close' : "OK, I won't send anything", dismiss))));
+      actions(go, quiet(go ? 'Close' : (danger ? "OK, I won't act on it" : "OK, I won't send anything"), dismiss))));
 }
 // Full-screen result of the live-call word check.
 function callOverlay({ ok, name }) {
@@ -1946,16 +1946,16 @@ function wireEvents() {
     S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source, sender: a.sender, ai: a.ai, aid: a.id, repeat: a.repeat, soft: a.level !== 2, signals: a.signals, impersonating: a.impersonating } });
     if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends') renderMain(); });
     raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);
-    attention(a.level === 2 ? `Warning. ${a.title}. Do not send anything.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+    attention(a.level === 2 ? `Warning. ${a.title}. Do not act on it.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
     notify(a.level === 2 ? 'Vouch: this message looks like a scam' : 'Vouch: this message asks for money', a.title, `bot-${a.source}`);
     renderOverlay();
   });
   on('circle:alert', (a) => {
-    const box = h('div', { class: 'banner' }, `Warning: someone may be pretending to be ${a.impersonatedName}. Don't send money.`);
+    const box = h('div', { class: 'banner' }, `Warning: someone may be pretending to be ${a.impersonatedName}. Don't send money or share anything.`);
     box.append(h('button', { onclick: () => box.remove() }, 'Dismiss'));
     $banners.append(box);
     attention(`Warning. Someone may be pretending to be ${a.impersonatedName}.`, [300, 150, 300]);
-    notify('Vouch: warning', `Someone may be pretending to be ${a.impersonatedName}. Don't send money.`, `alert-${a.requestId}`);
+    notify('Vouch: warning', `Someone may be pretending to be ${a.impersonatedName}. Don't send money or share anything.`, `alert-${a.requestId}`);
   });
   on('demo:reset', async (d) => {
     if (d && d.hard) { try { await store.resetAll(); } catch { /* reload anyway */ } location.reload(); return; }

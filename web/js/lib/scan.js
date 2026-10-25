@@ -43,6 +43,37 @@ export function claimsInstitution(text) {
   return INSTITUTION.some((re) => re.test(t));
 }
 
+// Scams that are NOT about sending money: they want a code, a password, remote access, your ID or a click. The friend check
+// is for money requests, so these get the warning and the plain-words guide only. Conservative on purpose, so everyday
+// messages ("what's the wifi pin?", "click the link to join the call") do not trigger a full-screen alert.
+const NOT_A_REQUEST = /\b(do not|don't|never|won't|will never) (ever )?(share|give|tell|read|send|ask)\b/;
+const CODE_ASK = /\b(read|tell|give|send|share|forward|repeat)\b[^.?!]{0,45}\b(code|otp|passcode|pin)\b|\b(code|otp|passcode|pin)\b[\s\S]{0,80}?\b(read|tell|give|send|share|forward|repeat)\b\s+(it\s+)?(back\s+)?(to\s+)?(me|us|them)\b/;
+const CODE_CONTEXT = /\b(sent|texted|text message|sms|verification|security code|one[- ]time|authentication|6[- ]digit|six[- ]digit|2fa|bank|account)\b/;
+const REMOTE = /\b(anydesk|teamviewer|ultraviewer|quick ?support|remote (access|desktop|control|session)|control (of )?your (computer|pc|phone|screen))\b/;
+const PASSWORD_ASK = /\b(confirm|verify|enter|update|reset|re-?enter)\b[^.?!]{0,30}\byour\b[^.?!]{0,20}\b(password|passcode|login details|log-?in details|credentials|card (number|details)|cvv|security answers?)\b/;
+const ID_WORD = /\b(ssn|social security( number)?|passport|driver'?s? licen[cs]e|national id|date of birth|dob|bank statement)\b/;
+const ID_ASK = /\b(send|share|confirm|verify|provide|give|need|upload|photo of|picture of)\b/;
+const ID_CONTEXT = /\b(job|hr|payroll|benefits|suspended|application|loan|refund|government|agency|office|verify|verification|payment)\b/;
+const HAS_LINK = /\b(https?:\/\/|www\.)\S+|\b[a-z0-9]+(?:-[a-z0-9]+)+\.(?:com|net|org|co|info|biz)\b\/?\S*|\b[a-z0-9-]+\.(top|xyz|click|icu|cyou|cfd|zip|link|live|support|help)\b\/?\S*|\b(bit\.ly|tinyurl\.com|t\.co|cutt\.ly|is\.gd|rb\.gy|ow\.ly)\/\S+/;
+const LINK_BAIT = /\b(account|suspended|locked|on hold|verify|confirm|billing|payment (failed|declined)|parcel|package|delivery|redeliver|refund|unusual (activity|sign-?in)|security alert|expired|prize|winner|you (have )?won|is this you|in this video)\b/;
+
+/**
+ * Which kind of non-money scam a message looks like: 'code', 'remote', 'password', 'identity', 'phish', or '' for none.
+ * @param {string} text
+ * @returns {'code'|'remote'|'password'|'identity'|'phish'|''}
+ */
+export function dangerKind(text) {
+  const t = norm(text);
+  if (!t) return '';
+  const warning = NOT_A_REQUEST.test(t); // a real company saying "never share this code" is not asking for it
+  if (!warning && CODE_ASK.test(t) && CODE_CONTEXT.test(t)) return 'code';
+  if (REMOTE.test(t)) return 'remote';
+  if (!warning && PASSWORD_ASK.test(t)) return 'password';
+  if (ID_WORD.test(t) && ID_ASK.test(t) && (ID_CONTEXT.test(t) || claimsInstitution(t))) return 'identity';
+  if (HAS_LINK.test(t) && LINK_BAIT.test(t)) return 'phish';
+  return '';
+}
+
 /**
  * Does the text ask for money, whatever the story is? This is what catches scams nobody planned for:
  * a request for money from a voice or number you can't verify is the thing to check, not the excuse.
@@ -116,7 +147,8 @@ export function suggest(text) {
   else if (tags.includes('WIRE')) method = 'wire';
   else if (tags.includes('CRYPTO')) method = 'crypto';
   else if (/venmo|zelle|cash\s?app/.test(t)) method = 'venmo_cashapp_zelle';
-  return { tags, amount, method, ask: asksForMoney(t), institution: claimsInstitution(t) };
+  const kind = dangerKind(t);
+  return { tags, amount, method, ask: asksForMoney(t), institution: claimsInstitution(t), kind, danger: !!kind };
 }
 
 /**
@@ -135,12 +167,32 @@ export function callRisk(text) {
   const s = suggest(text);
   const payTag = s.tags.some((x) => ['GIFT_CARD', 'WIRE', 'CRYPTO'].includes(x));
   // An "institution" asking for money is a scam signal on its own: real ones don't phone you for gift cards or transfers.
-  const level = (riskyEnough(s.tags) && (s.ask || payTag)) || (s.institution && (s.ask || payTag)) ? 2 : (s.ask ? 1 : 0);
+  const level = (riskyEnough(s.tags) && (s.ask || payTag)) || (s.institution && (s.ask || payTag)) || s.danger ? 2 : (s.ask ? 1 : 0);
   return { level, tags: s.tags, amount: s.amount, ask: s.ask, institution: s.institution };
 }
 
 const has = (tags, ...names) => names.some((n) => tags.includes(n));
 const GUIDE = [
+  { id: 'code', when: (s) => s.kind === 'code',
+    title: 'Asking for a code',
+    why: 'A code sent to your phone is the key to your account. Real banks and companies never ask you to read it out.',
+    steps: ['Do not read out or type the code anywhere.', 'Hang up or stop replying.', 'Call the company on the number on your card or its official website.'] },
+  { id: 'remote', when: (s) => s.kind === 'remote',
+    title: 'Asking for remote access',
+    why: 'Letting someone control your device lets them see everything and move your money.',
+    steps: ['Do not install anything or give anyone a code or ID.', 'Hang up or close the message.', 'If you already did, switch off the internet on that device and call your bank.'] },
+  { id: 'password', when: (s) => s.kind === 'password',
+    title: 'Asking for a password or card details',
+    why: 'Real companies never ask you to confirm a password or card number from a message.',
+    steps: ['Do not enter your password or card details.', 'Do not tap any link in the message.', 'Open the official app or website yourself to check.'] },
+  { id: 'identity', when: (s) => s.kind === 'identity',
+    title: 'Asking for ID or personal details',
+    why: 'Photos and numbers of your ID are used to open accounts in your name.',
+    steps: ['Do not send a photo or number of your ID.', 'Look up the real company or office yourself and ask there.', 'Only share ID with someone you contacted first.'] },
+  { id: 'phish', when: (s) => s.kind === 'phish',
+    title: 'Suspicious link',
+    why: 'Fake links copy real sites to steal logins and cards.',
+    steps: ['Do not tap the link.', 'Go to the official app or website yourself.', 'If it came from a friend, tell them: their account may be hacked.'] },
   { id: 'institution', when: (s) => s.institution,
     title: 'Someone pretending to be a bank, agency or company',
     why: 'Banks, tax offices, tech support and police do not ask for gift cards, crypto, transfers or codes by call or text.',
@@ -214,6 +266,7 @@ export function highlight(text) {
   const add = (re) => { const g = new RegExp(re.source, 'g'); let m; while ((m = g.exec(lower)) && m[0]) { ranges.push([m.index, m.index + m[0].length]); if (g.lastIndex === m.index) g.lastIndex++; } };
   for (const [, res] of RULES) res.forEach(add);
   INSTITUTION.forEach(add);
+  [CODE_ASK, REMOTE, PASSWORD_ASK, HAS_LINK].forEach(add);
   add(/\$\s?\d[\d,]*(\.\d{1,2})?/); add(/\b\d[\d,]*\s?(dollars?|bucks|usd)\b/);
   ranges.sort((a, b) => a[0] - b[0]);
   const merged = [];
