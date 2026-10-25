@@ -17,7 +17,7 @@ const room = (id) => `user:${id}`;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const SENDER_TTL_MS = 30 * 86400000; // a flagged sender is forgotten after 30 days of quiet
 const MAX_WAV_B64 = 1_800_000;   // about 40 s of 16 kHz mono audio
-const LISTEN_PER_MIN = 14;       // Gemini's free tier allows about 5 requests a minute per model, and we try 3 models
+const LISTEN_PER_MIN = 22;       // Gemini's free tier allows about 5 requests a minute per model, and we try 3 models
 
 /**
  * @param {{httpServer: import('node:http').Server, io: any, db: any, env?: object, fetchImpl?: typeof fetch,

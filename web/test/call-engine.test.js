@@ -88,3 +88,10 @@ test('the person is shown why, in plain words, as a ladder plus the top reasons 
   assert.match(why.action, /Hang up/);
   assert.equal(callWhy(callInit()).action, '', 'nothing to say about a quiet call');
 });
+
+test('a story with no scam words and no code words scores nothing on the rules: it takes the AI read to catch it', () => {
+  const said = "Hi Grandma, it's me. My phone broke so I'm calling from a friend's and I've had a really rough night.";
+  const st = callInit();
+  callStep(st, said, 1_000_000); callStep(st, said, 1_003_000);
+  assert.equal(st.level, 0, 'the offline engine alone is not enough here, by design: it needs the AI read');
+});

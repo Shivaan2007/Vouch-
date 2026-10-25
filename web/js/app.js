@@ -1313,7 +1313,7 @@ async function startServerListening() {
   if (!ctx.createScriptProcessor) { stream.getTracks().forEach((t) => t.stop()); fail("This browser can't capture audio. Open More ways and type what the caller says."); return; }
   const src = ctx.createMediaStreamSource(stream);
   const proc = ctx.createScriptProcessor(4096, 1, 1);
-  let chunks = []; let samples = 0;
+  let chunks = []; let samples = 0; let flushes = 0;
   const flush = () => {
     const mine = chunks; chunks = []; samples = 0;
     const { wav, rms } = chunkToWav(mine, ctx.sampleRate);
@@ -1327,7 +1327,9 @@ async function startServerListening() {
     for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
     S.listen.level = Math.min(1, Math.sqrt(sum / d.length) * 8);
     setWave(S.listen.level);
-    if (samples >= ctx.sampleRate * 5) flush();
+    // 4 seconds per slice: short enough to feel live, long enough for the speech-to-text to hear whole phrases. (3 s slices were
+    // tried: the transcript repeated words and lost a line, so they were put back.)
+    if (samples >= ctx.sampleRate * 4) flush();
   };
   src.connect(proc);
   proc.connect(ctx.destination);

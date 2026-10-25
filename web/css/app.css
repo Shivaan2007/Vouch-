@@ -368,3 +368,12 @@ html.calm *, html.calm *::before, html.calm *::after { animation: none !importan
 .chips .chipbtn.wide { flex: 1 1 100%; text-align: left; padding-left: 1.1rem; }
 .overlay .inner > p.muted { margin-bottom: 5.5rem; }
 .pill.wait { background: var(--surface-2); color: var(--muted); }
+
+/* The pinned button bar needs a solid floor, or the text scrolling under it shows through (seen on the live call screen). */
+.overlay { --sheet: var(--bg); }
+.overlay.alert { --sheet: var(--red-bg); } .overlay.alert.soft { --sheet: var(--amber-bg); } .overlay.good { --sheet: var(--green-bg); }
+.overlay.live { --sheet: #0b0b0c; } .overlay.live.lv1 { --sheet: #2a2107; } .overlay.live.lv2 { --sheet: #3b0d0a; }
+:root.theme-hc .overlay { --sheet: #000000; } :root.theme-hc .overlay.alert { --sheet: #ff9a9a; } :root.theme-hc .overlay.alert.soft { --sheet: #ffd23f; } :root.theme-hc .overlay.good { --sheet: #7dff9e; }
+.actions { background: var(--sheet); box-shadow: 0 -14px 14px -8px var(--sheet); }
+.livetop { display: flex; justify-content: space-between; align-items: baseline; gap: 0.8rem; text-align: left; }
+.calltime { font-variant-numeric: tabular-nums; font-weight: 700; }

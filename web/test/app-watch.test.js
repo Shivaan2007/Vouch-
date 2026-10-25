@@ -322,3 +322,23 @@ test('on a live call that turns suspicious, the code word is already on screen t
   await btn('Stop listening').fire('click');
   await wait(100);
 });
+
+test('the AI read alone raises a call warning: no scam words and no code words anywhere in what was said', async () => {
+  await dismissAll();
+  await go('On a call');
+  const box = find(appEl, (n) => n.id === 'callsays');
+  box.value = '';
+  await box.fire('input');
+  await wait(4400); // the app asks the AI at most every four seconds
+  aiNext = async () => ({ moneyRequest: false, amountUSD: null, paymentMethod: 'unknown', risk: 'high', scamType: 'Impersonating a relative', impersonating: 'a grandchild',
+    signals: ["calls from a 'friend's phone'", 'builds a story before any ask'], why: 'A caller pretending to be a grandchild is building a story to ask for help.',
+    steps: ['Hang up.', 'Call them on the number you know.'], tags: [], intent: 'message', reply: '', links: [], image: null, heard: '' });
+  try {
+    box.value = "Hi Grandma, it's me. My phone broke so I'm calling from a friend's and I've had a really rough night.";
+    await box.fire('input');
+    await wait(1800);
+    assert.ok(text().includes('STOP. This call looks like a scam'), 'raised by the AI read, since the rules saw nothing');
+    assert.ok(text().includes('Impersonating a relative'), 'and it names what it inferred');
+  } finally { aiNext = null; }
+  await dismissAll();
+});
