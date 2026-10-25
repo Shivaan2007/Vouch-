@@ -1,21 +1,140 @@
+<div align="center">
+
+<img src="docs/img/banner.png" alt="Vouch: two-factor authentication for people" width="760">
+
 # Vouch
 
-**Two-factor authentication for people.** When a text or call claims to be a friend asking for money, Vouch checks the *person*, not the message: the friend's real, paired phone is asked "Did you just ask <you> for $X via <method>?", and their answer is signed with a key that never leaves that phone.
+**Scammers can fake a voice. They can't fake your friend's phone.**
 
-Built at HackPSU Fall 2026 by Shivaan (backend and decision engine), Sayan (phone app and crypto) and Tejasv (risk rules, Gemini, story). Prize track: FNB "Trust, Decisions & Financial Confidence".
+Two-factor authentication for people: before you send money, your friend's own phone confirms they really asked,
+with an answer signed by a key that never leaves that phone.
 
-## What it does
+[![HackPSU Fall 2026](https://img.shields.io/badge/HackPSU-Fall%202026-4f46e5)](#the-team)
+[![FNB track](https://img.shields.io/badge/track-FNB%20Trust%2C%20Decisions%20%26%20Financial%20Confidence-0b5fff)](#why-it-fits-the-fnb-track)
+[![Node 20+](https://img.shields.io/badge/node-%3E%3D20-3c873a)](#run-it)
+[![Tests](https://img.shields.io/badge/tests-344%20passing-2ea44f)](#run-it)
+[![Gemini](https://img.shields.io/badge/AI-Gemini%20(warn%20only)-1a73e8)](#how-it-works)
+[![ElevenLabs](https://img.shields.io/badge/voice-ElevenLabs-111)](#how-it-works)
+[![License: ISC](https://img.shields.io/badge/license-ISC-lightgrey)](LICENSE)
 
-1. **Pair once.** Scan a QR code (or type a short code). Each phone makes non-extractable WebCrypto keys and the public keys are swapped through the server. Both phones show a 6-digit safety code to read aloud; a mismatch means the pairing was tampered with.
-2. **Rotating word.** Paired phones show the same two-word phrase, changing every minute. It is derived on each phone from a shared secret the server never sees. On a suspicious call, ask "What's our word?".
-3. **Verify ping.** Paste the message, enter the amount and how they want to be paid, tap Check. Your friend's phone asks the question; their Yes or Not me is signed, and both the server and your phone check the signature before showing a verdict.
-4. **Circle alert.** On Not me, everyone paired with that friend is warned that someone is impersonating them.
+**[Try the live app](https://vouch-co1l.onrender.com)** · **[Demo script](docs/DEMO.md)** · **[Live-call scenes](docs/LIVE-CALL-SCENES.md)** · **[Judge playbook](docs/JUDGE-PLAYBOOK.md)**
 
-More money asks for more proof: under $25 a signed Yes, up to $200 also the retyped amount and the rotating word, above $200 also a second circle member. Gift cards, wires and crypto never go green on a Yes alone.
+</div>
 
-**Scams that are not about money.** Some scams ask for a code, a password, remote access to your device, a photo of your ID or a click on a link. A friend cannot answer those, so Vouch warns instead: it spots the dangerous request (on the phone, with no AI needed), shows a plain-words guide ("Asking for a code", "Suspicious link") with three steps to take, and, if Gemini is on, adds a short explanation. It works on a pasted message, a screenshot and a live call.
+> [!NOTE]
+> The first load of the live app can take up to a minute if the free host has been asleep. Pairings live in the server's memory on the free plan, so a redeploy asks everyone to pair again.
 
-**AI can warn, only a person can clear.** Rules and Gemini add plain-language warning tags (pressure to hurry, secrecy, new number, gift cards, and so on). They never produce a verdict. Everything works with no AI at all.
+## The problem
+
+A voice, a phone number and a polished message used to be proof of who was asking. They aren't any more: AI can clone a voice in seconds, and numbers can be spoofed. The FTC reported that consumers lost more than $12.5 billion to fraud in 2024, and $2.95 billion of that was imposter scams ([source](https://www.ftc.gov/news-events/news/press-releases/2025/03/new-ftc-data-show-big-jump-reported-losses-fraud-125-billion-2024); reported losses only). Detecting fakes is a losing arms race, so Vouch checks the *person* instead of the message.
+
+## Two kinds of scam, two defences
+
+| Someone pretending to be... | What Vouch does | The proof |
+| --- | --- | --- |
+| **A person you know** (a "grandchild in trouble", a boss, a friend) | Asks that person's real, paired phone: *"Did you just ask Grandma for $200?"* | Their Yes or Not me is **signed** with a non-extractable key. Both the server and your phone verify the signature before anything turns green. |
+| **An organisation or stranger** (a "bank" asking for a code, a fake delivery link, remote access, a job-ID request) | Warns in plain words while it is happening, names the dangerous request, and says what to do | Rules run on the phone with no AI; Gemini can add an explanation. It can only add caution. |
+
+### How a friend check works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant You as Your phone (checker)
+    participant S as Vouch server
+    participant F as Friend's phone
+    You->>S: Check: amount, method, hash of the message
+    S->>F: "Did you just ask You for $X via Venmo?"
+    F->>F: Friend taps Yes or Not me
+    F->>S: Answer signed with the friend's private key
+    S->>S: Verify signature, apply the decision engine
+    S->>You: Verdict update
+    You->>You: Verify the signature again, on your own phone
+    Note over You: Green only with a signed Yes, no timeout, no high-risk method, and the extra proof the amount needs
+```
+
+More money asks for more proof:
+
+| Amount | What it takes to go green |
+| --- | --- |
+| Under $25 | A signed Yes |
+| Up to $200 | A signed Yes, the retyped amount, and the rotating code word |
+| Over $200 | All of that, plus a second trusted person |
+| Gift cards, wires, crypto | Never green on a Yes alone |
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph Phones["Phones: plain ES-module web app, no build step"]
+        A["WebCrypto keys<br/>(non-extractable, in IndexedDB)"]
+        B["Instant scam hints<br/>(rules, offline)"]
+        C["Call engine<br/>(scam script over time)"]
+    end
+    subgraph Server["Node + Express + Socket.IO + SQLite"]
+        D["Decision engine<br/>pure function: red / amber / green"]
+        E["Risk layer: phrase rules"]
+    end
+    G["Gemini<br/>tags + one explanation<br/>can only add caution"]
+    H["ElevenLabs<br/>spoken alerts + speech to text"]
+    T["Telegram bot (optional)"]
+    A <-->|signed answers| D
+    B --> E
+    C --> E
+    E --> D
+    G -.->|warn only| E
+    H -.-> Phones
+    T --> E
+```
+
+<details>
+<summary><b>The rules we hold ourselves to</b></summary>
+
+* **AI can warn, only a person can clear.** No AI output ever produces a verdict. Gemini can raise a warning, never lower one or clear a request.
+* **The server is the source of truth,** and your own phone double-checks every signature.
+* **Private keys are non-extractable** and never leave the phone. Keys, secrets, signatures and message text are never logged.
+* **Every AI call has a 3-second timeout and a rule-based fallback.** With no key and no connection, the phone's own rules still warn about a suspicious message.
+* **The server stores no message text, audio or images.** It keeps a SHA-256 of the normalised text, the amount, the method, the tags and the answer.
+* **Rotating code word.** Paired phones derive the same two-word phrase every minute from a secret the server never sees. On a live call you ask "What's our word?".
+
+</details>
+
+## What you can try
+
+<details open>
+<summary><b>Scams to throw at it</b> (all fictional; more in <a href="docs/DEMO-MESSAGES.md">docs/DEMO-MESSAGES.md</a>)</summary>
+
+| Try this | What Vouch does |
+| --- | --- |
+| *"Hi Grandma it's me, new number. I need $200 in Apple gift cards, please don't tell Mom."* | Flags a possible family-emergency scam. Check with the friend's phone: **Not me** gives a full-screen STOP. |
+| *"We sent a 6 digit code to your phone. Please read it to me to cancel the fraudulent login."* | Red line: a real bank never asks you to read out a code. |
+| A "First Harbor Bank" call that never uses a banned word: unusual activity, then your date of birth, then "move your funds to a protected account", then "read me the code" | **Noticing** on the first line, **STOP** by the third. See [LIVE-CALL-SCENES.md](docs/LIVE-CALL-SCENES.md). |
+| *"Your account is on hold. Confirm your password at netflix-billing-help.com/verify."* | Warns: real companies never ask you to confirm a password from a message. |
+| *"dinner at 7? can you pick up the drinks?"* | Nothing. It should not cry wolf. |
+
+</details>
+
+<details>
+<summary><b>Live calls</b>: what "Listen for scams" does</summary>
+
+On a call that is on speaker, Vouch turns the speech into words (the browser's own recognition, or Vouch's server for iPhone and when the browser cannot) and scores the call as a **script that unfolds in stages**: someone claims to be an official, frightens or rushes you, isolates you ("don't tell anyone", "stay on the line"), and only then asks for a code, card details, remote access or a "safe account". A few red lines are an immediate STOP; a real bank saying "we will never ask for your PIN" counts in your favour. The AI read can raise the level; it can never lower it. The warning names the sentence that triggered it and gives three steps. See [docs/LIVE-CALL-DEMO.md](docs/LIVE-CALL-DEMO.md) and [docs/CALL-TEST-LOG.md](docs/CALL-TEST-LOG.md).
+
+> [!WARNING]
+> Some phones block the microphone during a real call. Use speaker with a second phone, or the typed fallback. Live listening has been tried on staged calls, not at scale.
+
+</details>
+
+## Why it fits the FNB track
+
+*Trust, Decisions & Financial Confidence.* The **decision** is a person's signed answer, not a score. The **trust** comes from a key that never leaves the friend's phone and a second check on your own. The **confidence** comes from warnings written in plain, calm words for someone who is scared in the middle of a call, with one clear next step.
+
+## The team
+
+| Who | Built |
+| --- | --- |
+| **Shivaan** | Backend, decision engine, deployment |
+| **Sayan** | Phone app, crypto, the Watch bot and call engine |
+| **Tejasv** | Risk rules, Gemini layer, tests, demo and story |
 
 ## Run it
 
@@ -24,8 +143,9 @@ Needs Node 20 or newer.
 ```bash
 npm install
 cp .env.example .env   # optional: add GEMINI_API_KEY to turn on the Gemini explanations
-npm run dev            # http://localhost:3000
-npm test
+npm run dev            # http://localhost:3000 (core server)
+node bot/serve.js      # the full app: AI read, call listening, spoken alerts, Telegram bot (loads .env)
+npm test               # 344 tests
 ```
 
 Phones need HTTPS for keys and camera, so test on real phones with `cloudflared tunnel --url http://localhost:3000` or the deployed URL. Step-by-step phone testing: [web/dev/TESTING.md](web/dev/TESTING.md). Deploying: [server/DEPLOY.md](server/DEPLOY.md). Server details: [server/API.md](server/API.md).
@@ -44,6 +164,9 @@ Without `GEMINI_API_KEY` the risk layer runs on rules only. Verdicts can only di
 | `bot/` | Optional Vouch Watch: Telegram, SMS and WhatsApp (via Twilio) and live-call listening, started with `node bot/serve.js`; see [bot/README.md](bot/README.md) |
 | `demo/` | Demo cue cards, clip lines and the voice-consent template (the audio files are git-ignored) |
 | [docs/DEMO.md](docs/DEMO.md) | The 80-second demo script |
+| [docs/LIVE-CALL-DEMO.md](docs/LIVE-CALL-DEMO.md), [docs/LIVE-CALL-SCENES.md](docs/LIVE-CALL-SCENES.md) | The two live calls: scripts, expected reactions, setup and test checklist |
+| [docs/JUDGE-PLAYBOOK.md](docs/JUDGE-PLAYBOOK.md), [docs/JUDGE-SCRIPT.md](docs/JUDGE-SCRIPT.md) | What a judge might try, and what we say |
+| [docs/DEMO-MESSAGES.md](docs/DEMO-MESSAGES.md), [docs/FILMING-GUIDE.md](docs/FILMING-GUIDE.md) | Fictional scam messages and how we film the demo |
 
 ## Privacy
 
