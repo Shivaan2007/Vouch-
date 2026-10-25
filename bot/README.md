@@ -31,4 +31,27 @@ Make a Telegram group: the victim, the "scammer" teammate, the bot. Make a secon
 Messages are checked and dropped: nothing is stored or logged. The bot never logs the token or message text. With a Gemini key set, the text is sent to Google's Gemini API for analysis (same as the server). Guardian alerts name the person and the warning signs, never the message.
 
 ## Limits
-Telegram only (it is the free route with real push). A bot cannot see other apps such as iMessage or SMS: forward those messages to it. It sees a group only if privacy mode is off.
+The Telegram bot only sees chats it is in; it sees a group only if privacy mode is off. A bot cannot read other apps such as iMessage by itself: forward those messages to it (Telegram) or text them to the Vouch number (SMS and WhatsApp, below).
+
+## SMS and WhatsApp (Twilio)
+
+`bot/twilio-webhook.js` answers texts and WhatsApp messages (and screenshots sent to the number) with the same plain-words guide. One webhook covers both: WhatsApp senders look like `whatsapp:+1...`. Forwarding works from any app, so a person can forward a message from iMessage, Messenger and so on as a text to the Vouch number.
+
+1. Create a Twilio account. For SMS, buy a number (the trial credit covers it). For WhatsApp, use the sandbox (Messaging, Try it out, Send a WhatsApp message): each phone sends `join <your-code>` to the sandbox number once.
+2. Put these in `.env` (never commit it):
+   ```
+   TWILIO_ACCOUNT_SID=AC...
+   TWILIO_AUTH_TOKEN=...
+   PUBLIC_URL=https://your-public-url        # where Twilio can reach this bot, no trailing slash
+   TWILIO_FROM=+1555...                      # the SMS number
+   TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+   GUARDIAN_NUMBERS=+1555...,whatsapp:+1555...   # optional heads-up recipients
+   VOUCH_URL=https://your-vouch-link
+   ```
+3. Run it: `node --env-file=.env bot/twilio-webhook.js` (listens on port 3100), then expose it: `cloudflared tunnel --url http://localhost:3100` and use that address as `PUBLIC_URL`.
+4. In the Twilio console, set the number's (or the WhatsApp sandbox's) "A message comes in" webhook to `PUBLIC_URL/twilio`, method POST.
+5. Text or WhatsApp the number a scam message, or a screenshot.
+
+Every request is checked against Twilio's `X-Twilio-Signature`; unsigned or tampered requests get a 403. Guardian heads-ups show a masked sender number and never the message.
+
+Limits: US carriers filter texts from unregistered numbers and registration takes days; trial accounts only reach verified numbers; the WhatsApp sandbox needs the one-time join, and a production WhatsApp number needs Meta's approval. This adapter is tested against a mocked Twilio, not yet against a live account.

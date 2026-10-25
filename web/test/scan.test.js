@@ -63,3 +63,22 @@ test('never throws on junk', () => {
     assert.doesNotThrow(() => { suggest(v); callRisk(v); });
   }
 });
+
+import { classify } from '../js/lib/scan.js';
+
+test('classify names the scam in plain words and gives steps', () => {
+  const cases = [
+    ['hey it\'s me, new number! stuck at the store, can you buy $200 in Apple gift cards right now? don\'t tell mom', 'family'],
+    ['please buy 2 apple gift cards and send me the codes', 'giftcard'],
+    ['This is the IRS. You owe back taxes, pay the fee now', 'institution'],
+    ['Microsoft support: your computer has a virus, pay $200 to fix it', 'institution'],
+    ['you won the lottery! pay a processing fee to claim your prize', 'prize'],
+    ['we changed our bank details, wire the deposit to the new account', 'wire'],
+    ['I need $50 for the bus right now, please', 'pressure'],
+    ['can you venmo me $20 for lunch', 'ask'],
+  ];
+  for (const [text, id] of cases) assert.equal(classify(text)?.id, id, text);
+  const c = classify('please buy gift cards');
+  assert.ok(c.title && c.why && c.steps.length >= 2);
+  for (const ordinary of ['dinner is at six', 'happy birthday!', 'can you send me the photos', '']) assert.equal(classify(ordinary), null, ordinary);
+});

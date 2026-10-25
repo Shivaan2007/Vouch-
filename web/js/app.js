@@ -8,7 +8,7 @@ import {
 import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
-import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk } from './lib/scan.js';
+import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify } from './lib/scan.js';
 
 // ---------- helpers ----------
 
@@ -409,6 +409,14 @@ function setupView() {
 
 // ---------- check a message ----------
 
+// A plain-words read of what kind of scam this looks like and what to do, from the language of the message or call.
+function guideCard(g) {
+  return h('div', { class: 'guide' },
+    h('b', null, g.title),
+    h('p', null, g.why),
+    h('ol', { class: 'steps' }, g.steps.map((s) => h('li', null, s))));
+}
+
 // The moment a risky message lands (pasted or shared), warn right away, aloud, before anyone has to ask.
 // This is an on-phone warning only; it never clears anything.
 function flashIfRisky() {
@@ -452,12 +460,14 @@ function checkView() {
   const F = S.form;
   if (!F.friendId || !friendById(F.friendId)) F.friendId = S.friends[0].id;
 
-  const flags = h('div', { class: 'flagbar', 'aria-live': 'polite' });
+  const flags = h('div', { 'aria-live': 'polite' });
   const paintFlags = () => {
     const s = suggest(F.text);
-    if (s.tags.length) flags.replaceChildren(h('span', null, 'Looks risky:'), ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t])));
-    else if (s.ask) flags.replaceChildren(h('span', null, 'This asks for money. Check who it is before you send anything.'));
-    else flags.replaceChildren();
+    const g = classify(F.text);
+    const kids = [];
+    if (g) kids.push(guideCard(g));
+    if (s.tags.length) kids.push(h('div', { class: 'flagbar' }, ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))));
+    flags.replaceChildren(...kids);
   };
   const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
   const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; } });
@@ -788,12 +798,13 @@ function scanCall() {
 function callScamOverlay({ level, tags, institution }) {
   const f = institution ? null : (friendById(S.wordFriendId) || S.friends[0]); // an "institution" has no code word
   const hard = level === 2;
+  const guide = classify(`${S.heard || ''} ${S.cur || ''}`);
   return h('div', { class: `overlay alert${hard ? '' : ' soft'}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Scam warning' },
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
-      h('p', { class: 'big' }, institution ? 'Banks, tax offices and tech support never ask for gift cards, crypto, wires or codes. Hang up and call the number on your card or their official website.'
-        : (hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.')),
-      tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null,
+      h('p', { class: 'big' }, guide ? guide.why : (hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.')),
+      guide ? h('ol', { class: 'steps big' }, guide.steps.map((s) => h('li', null, s)))
+        : (tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
       f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
       f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
       h('button', { class: 'ghost', onclick: dismiss }, 'Keep listening')));
@@ -1006,6 +1017,7 @@ function overlayFor(item) {
 // Shown the instant a risky message is pasted or shared.
 function scamOverlay({ tags, institution }) {
   const F = S.form;
+  const guide = classify(F.text);
   const friend = friendById(F.friendId) || S.friends[0];
   // An impostor "institution" isn't someone you can pair with, so the advice is to hang up and call a number you trust.
   const go = friend && !institution ? h('button', { onclick: async () => {
@@ -1015,10 +1027,10 @@ function scamOverlay({ tags, institution }) {
   } }, `Ask ${friend.name}'s phone now`) : null;
   return h('div', { class: 'overlay alert', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
     h('div', { class: 'inner' },
-      h('div', { class: 'stop' }, 'This looks like a scam.'),
-      h('p', { class: 'big' }, institution ? 'Banks, tax offices and tech support never ask for gift cards, crypto, wires or codes.' : 'Do not send anything yet.'),
-      tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null,
-      h('p', null, institution ? 'Do not reply. Call the number on your card, your bill or their official website.' : 'Check it with someone you trust. It takes a few seconds.'),
+      h('div', { class: 'stop' }, guide ? guide.title : 'This looks like a scam.'),
+      h('p', { class: 'big' }, guide ? guide.why : 'Do not send anything yet.'),
+      guide ? h('ol', { class: 'steps big' }, guide.steps.map((s) => h('li', null, s)))
+        : (tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
       go, h('button', { class: 'ghost', onclick: dismiss }, 'Not now')));
 }
 

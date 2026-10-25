@@ -8,9 +8,7 @@
 //   BOT_TOKEN=... node bot/telegram-bot.js        (see bot/README.md; Node 20+, no dependencies)
 import { pathToFileURL } from 'node:url';
 import { analyzeSafe } from '../server/src/analyze.js';
-import { suggest, riskyEnough, TAG_LABELS } from '../web/js/lib/scan.js';
-
-const label = (tags) => tags.map((t) => (TAG_LABELS[t] || t).toLowerCase()).join(', ');
+import { createCore, label } from './core.js';
 
 const INTRO = `I'm Vouch Watch.
 
@@ -35,30 +33,10 @@ export function createBot({ token, fetchImpl = globalThis.fetch, analyze = analy
   }
   const say = (chat_id, text) => api('sendMessage', { chat_id, text, disable_web_page_preview: true });
 
-  // level 0 = nothing; 1 = asks for money or shows a warning sign; 2 = scam warning signs (stop).
-  async function assess(text) {
-    const local = suggest(text);
-    let tags = [...local.tags];
-    let risk = 'low';
-    try {
-      const r = await analyze({ text, paymentMethod: local.method || 'unknown', amount: local.amount ? Number(local.amount) : null, claimedName: '', firstRequest: false });
-      tags = [...new Set([...tags, ...((r && r.tags) || [])])];
-      risk = (r && r.paymentRisk) || 'low';
-    } catch { /* the phone's instant hints still apply */ }
-    const level = riskyEnough(tags) || risk === 'high' ? 2 : (local.ask || tags.length ? 1 : 0);
-    return { tags, level, ask: local.ask };
-  }
-
-  function warning(a) {
-    const where = vouchUrl ? `\n\nCheck it with their own phone in Vouch: ${vouchUrl}` : '';
-    if (a.level === 2) {
-      return `⚠️ SCAM WARNING\n\nThis message shows: ${label(a.tags) || 'signs of a scam'}.\n\nDo NOT send money, gift card codes or passwords. Stop replying, then call them back on a number you already know, or ask for your Vouch code word.${where}`;
-    }
-    if (a.level === 1) {
-      return `This message ${a.ask ? 'asks for money' : 'has a warning sign'}${a.tags.length ? ` and shows: ${label(a.tags)}` : ''}.\n\nBefore you send anything, make sure it is really them.${where}`;
-    }
-    return `Nothing stands out. That does not make it safe: only a Yes from their own phone in Vouch counts.${where}`;
-  }
+  // The channel-neutral engine (shared with the SMS/WhatsApp door): assess text, then word the answer.
+  const core = createCore({ analyze, vouchUrl });
+  const assess = (text) => core.assess({ text });
+  const warning = (a) => core.reply(a, { rich: true });
 
   async function alertGuardians(fromChatId, name, tags) {
     const who = String(name || 'Someone you look after').slice(0, 30);

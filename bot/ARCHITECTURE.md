@@ -27,8 +27,9 @@ Scams win on speed and borrowed trust. Vouch does not try to out-guess the scamm
 | Live call watch | Real in browsers with speech recognition (Chrome/Android best). Phones often block the mic during a call; a second device always works. The browser's speech service may process the audio |
 | Alerts | Spoken, vibrating (Android), notification while Vouch is open or backgrounded. **Not** native push: a closed browser tab can't be woken without server web-push |
 | Telegram bot (`bot/telegram-bot.js`) | Real code, tested with a mocked Telegram. **Not yet run against live Telegram** (needs `BOT_TOKEN`). Telegram's own push reaches a locked phone |
-| SMS / Twilio | **Not built.** Spec below |
-| iMessage | **Not possible directly** (Apple exposes no API). Share/Paste/Shortcut instead |
+| SMS and WhatsApp (`bot/twilio-webhook.js`) | Real code: signature-checked webhook, plain-words guide, screenshots, guardian heads-ups. Tested against a mocked Twilio, **not yet against a live account**. Needs a Twilio account (SMS also needs carrier registration) |
+| iMessage | **Not possible directly** (Apple exposes no API). Forward it as a text to the Vouch number, or Share/Paste/Shortcut |
+| Any other messaging app | Every app has Forward or Share: forward to Vouch's Telegram, WhatsApp or SMS number |
 | Email forwarding, native app (call screening, message filter) | Not built; out of scope for the hackathon |
 
 Nothing in the production path is simulated. The only scripted thing in the demo is the scammer's voice. `web/dev/mock-server.js` is a development reference server and is never used in the product.
@@ -46,6 +47,10 @@ Nothing in the production path is simulated. The only scripted thing in the demo
 | Rent/contractor "we changed accounts" invoices | Screenshot is read by AI; a paired family member is the second opinion | Warns |
 | Investment / crypto "opportunity" | CRYPTO + urgency tags | Warns only |
 | Package / toll / fine text with a link | Money-ask and institution wording | Warns only |
+
+## Calls
+
+A website or bot cannot listen to a normal phone call. Today: the in-app **Watch this call** (browser speech recognition on speaker) and the **code word**, which works on voice and video. A bridged call line (a Twilio number the call is forwarded through, with live transcription) would be the next step; it needs a paid number and carrier forwarding, so it is not built. A native app could use the phone's call-screening and message-filter hooks; that is the real "Truecaller" layer and is out of scope here, but it would reuse the same engine (`web/js/lib/scan.js` and `bot/core.js`).
 
 ## Error states (what the person sees)
 
@@ -73,7 +78,7 @@ Keys never leave the phone. The server stores only a SHA-256 of normalized text.
 ## Next (needs the server owner; not in PROTOCOL.md yet)
 
 1. **Intake**: an authenticated socket event, e.g. `message:report { text?, imageDataUrl?, source }`, that runs `analyzeSafe` and replies with the tags and level, and emits a `scam:alert` to that user's phone (and a no-text heads-up to their circle). This lets any channel (Telegram, SMS, email) light up the app, not just reply in its own chat.
-2. **SMS via Twilio**: `POST /intake/sms` (urlencoded `From`, `Body`), verify `X-Twilio-Signature` (HMAC-SHA1 with the auth token, no SDK needed), map `From` to a user by a salted hash of the phone number, reply with TwiML. Caveats: a paid number; US carriers filter unregistered senders and registration takes days; trial accounts only reach verified numbers.
+2. **Link a phone number to a Vouch user** (salted hash only), so the SMS/WhatsApp door can also start a signed check with the person's real friend, not just warn. Today the door warns and guides; it does not ask a friend's phone.
 3. **Web push** (VAPID) so alerts reach a closed browser.
 
 Any of these changes `docs/PROTOCOL.md`, so they need the whole team.

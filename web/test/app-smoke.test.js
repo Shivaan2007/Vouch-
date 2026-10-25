@@ -72,7 +72,8 @@ test('sign-up shows the main app, and a shared scam message triggers the warning
   find(appEl, (n) => n.id === 'name').value = 'Ada';
   await btn('Get started').fire('click');
   await wait(900);
-  assert.ok(text().includes('This looks like a scam'), 'full-screen warning');
+  assert.ok(text().includes('Possible family-emergency scam'), 'full-screen warning names the scam type');
+  assert.ok(text().includes('Call your family member on the number you already have'), 'and says what to do');
   assert.ok(text().includes('DO NOT SEND ANYTHING'), 'sticky banner');
   const clear = btn('I checked it');
   assert.ok(clear && clear.attrs.disabled !== undefined, 'clear is locked by the pause');
@@ -120,7 +121,7 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
   assert.ok(text().includes('Venmo / Cash App / Zelle') && text().includes('Gift cards'), 'method cards');
   assert.ok(findAll(appEl, (n) => n.className === 'logo').length >= 8, 'brand logos are drawn');
   assert.ok(find(appEl, (n) => n.id === 'shot'), 'screenshot control');
-  assert.ok(text().includes('Looks risky'), 'the shared scam text is flagged in the form');
+  assert.ok(text().includes('Possible family-emergency scam') && text().includes('Ask for your Vouch code word'), 'the shared text gets a plain-words guide in the form');
 
   find(appEl, (n) => n.id === 'amount').value = '60';
   await find(appEl, (n) => n.id === 'amount').fire('input');

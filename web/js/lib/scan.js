@@ -93,3 +93,65 @@ export function callRisk(text) {
   const level = (riskyEnough(s.tags) && (s.ask || payTag)) || (s.institution && (s.ask || payTag)) ? 2 : (s.ask ? 1 : 0);
   return { level, tags: s.tags, amount: s.amount, ask: s.ask, institution: s.institution };
 }
+
+const has = (tags, ...names) => names.some((n) => tags.includes(n));
+const GUIDE = [
+  { id: 'institution', when: (s) => s.institution,
+    title: 'Someone pretending to be a bank, agency or company',
+    why: 'Banks, tax offices, tech support and police do not ask for gift cards, crypto, transfers or codes by call or text.',
+    steps: ['Do not reply, click a link or call back a number in the message.', 'Hang up. Call the number on your card, your bill or their official website.', 'Never read out a code that was sent to your phone.'] },
+  { id: 'family', when: (s, t) => has(s.tags, 'NEW_NUMBER') && (has(s.tags, 'URGENCY', 'SECRECY') || s.ask) || /\b(grandma|grandpa|nana|papa|mom|dad)\b/.test(t) && has(s.tags, 'NEW_NUMBER'),
+    title: 'Possible family-emergency scam',
+    why: 'Scammers pose as a relative in trouble on a new number, often with a cloned voice.',
+    steps: ['Stop. Do not send money yet.', 'Call your family member on the number you already have.', 'Ask for your Vouch code word, or check with their phone in Vouch.'] },
+  { id: 'giftcard', when: (s) => has(s.tags, 'GIFT_CARD'),
+    title: 'Gift-card demand',
+    why: 'Only scammers ask to be paid in gift cards. Once the codes are read out, the money is gone.',
+    steps: ['Do not buy gift cards or read out any codes.', 'Check who it really is with their own phone in Vouch.', 'If you already sent codes, call the card company right now.'] },
+  { id: 'wire', when: (s) => has(s.tags, 'WIRE'),
+    title: 'Wire or bank-transfer demand',
+    why: 'Transfers are hard to undo, which is why scammers ask for them.',
+    steps: ['Do not send a transfer from a message or call.', 'Confirm with the person on a number you already have.', 'If you already sent one, call your bank immediately and ask for a recall.'] },
+  { id: 'crypto', when: (s, t) => has(s.tags, 'CRYPTO') || /\b(guaranteed returns?|trading platform|double your (money|investment)|investment opportunity)\b/.test(t),
+    title: 'Crypto or "investment" pressure',
+    why: 'Fake investments and crypto payments are almost impossible to get back.',
+    steps: ['Do not send crypto or move money to a new platform.', 'Real investments never guarantee returns or rush you.', 'Talk to someone you trust before doing anything.'] },
+  { id: 'romance', when: (s, t) => s.ask && /\b(i love you|my darling|sweetheart|never met|oil rig|deployed|military|widow|overseas)\b/.test(t),
+    title: 'Possible romance scam',
+    why: 'Someone you have not met in person is asking for money.',
+    steps: ['Do not send money to someone you have never met.', 'Ask a family member what they think.', 'Be wary if they refuse a live video call.'] },
+  { id: 'prize', when: (s, t) => /\b(you (have )?won|winner|lottery|sweepstakes|claim your prize|processing fee to (claim|release))\b/.test(t),
+    title: 'Prize or lottery scam',
+    why: 'Real prizes never ask you to pay a fee first.',
+    steps: ['Do not pay anything to claim a prize.', 'Do not share bank details or codes.', 'Delete the message.'] },
+  { id: 'invoice', when: (s, t) => /\b(new account|updated (bank|payment) details|changed (our )?(bank|account)|wire the (deposit|payment))\b/.test(t),
+    title: 'Changed payment details',
+    why: 'Scammers copy a real bill or landlord and swap in their own account.',
+    steps: ['Do not pay to a new account from a message.', 'Call the company or person on a number you already have.', 'Check the account details in person or on the original bill.'] },
+  { id: 'overpay', when: (s, t) => /\b(overpaid|send back the difference|check (has )?cleared|mystery shopper)\b/.test(t),
+    title: 'Overpayment scam',
+    why: 'A fake check is "accidentally" too large and you are asked to send the difference back.',
+    steps: ['Do not send any money back.', 'A check can bounce days after the bank shows it.', 'Tell your bank.'] },
+  { id: 'pressure', when: (s) => s.ask && has(s.tags, 'URGENCY', 'SECRECY', 'PAYBACK_PROMISE'),
+    title: 'Money request with pressure',
+    why: 'Rushing you and keeping it secret are how scams stop you from checking.',
+    steps: ['Slow down. Nothing real needs money in the next five minutes.', 'Check who it is with their own phone in Vouch.', 'Do not keep it secret: tell someone you trust.'] },
+  { id: 'ask', when: (s) => s.ask,
+    title: 'Asks for money',
+    why: 'You cannot tell who is really behind a message or voice.',
+    steps: ['Check that it is really them before you send anything.', 'Use Vouch to ask their own phone.'] },
+];
+
+/**
+ * Names the kind of scam in plain words and says what to do, from the language of a message or a stretch of a call.
+ * Returns null when nothing stands out. It only guides; it never clears anything.
+ * @param {string} text
+ * @returns {{id: string, title: string, why: string, steps: string[]}|null}
+ */
+export function classify(text) {
+  const t = norm(text);
+  if (!t) return null;
+  const s = suggest(t);
+  const g = GUIDE.find((x) => x.when(s, t));
+  return g ? { id: g.id, title: g.title, why: g.why, steps: g.steps } : null;
+}
