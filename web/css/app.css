@@ -203,3 +203,8 @@ mark { background: #fcd34d; color: #000; border-radius: 5px; padding: 0 0.2em; f
 .callbar { display: flex; align-items: center; gap: 0.7rem; background: #0b0b0c; color: #fff; border-radius: var(--radius); padding: 0.55rem 0.9rem; margin: 0.6rem 0; font-size: 0.9rem; font-weight: 600; }
 .callbar span:nth-child(2) { flex: 1; }
 .callbar button { width: auto; margin: 0; min-height: 2.4rem; padding: 0.4rem 0.9rem; background: #fff; color: #000; }
+
+/* sender and AI lines on a warning */
+.sender { font-weight: 700; margin: 0.4rem 0; }
+.airead { background: var(--surface); border-radius: var(--radius-sm); padding: 0.7rem 0.9rem; margin: 0.6rem 0 0; font-weight: 500; }
+.overlay.alert .airead { background: rgba(0, 0, 0, 0.08); }

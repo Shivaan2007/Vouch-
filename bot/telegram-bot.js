@@ -8,7 +8,7 @@
 //   BOT_TOKEN=... node bot/telegram-bot.js        (see bot/README.md; Node 20+, no dependencies)
 import { pathToFileURL } from 'node:url';
 import { analyzeSafe } from '../server/src/analyze.js';
-import { createCore, label } from './core.js';
+import { createCore, createContext, label } from './core.js';
 
 const INTRO = `I'm Vouch Watch.
 
@@ -23,7 +23,7 @@ I can warn you. Only a Yes from your friend's own phone in Vouch can clear a req
  */
 export function createBot({
   token, fetchImpl = globalThis.fetch, analyze = analyzeSafe, vouchUrl = '', guardians = [], log = () => {},
-  link = null, onFlag = () => {},
+  link = null, onFlag = () => {}, onAi = () => {}, track = null, infer,
 } = {}) {
   const guardianChats = new Set(guardians.map(String));
   let running = false;
@@ -37,9 +37,9 @@ export function createBot({
   const say = (chat_id, text) => api('sendMessage', { chat_id, text, disable_web_page_preview: true });
 
   // The channel-neutral engine (shared with the SMS/WhatsApp door): assess text, then word the answer.
-  const core = createCore({ analyze, vouchUrl });
-  const assess = (text) => core.assess({ text });
-  const warning = (a) => core.reply(a, { rich: true });
+  const core = createCore({ analyze, infer, vouchUrl });
+  const memory = createContext(); // the last few messages per chat and sender, in memory only, so the AI can follow a scam as it unfolds
+  const assess = (text, context) => core.assess({ text, context });
 
   async function alertGuardians(fromChatId, name, tags) {
     const who = String(name || 'Someone you look after').slice(0, 30);
@@ -47,6 +47,23 @@ export function createBot({
       if (id === String(fromChatId)) continue;
       await say(id, `Heads-up: ${who} just got a message with scam warning signs (${label(tags)}). The message itself is not shared. It's worth checking in with them.`);
     }
+  }
+
+  // Who said it. In a group that is the speaker; in a private chat it is only known when the message was forwarded, and
+  // only if the original sender allows it (Telegram hides the name when someone turns that off).
+  function senderOf(msg, isPrivate) {
+    const fo = msg.forward_origin;
+    let u = null;
+    if (fo) {
+      if (fo.type === 'user') u = fo.sender_user;
+      else if (fo.type === 'hidden_user') u = { hidden: true, name: fo.sender_user_name };
+      else if (fo.chat) u = { id: fo.chat.id, username: fo.chat.username, first_name: fo.chat.title };
+    } else if (msg.forward_from) u = msg.forward_from;
+    else if (msg.forward_sender_name) u = { hidden: true, name: msg.forward_sender_name };
+    else if (!isPrivate) u = msg.from;
+    if (!u || u.is_bot) return null;
+    if (u.hidden) return { hidden: true, name: String(u.name || '').slice(0, 40) };
+    return { id: String(u.id), name: [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 40), handle: u.username ? `@${u.username}` : '' };
   }
 
   async function handleUpdate(update) {
@@ -83,12 +100,59 @@ export function createBot({
       if (isPrivate) await say(chatId, 'Send or forward me the message text and I will check it.');
       return;
     }
-    const a = await assess(text);
-    if (link && a.level >= 1) { // a linked chat: flash it in that person's Vouch app too (never the message itself)
-      for (const uid of link.lookup('telegram', chatId)) onFlag(uid, a, 'telegram');
+    const sender = senderOf(msg, isPrivate);
+    const users = link ? link.lookup('telegram', chatId) : [];
+    const q = core.quick(text);
+
+    // Who said it: remember flagged senders per account, so a repeat offender is called out and treated as worse.
+    let info = null;
+    if (track && sender && !sender.hidden && users.length && q.level >= 1) {
+      info = track.note(users, 'telegram', sender, q);
+      if (info.repeatScam && q.level < 2) { q.level = 2; q.repeat = true; }
     }
-    if (isPrivate || a.level === 2 || (a.level === 1 && a.ask)) await say(chatId, warning(a));
-    if (a.level === 2) await alertGuardians(chatId, msg.from.first_name, a.tags);
+    const view = sender ? { ...sender, count: info ? info.count : 0 } : null;
+
+    // Someone just talking to the bot ("yo", "thanks", "what do you do?") gets a conversation, not a scam analysis.
+    // The AI answers when it can; the plain introduction is only the fallback.
+    if (isPrivate && q.level === 0 && q.intent === 'chat' && !sender) {
+      api('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
+      const talk = await assess(text, []);
+      await say(chatId, core.reply(talk.level === 0 ? talk : q));
+      return;
+    }
+
+    // 1) Instant: the on-phone read answers in a blink, and the app flashes. When nothing obvious stands out in a private chat,
+    //    wait for the AI instead of saying something premature.
+    const deferQuiet = isPrivate && q.level === 0;
+    const speak = !deferQuiet && (isPrivate || q.level === 2 || (q.level === 1 && q.ask));
+    if (deferQuiet) api('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
+    const sent = speak ? await say(chatId, core.reply(q, { sender: view })) : null;
+    const alerts = []; // [account, alert id], so the AI's read can be added to the very warning already on screen
+    if (q.level >= 1) for (const uid of users) alerts.push([uid, onFlag(uid, q, 'telegram', view)]);
+    if (q.level === 2) await alertGuardians(chatId, msg.from.first_name, q.tags);
+
+    // 2) Then the AI read, which INFERS what this is from the message and from what this sender said just before. Its words
+    //    replace the generic ones in the same Telegram message and are filled into the warning already on the app; the app is
+    //    alerted again only if the AI found it worse than the instant read did.
+    const memKey = `${chatId}:${sender && !sender.hidden ? sender.id : 'me'}`;
+    const full = await assess(text, memory.get(memKey));
+    memory.add(memKey, text);
+    if (info && info.repeatScam && full.level < 2) full.level = 2;
+    if (deferQuiet && full.level === 0) { await say(chatId, core.reply(full, { sender: view })); return; } // the AI read it: say what it found
+    const raised = full.level > q.level;
+    if (!raised && full.ai) for (const [uid, id] of alerts) if (id) onAi(uid, id, full);
+    if (!(raised || (full.ai && q.level >= 1) || (full.level >= 1 && !speak))) return;
+    if (raised && track && sender && !sender.hidden && users.length) track.raise(users, 'telegram', sender, full);
+    const final = core.reply(full, { sender: view });
+    const messageId = sent && sent.result && sent.result.message_id;
+    try {
+      if (messageId) await api('editMessageText', { chat_id: chatId, message_id: messageId, text: final, disable_web_page_preview: true });
+      else if (full.level >= 1 && (isPrivate || full.level === 2 || full.ask)) await say(chatId, final);
+    } catch (e) { log('edit failed:', e.message); }
+    if (raised) {
+      for (const uid of users) onFlag(uid, full, 'telegram', view);
+      if (full.level === 2) await alertGuardians(chatId, msg.from.first_name, full.tags);
+    }
   }
 
   async function start() {
@@ -110,7 +174,7 @@ export function createBot({
   }
   const stop = () => { running = false; };
 
-  return { handleUpdate, assess, start, stop, guardianChats };
+  return { handleUpdate, assess, start, stop, guardianChats, say, alertGuardians };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

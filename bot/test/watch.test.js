@@ -11,6 +11,7 @@ import { createIdentityKeys, exportPub, signString } from '../../web/js/lib/cryp
 const SCAM = "hey it's me, new number! stuck at the store, can you buy $200 in Apple gift cards right now? don't tell mom zebra";
 const sent = [];
 const calls = [];
+let aiNext = null; // lets a test make the AI say something specific
 let server; let watch; let url; let phone;
 const PUBLIC = 'https://example.test';
 
@@ -19,7 +20,7 @@ const fetchImpl = async (u, init) => {
   const s = String(u);
   calls.push({ url: s, init });
   if (s.includes('/getMe')) return { json: async () => ({ ok: true, result: { username: 'vouch_test_bot' } }) };
-  if (s.includes('api.telegram.org') && s.endsWith('/sendMessage')) { sent.push(JSON.parse(init.body)); return { json: async () => ({ ok: true }) }; }
+  if (s.includes('api.telegram.org')) { sent.push({ ...JSON.parse(init.body), _m: s.split('/').pop() }); return { json: async () => ({ ok: true, result: { message_id: sent.length } }) }; }
   if (s.includes('generativelanguage')) return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: ' send me gift cards ' }] } }] }) };
   return { ok: true, json: async () => ({}) };
 };
@@ -43,6 +44,7 @@ before(async () => {
   watch = attachWatch({
     httpServer: server.httpServer, io: server.io, db: server.db, fetchImpl, startTelegram: false,
     analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }),
+    infer: async (i) => (aiNext ? aiNext(i) : null),
     env: { BOT_TOKEN: 'TESTTOKEN', TWILIO_ACCOUNT_SID: 'AC1', TWILIO_AUTH_TOKEN: 'tok', PUBLIC_URL: PUBLIC, TWILIO_FROM: '+15550001', TWILIO_WHATSAPP_FROM: 'whatsapp:+15550002' },
   });
   url = `http://localhost:${await server.listen(0)}`;
@@ -183,4 +185,108 @@ test('one chat can warn several accounts; /who and /unlink work; linking a secon
   await tg(chat, '/who');
   assert.match(lastTg().text, /not linked/);
   sam.socket.close();
+});
+
+// ---- who said it, the AI read, and direct alerts ----
+const tgFrom = (chat, from, text, extra = {}, type = 'group') => watch.telegram.handleUpdate({ update_id: 2, message: { chat: { id: chat, type }, from: { is_bot: false, ...from }, text, ...extra } });
+const SCAMMER = { id: 555, first_name: 'Bob', last_name: 'Smith', username: 'scam_bob' };
+
+test('a flagged sender is tracked: named in the reply and the alert, counted, and recognised when they come back', async () => {
+  const gran = await signedInPhone('Tracker');
+  const chat = -9001;
+  const { code } = await gran.call('watch:link');
+  await tgFrom(chat, { id: 1, first_name: 'Gran' }, `/start link_${code}`);
+  gran.alerts.length = 0; sent.length = 0;
+
+  await tgFrom(chat, SCAMMER, SCAM);
+  await wait(250);
+  assert.equal(gran.alerts.length, 1);
+  assert.deepEqual({ handle: gran.alerts[0].sender.handle, name: gran.alerts[0].sender.name, count: gran.alerts[0].sender.count },
+    { handle: '@scam_bob', name: 'Bob Smith', count: 1 });
+  assert.match(sent.find((m) => m._m === 'sendMessage' && /SCAM WARNING/.test(m.text)).text, /From: @scam_bob · Bob Smith/);
+
+  // they come back with something mild that would normally only be "asks for money"
+  gran.alerts.length = 0; sent.length = 0;
+  await tgFrom(chat, SCAMMER, 'hey need 100 dollars for the bus');
+  await wait(250);
+  assert.equal(gran.alerts[0].level, 2, 'a sender already flagged for a scam is treated as worse');
+  assert.equal(gran.alerts[0].repeat, true);
+  assert.equal(gran.alerts[0].sender.count, 2);
+  assert.match(sent.find((m) => /SCAM WARNING/.test(m.text || '')).text, /flagged them 2 times/);
+
+  // the person can see who it was, and forget them
+  const { senders } = await gran.call('watch:senders');
+  assert.equal(senders.length, 1);
+  assert.deepEqual({ handle: senders[0].handle, flags: senders[0].flags, maxLevel: senders[0].maxLevel }, { handle: '@scam_bob', flags: 2, maxLevel: 2 });
+  assert.doesNotMatch(JSON.stringify(senders), /bus|gift cards|zebra/, 'no message text is kept');
+  await gran.call('watch:forget', { id: senders[0].id });
+  assert.deepEqual((await gran.call('watch:senders')).senders, []);
+  gran.socket.close();
+});
+
+test('a forwarded message is tracked to its original sender; one that hides the sender says so', async () => {
+  const gran = await signedInPhone('Forwarder');
+  const { code } = await gran.call('watch:link');
+  await tgFrom(8200, { id: 8200, first_name: 'Gran' }, `/start link_${code}`, {}, 'private');
+  sent.length = 0; gran.alerts.length = 0;
+  await tgFrom(8200, { id: 8200, first_name: 'Gran' }, SCAM, { forward_origin: { type: 'user', sender_user: { id: 777, first_name: 'Cousin', username: 'cousin_k' } } }, 'private');
+  await wait(250);
+  assert.equal(gran.alerts[0].sender.handle, '@cousin_k');
+  assert.equal((await gran.call('watch:senders')).senders[0].handle, '@cousin_k');
+
+  sent.length = 0; gran.alerts.length = 0;
+  await tgFrom(8200, { id: 8200, first_name: 'Gran' }, SCAM, { forward_origin: { type: 'hidden_user', sender_user_name: 'Private Person' } }, 'private');
+  await wait(250);
+  assert.match(sent.find((m) => /SCAM WARNING/.test(m.text || '')).text, /hid their name when forwarding, so I cannot track them/);
+  assert.equal(gran.alerts[0].sender.hidden, true);
+  assert.equal((await gran.call('watch:senders')).senders.length, 1, 'a hidden sender is not recorded');
+  // Gran talking to the bot herself is not "a sender"
+  sent.length = 0; gran.alerts.length = 0;
+  await tgFrom(8200, { id: 8200, first_name: 'Gran' }, SCAM, {}, 'private');
+  await wait(250);
+  assert.equal(gran.alerts[0].sender, null);
+  gran.socket.close();
+});
+
+test('instant answer first, then the AI read updates the same message', async () => {
+  const gran = await signedInPhone('AiUser');
+  const { code } = await gran.call('watch:link');
+  await tgFrom(8300, { id: 8300, first_name: 'Gran' }, `/start link_${code}`, {}, 'private');
+  sent.length = 0;
+  aiNext = async () => { await wait(120); return { moneyRequest: true, amountUSD: 1000, paymentMethod: 'venmo_cashapp_zelle', risk: 'medium', scamType: 'Pressure to pay by app', impersonating: '', signals: ['asks to be paid by Venmo', '"rn" means right now'], why: 'Rushes you to send money by app.', steps: ['Do not send yet.', 'Call them on a number you know.'], tags: ['URGENCY'] }; };
+  try {
+    await tgFrom(8300, { id: 8300, first_name: 'Gran' }, 'hey can u venmo me 1000 rn', {}, 'private');
+  } finally { aiNext = null; }
+  const first = sent.find((m) => m._m === 'sendMessage' && /asks for money/i.test(m.text || ''));
+  assert.ok(first, 'the instant answer came first');
+  const edit = sent.find((m) => m._m === 'editMessageText');
+  assert.ok(edit, 'then the same message was updated');
+  assert.match(edit.text, /Pressure to pay by app/, 'the AI named it in its own words');
+  assert.match(edit.text, /What stood out:\n- asks to be paid by Venmo/, 'and quoted what stood out');
+  assert.match(edit.text, /Read by AI/);
+  assert.equal(edit.message_id, sent.indexOf(first) + 1, 'it edited the instant answer, not a new message');
+  gran.socket.close();
+});
+
+test('the app gets an instant AI read, and a flagged call messages the person and their family directly', async () => {
+  const gran = await signedInPhone('CallUser');
+  const { code } = await gran.call('watch:link');
+  await tgFrom(8400, { id: 8400, first_name: 'Gran' }, `/start link_${code}`, {}, 'private');
+  await tgFrom(8401, { id: 8401, first_name: 'Family' }, '/guardian', {}, 'group');
+
+  aiNext = async () => ({ moneyRequest: true, amountUSD: 500, paymentMethod: 'unknown', risk: 'medium', scamType: 'Secret money request', impersonating: 'a friend', signals: ['asks you not to tell anyone'], why: 'Asks you to keep it secret.', steps: ['Do not send yet.'], tags: ['SECRECY'] });
+  try {
+    const r = await gran.call('watch:read', { text: 'please dont tell anyone, i need 500 dollars today' });
+    assert.deepEqual({ ok: r.ok, ai: r.ai, title: r.read && r.read.title, why: r.read && r.read.why, impersonating: r.read && r.read.impersonating }, { ok: true, ai: true, title: 'Secret money request', why: 'Asks you to keep it secret.', impersonating: 'a friend' });
+    assert.deepEqual(r.read.signals, ['asks you not to tell anyone']);
+    assert.equal(r.level, 2, 'a medium-risk money request is a stop');
+  } finally { aiNext = null; }
+  assert.equal((await gran.call('watch:read', { text: 'hi' })).error, 'BAD_INPUT');
+
+  sent.length = 0;
+  const a = await gran.call('watch:alert', { level: 2, title: 'Gift-card demand' });
+  assert.deepEqual({ ok: a.ok, notified: a.notified }, { ok: true, notified: 1 });
+  assert.ok(sent.some((m) => String(m.chat_id) === '8400' && /Vouch flagged your call: Gift-card demand/.test(m.text)), 'the person is messaged directly');
+  assert.ok(sent.some((m) => String(m.chat_id) === '8401' && /CallUser is on a call that looks like a scam/.test(m.text)), 'and so is the family');
+  gran.socket.close();
 });

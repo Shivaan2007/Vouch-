@@ -6,7 +6,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { createCore, label } from './core.js';
+import { createCore, createContext, label } from './core.js';
 
 const MAX_BODY = 64 * 1024;
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
@@ -26,9 +26,10 @@ const twiml = (text) => `<?xml version="1.0" encoding="UTF-8"?><Response>${text 
  */
 export function createTwilioHandler({
   authToken, accountSid, fromNumber = '', whatsappFrom = '', publicUrl, analyze, vouchUrl = '', guardians = [], fetchImpl = globalThis.fetch, log = () => {},
-  link = null, onFlag = () => {}, path = '/twilio',
+  link = null, onFlag = () => {}, path = '/twilio', infer,
 }) {
-  const core = createCore({ analyze, vouchUrl });
+  const core = createCore({ analyze, infer, vouchUrl });
+  const memory = createContext(); // the last few messages from each number, in memory only
   const basic = `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`;
 
   // A screenshot sent to the number. Twilio media needs the account credentials; only small jpeg/png are read.
@@ -76,7 +77,8 @@ export function createTwilioHandler({
       const names = link.who(ch, from);
       return twiml(names.length ? `This number warns: ${names.join(', ')}.` : 'This number is not linked to a Vouch account yet. In Vouch, tap Connect next to this app.');
     }
-    const a = await core.assess({ text, imageBase64 });
+    const a = await core.assess({ text, imageBase64, context: memory.get(from) });
+    memory.add(from, text);
     if (link && a.level >= 1) {
       for (const uid of link.lookup(whatsapp ? 'whatsapp' : 'sms', from)) onFlag(uid, a, whatsapp ? 'whatsapp' : 'sms');
     }
@@ -111,7 +113,7 @@ export function createTwilioHandler({
     }
   }
 
-  return { handleMessage, handleRequest };
+  return { handleMessage, handleRequest, send };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

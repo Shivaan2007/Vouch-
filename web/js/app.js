@@ -321,7 +321,10 @@ async function afterAuth() {
   S.authed = true;
   paintStatus();
   await syncFriends();
-  loadWatch().then(() => { if (S.tab === 'friends' || S.tab === 'word') renderMain(); }); // not awaited: a server without Watch just says nothing
+  loadWatch().then(async () => { // not awaited: a server without Watch just says nothing
+    if (S.watch) await loadSenders();
+    if (S.tab === 'friends' || S.tab === 'word') renderMain();
+  });
   if (S.pendingPair) {
     const token = S.pendingPair;
     S.pendingPair = null;
@@ -427,10 +430,13 @@ function setupView() {
 // ---------- check a message ----------
 
 // A plain-words read of what kind of scam this looks like and what to do, from the language of the message or call.
-function guideCard(g) {
+function guideCard(g, ai = false) {
   return h('div', { class: 'guide' },
+    ai ? h('div', { class: 'aitag' }, 'AI read') : null,
     h('b', null, g.title),
     h('p', null, g.why),
+    g.impersonating ? h('p', { class: 'claims' }, `It claims to be: ${g.impersonating}`) : null,
+    g.signals && g.signals.length ? h('div', { class: 'flagbar' }, ...g.signals.map((s) => h('span', { class: 'chip' }, s))) : null,
     h('ol', { class: 'steps' }, g.steps.map((s) => h('li', null, s))));
 }
 
@@ -480,10 +486,12 @@ function checkView() {
   const flags = h('div', { 'aria-live': 'polite' });
   const paintFlags = () => {
     const s = suggest(F.text);
-    const g = classify(F.text);
+    const ai = F.aiRead && F.aiRead.text === F.text ? F.aiRead.read : null;
+    const useAi = !!(ai && ai.title && ai.title !== 'Nothing stands out');
+    const g = useAi ? ai : classify(F.text);
     const kids = [];
-    if (g) kids.push(guideCard(g));
-    if (s.tags.length) kids.push(h('div', { class: 'flagbar' }, ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))));
+    if (g) kids.push(guideCard(g, useAi));
+    if (!useAi && s.tags.length) kids.push(h('div', { class: 'flagbar' }, ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))));
     flags.replaceChildren(...kids);
   };
   const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
@@ -497,8 +505,30 @@ function checkView() {
     if (s.amount && !F.amountTouched) { F.amount = s.amount; amount.value = s.amount; }
     if (s.method && !F.methodTouched) { F.method = s.method; methodChoice.setValue(s.method); }
     paintFlags();
+    scheduleRead();
   }
   paintFlags();
+
+  // The instant AI read: a moment after the text stops changing, ask the server's AI what it makes of it and show it right here.
+  // The on-phone guide above has already answered; this adds the AI's view when there is one.
+  const aiLine = h('div', { 'aria-live': 'polite' });
+  let readTimer = null; let readSeq = 0;
+  function scheduleRead() {
+    clearTimeout(readTimer);
+    if (!S.watch || F.text.trim().length < 12) { readSeq += 1; aiLine.replaceChildren(); return; }
+    readTimer = setTimeout(async () => {
+      const mine = ++readSeq;
+      aiLine.replaceChildren(h('p', { class: 'muted' }, 'AI is reading it…'));
+      try {
+        const r = await call('watch:read', { text: F.text }, 9000);
+        if (mine !== readSeq) return;
+        F.aiRead = r.ai && r.read ? { text: F.text, read: r.read } : null;
+        aiLine.replaceChildren();
+        paintFlags();
+      } catch { if (mine === readSeq) aiLine.replaceChildren(); }
+    }, 700);
+  }
+  scheduleRead();
 
   const who = S.friends.length > 1
     ? choice('Who does it say it is?', S.friends.map((f) => [f.id, f.name]), F.friendId, (v) => { F.friendId = v; })
@@ -548,7 +578,7 @@ function checkView() {
 
   return h('section', null, h('h2', null, 'Is this request real?'),
     h('p', { class: 'muted' }, "We'll ask their real phone. Your message is checked and not saved."),
-    h('label', { for: 'text' }, '1. The message'), text, flags, h('div', { class: 'row' }, paste, example),
+    h('label', { for: 'text' }, '1. The message'), text, flags, aiLine, h('div', { class: 'row' }, paste, example),
     h('label', { for: 'shot' }, 'Or add a screenshot (optional)'), shot, preview,
     h('div', null, who), h('div', null, channel),
     h('label', { for: 'amount' }, '2. How much do they want? ($)'), amount,
@@ -769,10 +799,10 @@ function paintListen() {
   set('listenstatus', L.status || ''); set('lv-status', L.status || '');
   set('transcript', heard ? heard.slice(-260) : '…');
   for (const id of ['micbar', 'lv-mic']) { const bar = document.getElementById(id); if (bar) bar.style.width = `${Math.round((L.level || 0) * 100)}%`; }
-  const c = classify(heard);
+  const c = S.callAi || classify(heard);
   for (const id of ['listenguide', 'lv-guide']) {
     const g = document.getElementById(id);
-    if (g) g.replaceChildren(...(c ? [guideCard(c)] : (id === 'listenguide' && L.mode && L.mode !== 'off' ? [h('p', { class: 'muted' }, 'Nothing suspicious heard yet.')] : [])));
+    if (g) g.replaceChildren(...(c ? [guideCard(c, !!S.callAi)] : (id === 'listenguide' && L.mode && L.mode !== 'off' ? [h('p', { class: 'muted' }, 'Nothing suspicious heard yet.')] : [])));
   }
   const cap = document.getElementById('lv-cap');
   if (cap) cap.replaceChildren(...(heard ? highlight(heard.slice(-320)).map((p) => (p.hit ? h('mark', null, p.text) : p.text)) : [h('span', { class: 'dim' }, L.mode === 'recording' ? 'Playing the recording…' : 'Listening… words will appear here.')]));
@@ -864,7 +894,7 @@ function liveCallOverlay() {
 // One session of watching. Everything about a call (clock, words, engine) is reset here.
 function newCall(mode, status) {
   stopEngine();
-  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false });
+  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '' });
   S.call = { startedAt: Date.now() };
   S.listen = { mode, status, level: 0, words: 0, hint: '' };
   S.stt = { q: [], busy: false, retries: 0 };
@@ -1087,7 +1117,7 @@ function stopEngine() {
 
 function fail(message) {
   stopEngine();
-  S.listening = false;
+  S.listening = false; S.callLevel = 0;
   S.listen = { mode: 'off', status: message, level: 0, words: 0, hint: '' };
   if (A.source === 'call') clearAlert();
   paintStatus();
@@ -1097,7 +1127,7 @@ function fail(message) {
 function stopListening() {
   stopEngine();
   S.listening = false;
-  S.heard = ''; S.cur = ''; S.callMin = false;
+  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; // the next call starts calm, so it can warn again
   S.listen = { mode: 'off', status: '', level: 0, words: 0, hint: '' };
   if (A.source === 'call') clearAlert();
   paintStatus();
@@ -1107,27 +1137,56 @@ function stopListening() {
 // 0 = nothing; 1 = someone is asking for money (check who it is); 2 = asking for money with scam warning signs.
 function scanCall() {
   const r = callRisk(`${S.heard || ''} ${S.cur || ''}`);
+  aiScanCall(); // the AI reads the same words a moment later and can raise this itself
   if (r.level <= (S.callLevel || 0)) return;
-  S.callLevel = r.level;
-  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${r.level}-${Date.now()}`, level: r.level, tags: r.tags, institution: r.institution } });
-  raiseAlert(r.level, r.level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
-  attention(r.level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
-    r.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
-  notify(r.level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
+  escalateCall(r.level, r.tags, r.institution, null);
+}
+
+// Warn about the call at a given level. `ai` is what the AI inferred, when it is the one raising it.
+function escalateCall(level, tags, institution, ai) {
+  S.callLevel = level;
+  S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${level}-${Date.now()}`, level, tags, institution, ai } });
+  raiseAlert(level, level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
+  attention(level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
+    level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+  notify(level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
+  // Also tell the alert bot, so the person is messaged on their linked apps (and their family if it is serious).
+  if (S.watch) {
+    const g = ai || classify(`${S.heard || ''} ${S.cur || ''}`);
+    call('watch:alert', { level, title: g ? g.title : 'a call' }, 4000).catch(() => {});
+  }
   paintListen();
   renderOverlay();
 }
 
-function callScamOverlay({ level, tags, institution }) {
+// The AI's read of the call so far. It infers what is happening from the words (it is not matching a list), a few seconds apart.
+let aiCallAt = 0;
+let aiCallBusy = false;
+async function aiScanCall() {
+  if (!S.watch || aiCallBusy || Date.now() - aiCallAt < 4000) return;
+  const heard = `${S.heard || ''} ${S.cur || ''}`.trim();
+  if (heard.length < 25 || heard === S.lastAiText) return;
+  const session = S.call && S.call.startedAt;
+  aiCallBusy = true; aiCallAt = Date.now(); S.lastAiText = heard;
+  try {
+    const r = await call('watch:read', { text: heard.slice(-900) }, 9000);
+    if (session !== (S.call && S.call.startedAt)) return; // a different call by now
+    if (r.ai && r.read) {
+      S.callAi = r.read;
+      paintListen();
+      if (r.level > (S.callLevel || 0)) escalateCall(r.level, r.tags || [], false, r.read);
+    }
+  } catch { /* the instant rules already answered */ } finally { aiCallBusy = false; }
+}
+function callScamOverlay({ level, tags, institution, ai }) {
   const f = institution ? null : (friendById(S.wordFriendId) || S.friends[0]); // an "institution" has no code word
   const hard = level === 2;
-  const guide = classify(`${S.heard || ''} ${S.cur || ''}`);
+  const guide = ai || classify(`${S.heard || ''} ${S.cur || ''}`);
   return h('div', { class: `overlay alert${hard ? '' : ' soft'}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'Scam warning' },
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
-      h('p', { class: 'big' }, guide ? guide.why : (hard ? 'Do not send anything.' : 'Make sure it is really them before you do anything.')),
-      guide ? h('ol', { class: 'steps big' }, guide.steps.map((s) => h('li', null, s)))
-        : (tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
+      ai ? h('p', { class: 'sender' }, ai.title) : null,
+      ...scamBody(guide, ai && ai.signals, ai && ai.impersonating, tags),
       f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
       f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
       h('button', { class: 'ghost', onclick: dismiss }, 'Keep listening')));
@@ -1147,6 +1206,23 @@ function installCard() {
 // The message bot: forward any message from any app, get the answer there, and a warning flashes in this app.
 async function loadWatch() {
   try { S.watch = await call('watch:status', {}, 3000); } catch { S.watch = null; } // null: this server has no Watch service
+}
+async function loadSenders() {
+  try { S.senders = (await call('watch:senders', {}, 3000)).senders; } catch { S.senders = null; }
+}
+
+// Who has been flagged for sending this account scam messages: a name or username, a count and the kind of scam. Never the message.
+function sendersCard() {
+  const list = S.senders || [];
+  return h('div', null,
+    list.length ? h('div', null, ...list.map((s) => h('div', { class: 'approw' },
+      h('div', { class: 'apphead' },
+        h('div', { class: 'appname' }, h('b', null, s.handle || s.name || 'Unknown sender'),
+          h('span', { class: 'muted' }, `${s.name && s.handle ? `${s.name} · ` : ''}${SOURCE_APP[s.channel] || s.channel} · flagged ${s.flags} time${s.flags === 1 ? '' : 's'}${s.lastTitle ? ` · ${s.lastTitle}` : ''}`)),
+        h('span', { class: s.maxLevel === 2 ? 'err' : 'muted' }, s.maxLevel === 2 ? 'Scam signs' : 'Asked for money')),
+      h('button', { class: 'ghost', onclick: async () => { try { await call('watch:forget', { id: s.id }); await loadSenders(); renderMain(); } catch (e) { toast(friendly(e)); } } }, 'Forget this sender'))))
+      : h('p', { class: 'muted' }, 'No one has been flagged yet.'),
+    h('p', { class: 'muted' }, "Vouch keeps only a name or username, a count and the kind of scam, never the message. Telegram hides the sender when someone turns off forwarding, and then Vouch can't track them."));
 }
 const APP_LOGOS = { telegram: ['telegram'], sms: ['imessage', 'googlemessages'], whatsapp: ['whatsapp'] };
 
@@ -1251,6 +1327,7 @@ function friendsView() {
       h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join'),
       h('button', { class: 'ghost', onclick: openScanner }, 'Scan a code')),
     h('h2', null, 'Connected apps'), appsCard(),
+    S.watch ? h('details', { class: 'more' }, h('summary', null, `Flagged senders${S.senders && S.senders.length ? ` (${S.senders.length})` : ''}`), sendersCard()) : null,
     h('details', { class: 'more' }, h('summary', null, 'Share a message from any app'), shareCard()),
     h('details', { class: 'more' }, h('summary', null, 'Notifications'), alertsCard()),
     h('details', { class: 'more' }, h('summary', null, 'Privacy'),
@@ -1420,9 +1497,29 @@ function overlayFor(item) {
 }
 
 // Shown the instant a risky message is pasted or shared.
-function scamOverlay({ tags, institution, guide: given, source }) {
+// "From @bob (Bob Smith). Vouch has flagged them 3 times." Who is behind a message, as far as the app it came through says.
+function senderLine(s, repeat) {
+  if (!s) return null;
+  if (s.hidden) return "The sender hid who they are when forwarding, so Vouch can't track them.";
+  const who = [s.handle, s.name && s.handle ? `(${s.name})` : s.name].filter(Boolean).join(' ') || 'an unknown sender';
+  return `From ${who}.${s.count > 1 ? ` Vouch has flagged them ${s.count} times.` : ''}${repeat ? ' They were flagged for a scam before.' : ''}`;
+}
+
+// The warning body: what it is, who it claims to be, what stood out, what to do. From the AI when it has read the message,
+// otherwise from the instant on-phone rules.
+function scamBody(g, signals, impersonating, tags) {
+  return [
+    h('p', { class: 'big' }, g ? g.why : 'Do not send anything yet.'),
+    impersonating ? h('p', { class: 'claims' }, `It claims to be: ${impersonating}`) : null,
+    signals && signals.length ? h('div', { class: 'flagbar' }, ...signals.map((s) => h('span', { class: 'chip' }, s))) : null,
+    g ? h('ol', { class: 'steps big' }, (g.steps || []).map((s) => h('li', null, s)))
+      : (tags && tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
+  ];
+}
+
+function scamOverlay({ tags, institution, guide: given, source, sender, ai, aid, repeat, soft, signals, impersonating }) {
   const F = S.form;
-  const guide = given || classify(F.text);
+  const guide = ai || given || classify(F.text);
   const friend = friendById(F.friendId) || S.friends[0];
   // An impostor "institution" isn't someone you can pair with, so the advice is to hang up and call a number you trust.
   // A message that arrived through a bot isn't in the form, so there we open the Check screen instead of sending it.
@@ -1432,16 +1529,14 @@ function scamOverlay({ tags, institution, guide: given, source }) {
     if (source) return;
     try { await submitCheck(); renderMain(); document.getElementById('result')?.scrollIntoView({ block: 'start' }); } catch (e) { toast(friendly(e)); }
   } }, source ? `Check it with ${friend.name}'s phone` : `Ask ${friend.name}'s phone now`) : null;
-  return h('div', { class: 'overlay alert', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
+  return h('div', { class: `overlay alert${soft ? ' soft' : ''}`, role: 'alertdialog', 'aria-modal': 'true', 'aria-label': 'This message looks like a scam' },
     h('div', { class: 'inner' },
-      source ? h('p', { class: 'muted' }, `Sent to Vouch from ${SOURCE_NAMES[source] || 'a message'}`) : null,
-      h('div', { class: 'stop' }, guide ? guide.title : 'This looks like a scam.'),
-      h('p', { class: 'big' }, guide ? guide.why : 'Do not send anything yet.'),
-      guide ? h('ol', { class: 'steps big' }, guide.steps.map((s) => h('li', null, s)))
-        : (tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
+      source ? h('p', { class: 'muted', id: aid ? `s-${aid}` : undefined }, `Sent to Vouch from ${SOURCE_NAMES[source] || 'a message'}${ai ? ' · read by AI' : ''}`) : null,
+      h('div', { class: 'stop', id: aid ? `t-${aid}` : undefined }, guide ? guide.title : 'This looks like a scam.'),
+      sender ? h('p', { class: 'sender' }, senderLine(sender, repeat)) : null,
+      h('div', { id: aid ? `g-${aid}` : undefined }, ...scamBody(guide, (ai && ai.signals) || signals, (ai && ai.impersonating) || impersonating, tags)),
       go, h('button', { class: 'ghost', onclick: dismiss }, 'Not now')));
 }
-
 // Full-screen result of the live-call word check.
 function callOverlay({ ok, name }) {
   const headline = ok ? `That's really ${name}.` : `NO MATCH. This is NOT ${name}.`;
@@ -1587,6 +1682,19 @@ function confirmOverlay(p) {
 
 function wireEvents() {
   on('verify:update', (u) => { onUpdate(u); });
+  // The AI finished reading a message after its warning was already shown: fill its view into that same warning.
+  on('scam:ai', (m) => {
+    if (!m || !m.id || !m.ai) return;
+    const item = S.queue.find((q) => q.data && q.data.aid === m.id);
+    if (item) { item.data.ai = m.ai; item.data.guide = { title: m.ai.title, why: m.ai.why, steps: m.ai.steps }; }
+    const title = document.getElementById(`t-${m.id}`);
+    if (title) title.textContent = m.ai.title;
+    const src = document.getElementById(`s-${m.id}`);
+    if (src && item) src.textContent = `Sent to Vouch from ${SOURCE_NAMES[item.data.source] || 'a message'} · read by AI`;
+    const body = document.getElementById(`g-${m.id}`);
+    if (body) body.replaceChildren(...scamBody({ title: m.ai.title, why: m.ai.why, steps: m.ai.steps }, m.ai.signals, m.ai.impersonating, []));
+  });
+  // A friend (or anyone paired) is asking this account to confirm that it sent a request.
   on('verify:prompt', (p) => {
     if (S.queue.some((q) => q.kind === 'prompt' && q.data.requestId === p.requestId)) return;
     S.queue.push({ kind: 'prompt', data: p });
@@ -1613,8 +1721,9 @@ function wireEvents() {
   on('scam:alert', (a) => {
     if (!a) return;
     const id = `bot-${a.ts || Date.now()}`;
-    const guide = { title: a.title, why: a.why, steps: a.steps || [] };
-    S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source } });
+    const guide = a.ai ? { title: a.ai.title, why: a.ai.why, steps: a.ai.steps } : { title: a.title, why: a.why, steps: a.steps || [] };
+    S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source, sender: a.sender, ai: a.ai, aid: a.id, repeat: a.repeat, soft: a.level !== 2, signals: a.signals, impersonating: a.impersonating } });
+    if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends') renderMain(); });
     raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);
     attention(a.level === 2 ? `Warning. ${a.title}. Do not send anything.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
     notify(a.level === 2 ? 'Vouch: this message looks like a scam' : 'Vouch: this message asks for money', a.title, `bot-${a.source}`);

@@ -95,3 +95,23 @@ test('highlight marks the words that raised the alarm and keeps the text intact'
   assert.deepEqual(highlight(''), []);
   assert.doesNotThrow(() => highlight(undefined));
 });
+
+test('real-world money asks are caught, and the amount is read however it is written', () => {
+  const cases = [
+    ['hey I need 1000 dollars', '1000'], ['bro i need $1000', '1000'], ['yo can you send me 1000', '1000'], ['need 1k asap', '1000'],
+    ['can you lend me $1,000 until friday', '1000'], ['I need to borrow a thousand dollars', '1000'], ['hey can u venmo me 1000?', '1000'],
+    ['I am short on rent, could you help me out with 1000', '1000'], ['can you spot me five hundred', '500'], ['i need 2.5k for the deposit', '2500'],
+    ['my card got declined, can you cover me $1000', '1000'],
+  ];
+  for (const [text, amount] of cases) {
+    const s = suggest(text);
+    assert.equal(s.ask, true, `ask: ${text}`);
+    assert.equal(s.amount, amount, `amount: ${text}`);
+    assert.ok(['Someone is asking you for money', 'Money request with pressure'].includes(classify(text)?.title), text);
+  }
+});
+
+test('ordinary numbers and plans are not money asks', () => {
+  for (const text of ['send me the 2024 photos', 'I need to be there at 530', 'the game was 100% fun', 'can you send me your address', 'we are 1000 miles away', 'lets get dinner'])
+    assert.equal(suggest(text).ask, false, text);
+});

@@ -48,13 +48,55 @@ export function claimsInstitution(text) {
  */
 export function asksForMoney(text) {
   const t = norm(text);
-  const verb = '(?:need|needs|send|sent|give|lend|loan|borrow|wire|transfer|pay|buy|cover|venmo|zelle|paypal|cash ?app|get me|help me with)';
-  const money = '(?:\\bmoney\\b|\\bcash\\b|\\bdollars?\\b|\\bbucks\\b|\\bfunds\\b|\\bpayment\\b|\\bfees?\\b|\\bbail\\b|\\bdeposit\\b|\\bcards?\\b|\\$\\s?\\d)';
-  return new RegExp(`\\b${verb}\\b[^.?!\\n]{0,60}${money}`).test(t)
+  return new RegExp(`\\b${VERB}\\b[^.?!\\n]{0,60}${MONEY}`).test(t)
+    || new RegExp(`\\b${VERB}\\b[^.?!\\n]{0,40}${SPELLED}`).test(t)
+    || bareFigure(t) !== ''
     || /\$\s?\d[\d,]*(\.\d{1,2})?[^.?!\n]{0,40}\b(need|please|asap|today|now|right away)\b/.test(t)
     || /\b\d[\d,]*\s?(dollars?|bucks|usd)\b/.test(t);
 }
 
+// Words that ask for money, what counts as a money word, and how amounts are spoken ("1k", "a thousand", "five hundred").
+const VERB = '(?:need|needs|send|sent|give|lend|loan|borrow|wire|transfer|pay|buy|cover|venmo|zelle|paypal|cash ?app|get me|help me with|help me out with|spot me|front me|hook me up with|chip in)';
+const MONEY = '(?:\\bmoney\\b|\\bcash\\b|\\bdollars?\\b|\\bbucks\\b|\\bgrand\\b|\\bfunds\\b|\\bpayment\\b|\\bfees?\\b|\\bbail\\b|\\bdeposit\\b|\\bcards?\\b|\\$\\s?\\d)';
+const SPELLED = '(?:\\b\\d+(?:\\.\\d+)?\\s?k\\b|\\b(?:a|one|two|three|four|five|six|seven|eight|nine|ten|twenty|fifty)\\s+(?:hundred|thousand|grand)\\b|\\ba\\s+(?:grand|thousand|hundred)\\b)';
+const NOT_MONEY_BEFORE = new Set(['at', 'by', 'around', 'before', 'after', 'until', 'till', 'about', 'near', 'in', 'of', 'from', 'room', 'flight', 'gate', 'number', 'no', 'apt', 'unit', 'page', 'exit', 'channel', 'track']);
+const MONEYISH_AFTER = new Set(['dollars', 'bucks', 'usd', 'cash', 'euros', 'pounds']);
+
+// A bare number (1000, 2,500) right after a word that asks ("send me 1000"), skipping times, years of things, percentages and
+// counts of things ("2024 photos", "530", "100%"). Done in code, not regex lookbehinds, so older iPhones can run it.
+function bareFigure(t) {
+  const re = new RegExp(`\\b${VERB}\\b([^.?!\\n]{0,40})`, 'g');
+  let m;
+  while ((m = re.exec(t))) {
+    const tail = m[1];
+    for (const n of tail.matchAll(/\b\d[\d,]{2,}\b/g)) {
+      const before = tail.slice(0, n.index).trim().split(/\s+/).pop() || '';
+      const rest = tail.slice(n.index + n[0].length);
+      const after = (rest.match(/^\s*([a-z]+)/) || [])[1] || '';
+      if (/^\s?%/.test(rest) || /^:/.test(rest) || NOT_MONEY_BEFORE.has(before)) continue; // a percentage, a clock time, "at 530"
+      if (after.length > 3 && after.endsWith('s') && !MONEYISH_AFTER.has(after)) continue; // "2024 photos", "1000 words"
+      return n[0].replace(/,/g, '');
+    }
+  }
+  return '';
+}
+
+const WORD_NUM = { a: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twenty: 20, fifty: 50 };
+const WORD_UNIT = { hundred: 100, thousand: 1000, grand: 1000 };
+
+// The amount in dollars, as text, however it was written: $60, 60 dollars, 1k, 1,000, a thousand dollars, two hundred, or a bare
+// number right after a word that asks ("send me 1000"). Empty when there is none; it never guesses from a lone number.
+function amountFrom(t) {
+  let m = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/.exec(t) || /(\d{1,6})\s*(?:dollars|bucks|usd)/.exec(t);
+  if (m) return m[1].replace(/,/g, '') + (m[2] !== undefined ? `.${m[2]}` : '');
+  m = /\b(\d+(?:\.\d+)?)\s?k\b/.exec(t);
+  if (m) return String(Math.round(parseFloat(m[1]) * 1000));
+  m = /\b(a|one|two|three|four|five|six|seven|eight|nine|ten|twenty|fifty)\s+(hundred|thousand|grand)\b/.exec(t);
+  if (m) return String(WORD_NUM[m[1]] * WORD_UNIT[m[2]]);
+  m = /\ba\s+(grand|thousand|hundred)\b/.exec(t);
+  if (m) return String(WORD_UNIT[m[1]]);
+  return bareFigure(t);
+}
 /**
  * Quick read of a message: warning tags, the amount (in dollars, as text), the likely payment method, whether it asks for money.
  * @param {string} text
@@ -63,9 +105,7 @@ export function asksForMoney(text) {
 export function suggest(text) {
   const t = norm(text);
   const tags = RULES.filter(([, res]) => res.some((re) => re.test(t))).map(([tag]) => tag);
-  const m = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/.exec(t) || /(\d{1,6})\s*(?:dollars|bucks|usd)/.exec(t);
-  let amount = '';
-  if (m) amount = m[1].replace(/,/g, '') + (m[2] !== undefined ? `.${m[2]}` : '');
+  const amount = amountFrom(t);
   let method = null;
   if (tags.includes('GIFT_CARD')) method = 'gift_card';
   else if (tags.includes('WIRE')) method = 'wire';
@@ -137,9 +177,9 @@ const GUIDE = [
     why: 'Rushing you and keeping it secret are how scams stop you from checking.',
     steps: ['Slow down. Nothing real needs money in the next five minutes.', 'Check who it is with their own phone in Vouch.', 'Do not keep it secret: tell someone you trust.'] },
   { id: 'ask', when: (s) => s.ask,
-    title: 'Asks for money',
-    why: 'You cannot tell who is really behind a message or voice.',
-    steps: ['Check that it is really them before you send anything.', 'Use Vouch to ask their own phone.'] },
+    title: 'Someone is asking you for money',
+    why: 'A message can come from a hacked account or a cloned voice, even when it looks like your friend.',
+    steps: ["Don't send anything yet.", 'Check with their own phone in Vouch. It takes one tap.', 'Or call them on a number you already know.'] },
 ];
 
 /**
