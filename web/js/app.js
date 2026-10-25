@@ -92,7 +92,7 @@ const CHANNEL_LOGOS = {
 function logos(names, size) {
   if (!names || !names.length) return null;
   return h('span', { class: `logos${size ? ` ${size}` : ''}`, 'aria-hidden': 'true' },
-    names.map((n) => h('span', { class: 'logo', style: `--src:url(img/brands/${n}.svg)` })));
+    names.map((n) => h('span', { class: 'logo', style: `--src:url(/img/brands/${n}.svg)`})));
 }
 
 let choiceSeq = 0;
@@ -440,7 +440,7 @@ const topbar = (title) => h('div', { class: 'topbar' }, h('button', { class: 'gh
 function homeView() {
   const n = S.friends.length;
   const card = (tab, icon, title, sub, cls = '') => h('button', { class: `homecard ${cls}`, onclick: () => setTab(tab) },
-    h('span', { class: 'ico', 'aria-hidden': 'true', style: `--src:url(img/ui/${icon}.svg)` }),
+    h('span', { class: 'ico', 'aria-hidden': 'true', style: `--src:url(/img/ui/${icon}.svg)`}),
     h('span', { class: 'hc-text' }, h('span', { class: 'hc-title' }, title), h('span', { class: 'hc-sub' }, sub)));
   const linked = (S.watch && S.watch.linked) || [];
   return h('section', null, h('h2', { class: 'hello' }, `Hi ${S.me.name}`),
@@ -586,6 +586,7 @@ function checkView() {
   // "it's Varsha"), and otherwise the person picks.
   if (F.friendId && !friendById(F.friendId)) F.friendId = '';
   if (S.friends.length === 1) F.friendId = S.friends[0].id;
+  const readKey = () => `${F.text}|${F.image ? F.image.length : 0}`; // declared before paintFlags() first runs (it was a "before initialization" crash)
 
   const flags = h('div', { 'aria-live': 'polite' });
   const paintFlags = () => {
@@ -624,7 +625,6 @@ function checkView() {
   // The instant AI read: a moment after the text stops changing, ask the server's AI what it makes of it and show it right here.
   // The on-phone guide above has already answered; this adds the AI's view when there is one.
   const aiLine = h('div', { 'aria-live': 'polite' });
-  const readKey = () => `${F.text}|${F.image ? F.image.length : 0}`;
   let readTimer = null; let readSeq = 0;
   function scheduleRead() {
     clearTimeout(readTimer);
