@@ -266,3 +266,23 @@ test('a picture the AI thinks was computer-generated raises a hedged check, neve
   const maybe = createCore({ analyze: rules, infer: async () => ({ ...calm, image: { kind: 'Photo', aiGenerated: 'possible', risk: 'none', concerns: [] } }) });
   assert.equal((await maybe.assess({ text: '', imageBase64: 'iVBOR' })).level, 0, 'only "likely" counts; "possible" is too weak to bother anyone');
 });
+
+test('the red lines that stop a call also stop a message, and a calm message is untouched', async () => {
+  const core = createCore({ analyze: rules, infer: async () => null });
+  for (const text of ['Your account is compromised. Please read me the six digit code we just texted you.', 'To protect your money, move your savings to a safe account today.', 'Install AnyDesk so I can fix your computer.']) {
+    const a = await core.assess({ text });
+    assert.equal(a.level, 2, text);
+    assert.equal(core.quick(text).level, 2, `and instantly: ${text}`);
+  }
+  assert.equal((await core.assess({ text: 'Never share this code with anyone. Your code is 482913.' })).level, 0, 'a genuine warning not to share a code is left alone');
+  assert.equal((await core.assess({ text: 'dinner at 7 on Friday?' })).level, 0);
+});
+
+test('a video is handed to the AI and judged like a picture; an unsupported or empty one is ignored', async () => {
+  let sent = null;
+  const fetchImpl = async (_u, o) => { sent = JSON.parse(o.body); return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({ moneyRequest: false, amountUSD: null, paymentMethod: 'unknown', risk: 'low', scamType: 'AI-made video', why: 'The face and lips look synthetic.', steps: [], signals: [], impersonating: '', tags: [], intent: 'message', reply: '', links: [], image: { present: true, kind: 'Video', aiGenerated: 'likely', risk: 'low', concerns: [] }, heard: '' }) }] } }] }) }; };
+  const r = await inferScam({ text: '', videoBase64: 'A'.repeat(200), videoMime: 'video/mp4' }, { fetchImpl, apiKey: 'k' });
+  assert.ok(r && r.image && r.image.aiGenerated === 'likely' && r.image.kind === 'Video', 'read as a video, flagged as likely AI-made');
+  assert.ok(JSON.stringify(sent).includes('video/mp4'), 'the video went to the AI');
+  assert.equal(await inferScam({ text: '', videoBase64: 'A'.repeat(200), videoMime: 'application/x-evil' }, { fetchImpl, apiKey: 'k' }), null, 'not a video type: nothing to read');
+});

@@ -309,3 +309,17 @@ test('a flagged sender whose profile picture looks AI-generated gets a hedged hi
   assert.equal(photoCalls, 1, 'looked once, remembered for the day');
   assert.equal(said.filter((s) => /profile picture/.test(s)).length, 2, 'but still said each time it matters');
 });
+
+test('starting the bot sets its profile and a menu button that opens Vouch inside Telegram, but only for a real https address', async () => {
+  const seen = [];
+  const mk = (vouchUrl) => createBot({ token: 'T', vouchUrl, fetchImpl: async (url, init) => { seen.push({ m: String(url).split('/').pop(), body: init && init.body ? JSON.parse(init.body) : {} }); return { json: async () => ({ ok: false, description: 'stop' }) }; } });
+  const secure = mk('https://vouch.example');
+  secure.start(); await new Promise((r) => setTimeout(r, 40)); secure.stop();
+  const menu = seen.find((s) => s.m === 'setChatMenuButton');
+  assert.deepEqual(menu.body.menu_button, { type: 'web_app', text: 'Open Vouch', web_app: { url: 'https://vouch.example' } });
+  assert.ok(seen.some((s) => s.m === 'setMyDescription') && seen.some((s) => s.m === 'setMyShortDescription'), 'and it introduces itself');
+  seen.length = 0;
+  const plain = mk('http://192.168.1.5:3000');
+  plain.start(); await new Promise((r) => setTimeout(r, 40)); plain.stop();
+  assert.ok(!seen.some((s) => s.m === 'setChatMenuButton'), 'no mini-app button for a non-https address');
+});

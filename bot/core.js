@@ -6,7 +6,7 @@
 //            what raised concern? what to do?). The rules still run, and the final level is the higher of the two:
 //            the AI can raise a warning and never lowers one. It only WARNS; it never calls anything safe.
 import { analyzeSafe } from '../server/src/analyze.js';
-import { suggest, riskyEnough, classify, TAG_LABELS } from '../web/js/lib/scan.js';
+import { suggest, riskyEnough, classify, TAG_LABELS, callInit, callStep } from '../web/js/lib/scan.js';
 import { inferScam } from './infer.js';
 import { extractLinks, linkFloor } from './links.js';
 
@@ -70,9 +70,9 @@ export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl 
    * The full read. The AI decides what the message is; the rules are the floor under it.
    * @param {{text?: string, imageBase64?: string, context?: string[]}} input
    */
-  async function assess({ text = '', imageBase64, context = [], audioBase64 } = {}) {
+  async function assess({ text = '', imageBase64, context = [], audioBase64, videoBase64, videoMime } = {}) {
     let ai = null;
-    try { ai = await infer({ text, imageBase64, context, audioBase64 }); } catch { ai = null; }
+    try { ai = await infer({ text, imageBase64, context, audioBase64, videoBase64, videoMime }); } catch { ai = null; }
     if (ai) ai = { links: [], image: null, signals: [], steps: [], tags: [], heard: '', ...ai }; // tolerate a result that leaves a field out
     // For a call, the words are what the AI just heard on top of what was already known; the rules read all of them.
     const words = `${text} ${(ai && ai.heard) || ''}`.trim();
@@ -153,10 +153,22 @@ export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl 
 // The payment risk of the method the AI inferred, so a risky method lifts the level just as it does in the rules.
 const LINK_GUIDE = { id: 'link', title: 'Suspicious link', why: 'This link uses a trick that real companies do not use.', steps: ['Do not tap or open the link.', "Go to the company's real website or app yourself.", 'Delete the message.'] };
 // The most obvious link tricks (a raw IP address, a user@ in the address, lookalike characters, a shortener) lift the level even with no AI.
+// The same red lines the call engine stops a call for (read out a code, move your money to a "safe" account, install remote access,
+// hand over a PIN, a courier collecting cash, pay in gift cards) are a stop in a MESSAGE too. A single look at the words is enough: only
+// the red lines can reach a stop in one look; the softer signals need time to build up, which a single message does not give them.
+const RED_GUIDE = { id: 'redline', title: 'Asks for a code, your money or control of your device', why: 'Real banks and companies never ask you to read out a code, move your money to a "safe" account, share your screen, or pay in gift cards.',
+  steps: ['Do not give the code, send money or install anything.', 'Do not reply to them.', 'Call the company yourself on the number on your card or their official website.'] };
+function redLine(text) {
+  const st = callInit();
+  callStep(st, text, 0);
+  return st.level >= 2;
+}
 function withLinkFloor(text, level, guide) {
   const floor = linkFloor(extractLinks(text));
-  if (floor === 'none') return { level, guide };
-  return { level: Math.max(level, floor === 'high' ? 2 : 1), guide: !guide || guide.id === 'ask' ? LINK_GUIDE : guide };
+  let lvl = level; let g = guide;
+  if (floor !== 'none') { lvl = Math.max(lvl, floor === 'high' ? 2 : 1); g = !g || g.id === 'ask' ? LINK_GUIDE : g; }
+  if (redLine(text)) { lvl = 2; if (!g || g.id === 'ask') g = RED_GUIDE; }
+  return { level: lvl, guide: g };
 }
 
 const METHOD_RISK_OF = { gift_card: 'high', wire: 'high', crypto: 'high', venmo_cashapp_zelle: 'medium' };

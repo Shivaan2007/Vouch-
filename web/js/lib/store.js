@@ -139,6 +139,12 @@ export async function clearRemoved(signPub) {
   if (list.includes(signPub)) await run('kv', 'readwrite', 'put', list.filter((s) => s !== signPub), 'removed');
 }
 
+// The last call's recording, only if the person switched recording on. It lives in this phone's own storage (never sent anywhere), only the
+// most recent call is kept, and it is gone when the person deletes it or erases everything.
+export function saveLastCall(rec) { return run('kv', 'readwrite', 'put', rec, 'lastcall'); }
+export async function getLastCall() { return (await run('kv', 'readonly', 'get', 'lastcall')) || null; }
+export function deleteLastCall() { return run('kv', 'readwrite', 'delete', 'lastcall'); }
+
 /** Wipe identity, keys and friends. */
 export async function resetAll() {
   await run('kv', 'readwrite', 'clear');

@@ -42,7 +42,7 @@ export function createBot({
   // The channel-neutral engine (shared with the SMS/WhatsApp door): assess text, then word the answer.
   const core = createCore({ analyze, infer, vouchUrl });
   const memory = createContext(); // the last few messages per chat and sender, in memory only, so the AI can follow a scam as it unfolds
-  const assess = (text, context, imageBase64) => core.assess({ text, context, imageBase64 });
+  const assess = (text, context, imageBase64, video) => core.assess({ text, context, imageBase64, ...(video || {}) });
 
   // A photo or image file sent to the bot: pick the biggest size, download it from Telegram, and hand the bytes to the AI.
   const MAX_IMAGE = 3_000_000;
@@ -62,6 +62,28 @@ export function createBot({
       if (!res || !res.ok) return undefined;
       const buf = Buffer.from(await res.arrayBuffer());
       return buf.length <= MAX_IMAGE ? buf.toString('base64') : undefined;
+    } catch { return undefined; }
+  }
+
+  // A short video (or video note, GIF, video file) in the chat: download it (Telegram allows bots up to 20 MB), let the AI judge it for
+  // AI-generation and for anyone asking for money or codes, then forget it. Longer or bigger clips are skipped.
+  const MAX_VIDEO = 14_000_000;
+  function videoRefOf(msg) {
+    const v = msg.video || msg.video_note || msg.animation || (msg.document && /^video\//.test(msg.document.mime_type || '') ? msg.document : null);
+    if (!v) return null;
+    let mime = v.mime_type || 'video/mp4'; if (!/^video\/(mp4|webm|quicktime|mpeg)$/.test(mime)) mime = 'video/mp4';
+    return { file_id: v.file_id, size: v.file_size, mime };
+  }
+  async function fetchVideo(ref) {
+    try {
+      if (ref.size && ref.size > MAX_VIDEO) return undefined;
+      const f = await api('getFile', { file_id: ref.file_id });
+      const path = f && f.result && f.result.file_path;
+      if (!path) return undefined;
+      const res = await fetchImpl(`https://api.telegram.org/file/bot${token}/${path}`);
+      if (!res || !res.ok) return undefined;
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length <= MAX_VIDEO ? buf.toString('base64') : undefined;
     } catch { return undefined; }
   }
 
@@ -268,6 +290,7 @@ export function createBot({
     }
     if (link && /^\/unlink\b/.test(cmd)) { link.unbindChat('telegram', chatId); await say(chatId, 'Done. This chat no longer warns anyone in Vouch.'); return; }
     if (/^\/(start|help)\b/.test(cmd)) { await say(chatId, INTRO); return; }
+    if (/^\/(?:log|today)\b/.test(cmd)) { await say(chatId, digestFor(chatId)); return; }
     if (/^\/guardian\b/.test(cmd)) {
       guardianChats.add(String(chatId));
       await say(chatId, 'Done. This chat will get a heads-up (never the message itself) when someone I watch gets a likely scam.');
@@ -304,16 +327,19 @@ export function createBot({
       text = heard; spoken = true;
     }
     const imageRef = imageRefOf(msg);
-    if (!text.trim() && !imageRef) {
+    const videoRef = videoRefOf(msg);
+    if (!text.trim() && !imageRef && !videoRef) {
       if (isPrivate) await say(chatId, 'Send or forward me a message or a screenshot and I will check it.');
       return;
     }
     const imageBase64 = imageRef ? await fetchImage(imageRef) : undefined;
     if (imageRef && !imageBase64 && !text.trim()) { if (isPrivate) await say(chatId, "I couldn't open that picture. Try sending it as a photo, under 3 MB."); return; }
+    const videoBase64 = videoRef ? await fetchVideo(videoRef) : undefined;
+    if (videoRef && !videoBase64 && !text.trim() && !imageBase64) { if (isPrivate) await say(chatId, "That video is too big for me to open (up to about 14 MB). Send a shorter clip, or a screenshot."); return; }
     const sender = senderOf(msg, isPrivate);
     // "It's fine" taught me this sender is okay: stay quiet about them for a while. (Still counted as scanned.)
     if (business && sender && (muted.get(`${chatId}:${sender.id}`) || 0) > Date.now()) { log_(chatId).scanned += 1; return; }
-    if (business) log_(chatId).scanned += 1;
+    if (!(isPrivate && !sender && DIGEST.test(text) && text.length < 80)) log_(chatId).scanned += 1; // asking what was caught is not itself a message that was checked
     const users = link ? link.lookup('telegram', chatId) : [];
     const q = core.quick(text);
     const kb = business && q.level >= 1 ? actionKeyboard(chatId, sender) : {};
@@ -357,10 +383,10 @@ export function createBot({
     //    replace the generic ones in the same Telegram message and are filled into the warning already on the app; the app is
     //    alerted again only if the AI found it worse than the instant read did.
     const memKey = `${chatId}:${sender && !sender.hidden ? sender.id : 'me'}`;
-    const full = await assess(text, memory.get(memKey), imageBase64);
+    const full = await assess(text, memory.get(memKey), imageBase64, videoBase64 ? { videoBase64, videoMime: videoRef.mime } : undefined);
     memory.add(memKey, text);
     if (info && info.repeatScam && full.level < 2) full.level = 2;
-    if (business && full.level >= 1) { // for "what did you catch today?": the level, the kind of scam and who, never the text
+    if (full.level >= 1) { // for "what did you catch today?": the level, the kind of scam and who, never the text
       const d = log_(chatId);
       d.events = fresh(d.events).slice(-49);
       d.events.push({ at: Date.now(), level: full.level, title: (full.guide && full.guide.title) || 'A message asking for money', who: view ? (view.handle || view.name || '') : '' });
@@ -395,9 +421,14 @@ export function createBot({
     // The menu next to the message box lists what the bot can do, so nobody has to remember a command.
     api('setMyCommands', { commands: [
       { command: 'start', description: 'What I do' }, { command: 'flag', description: 'Reply to a message to flag its sender' },
-      { command: 'voice', description: 'Read my answers out loud' }, { command: 'who', description: 'Who this chat warns' },
+      { command: 'voice', description: 'Read my answers out loud' }, { command: 'who', description: 'Who this chat warns' }, { command: 'log', description: 'What I caught today' },
       { command: 'unlink', description: 'Stop warning the Vouch app' }, { command: 'guardian', description: 'Family chat: get heads-ups' },
     ] }).catch(() => {});
+    // Telegram-native: the bot introduces itself, and its menu button opens Vouch INSIDE Telegram (a mini app), so checking a message,
+    // the code word and the flagged senders are one tap away without leaving the chat. Only a real https address can be a mini app.
+    api('setMyDescription', { description: "Vouch Watch checks messages, links, screenshots, pictures and voice notes for scams, in plain words. Send or forward me anything suspicious, or add me to a group chat and I'll watch it. I can warn you; only a person you trust, on their own phone, can clear a request. Nothing you send is saved." }).catch(() => {});
+    api('setMyShortDescription', { short_description: 'Scam checker for messages, links, pictures and voice notes. I warn; only a person can clear.' }).catch(() => {});
+    if (/^https:\/\//.test(vouchUrl)) api('setChatMenuButton', { menu_button: { type: 'web_app', text: 'Open Vouch', web_app: { url: vouchUrl } } }).catch(() => {});
     let offset = 0;
     while (running) {
       try {

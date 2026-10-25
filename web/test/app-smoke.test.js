@@ -17,6 +17,8 @@ const clients = [];
 let url = '';
 const dom = installFakeDom({ makeSocket: () => { const s = ioClient(url, { transports: ['websocket'], reconnection: false }); clients.push(s); return s; } });
 const { appEl, loc, wait, text, btn, find, findAll } = dom;
+// The settings button in the header has no text, only an icon and an accessible name.
+const displayBtn = () => find(appEl, (n) => n.tag === 'button' && n.attrs && n.attrs['aria-label'] === 'Display and reading settings');
 const go = async (label) => { const home = btn('Home'); if (home) { await home.fire('click'); await wait(30); } await btn(label).fire('click'); };
 const SHARED = "new number! stuck at the store, buy $200 in Apple gift cards right now, don't tell mom";
 
@@ -173,7 +175,7 @@ test('a bad code from the scanner is explained, not silent', async () => {
 
 test('Display: one findable control sets text size, colours, reading mode and spoken warnings, and remembers them', async () => {
   await go('My people'); // any screen: the control is in the header on all of them
-  const aa = btn('Aa');
+  const aa = displayBtn();
   assert.ok(aa, 'the Aa button is in the header');
   await aa.fire('click');
   await wait(60);

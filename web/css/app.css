@@ -124,7 +124,6 @@ button.bigbtn { min-height: 4.25rem; font-size: 1.15rem; }
 .topbar { display: flex; align-items: center; gap: 0.8rem; margin: 0.6rem 0 0.2rem; }
 .topbar h2 { margin: 0; font-size: 1.6rem; }
 button.back { width: auto; flex: none; margin: 0; min-height: 3rem; padding: 0.4rem 1rem 0.4rem 0.8rem; border-radius: 99px; font-size: 1.05rem; }
-button.back::before { content: "\2039"; font-size: 1.7rem; line-height: 1; margin-right: 0.35rem; vertical-align: -0.1em; }
 
 /* tab bar (no longer used on the main screens) */
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4; display: flex; background: var(--bg); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom, 0px); }
@@ -302,8 +301,15 @@ button:active:not(:disabled) { transform: scale(0.98); }
 .tick { width: 4.5rem; height: 4.5rem; display: block; margin: 0.4rem 0; }
 .tick path { fill: none; stroke: currentColor; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 60; stroke-dashoffset: 60; animation: draw 0.5s 0.15s ease-out forwards; }
 
+/* "Reduce motion" on a phone is often switched on by default (many Androids), so it must not make the app feel dead. It removes
+   MOVEMENT (sliding, popping, shaking, looping) and keeps gentle fades, which is what the setting is for. The app's own "Less motion"
+   switch (html.calm) turns everything off. */
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  *, *::before, *::after { animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+  main > section, .overlay, .dock, .notice, .card, .homecard, .hero, .guide, .verdict, .tgcard { animation: fadein 0.35s ease-out both !important; }
+  .overlay.alert .stop, .verdict.red, .chipbtn[aria-pressed="true"], .riskbadge.r2, .bigword.fresh { animation: none !important; }
+  .wave.idle i, .livedot { animation: none !important; }
   .tick path { stroke-dashoffset: 0; }
 }
 
@@ -342,9 +348,6 @@ html.size-4 { font-size: 200%; }
 :root.theme-hc .overlay.alert button { background: #000000; color: #ffffff; }
 
 /* Status is a word AND a shape, so it still reads in grey or with colour-blindness. */
-.riskbadge.r0::before { content: "\2713\00a0"; } .riskbadge.r1::before { content: "\25B2\00a0"; } .riskbadge.r2::before { content: "\25A0\00a0"; }
-.verdict.green h3::before { content: "\2713\00a0"; } .verdict.amber h3::before { content: "\25B2\00a0"; } .verdict.red h3::before { content: "\25A0\00a0"; }
-.banner .bannerhead::before { content: "\25A0\00a0"; } .banner.soft .bannerhead::before { content: "\25B2\00a0"; }
 .chipbtn.wide { flex: 1 1 100%; }
 
 /* Reading mode: a calmer, more spacious page with bigger targets. */
@@ -359,8 +362,6 @@ html.calm *, html.calm *::before, html.calm *::after { animation: none !importan
 
 /* Warnings: a clear label above the title, and the danger banner kept slim and readable on every screen. */
 .kicker { font-size: 0.85rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin: 0.4rem 0 0; }
-.kicker::before { content: "\25A0\00a0"; }
-.overlay.alert.soft .kicker::before { content: "\25B2\00a0"; }
 .banner { padding: 0.7rem 1rem; margin: 0.5rem 0; }
 .banner p { margin: 0.2rem 0 0.1rem; font-size: 0.95rem; font-weight: 600; }
 .banner button { min-height: 2.9rem; margin-top: 0.45rem; font-size: 0.98rem; }
@@ -377,3 +378,255 @@ html.calm *, html.calm *::before, html.calm *::after { animation: none !importan
 .actions { background: var(--sheet); box-shadow: 0 -14px 14px -8px var(--sheet); }
 .livetop { display: flex; justify-content: space-between; align-items: baseline; gap: 0.8rem; text-align: left; }
 .calltime { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+/* The call assistant: one suggested sentence, clearly set apart. */
+.coach { text-align: left; border-radius: var(--radius-sm); padding: 0.8rem 1rem; margin: 0.6rem 0; background: rgba(255, 255, 255, 0.14); border-left: 6px solid currentColor; }
+.coach b { display: block; font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.2rem; }
+.coach p { margin: 0; font-weight: 700; font-size: 1.1rem; }
+.coach.good { background: rgba(134, 239, 172, 0.2); }
+.overlay.alert .coach { background: rgba(0, 0, 0, 0.08); }
+
+/* Telegram as a connected app: its logo in its own blue. */
+.applogo { flex: none; width: 2.6rem; height: 2.6rem; border-radius: 50%; display: grid; place-items: center; }
+.applogo.tg { background: #229ed9; }
+.applogo .logo { width: 1.5rem; height: 1.5rem; background: #ffffff; }
+.tgcard .apphead { display: flex; align-items: center; gap: 0.8rem; }
+.tgcard .appname { flex: 1; display: flex; flex-direction: column; }
+:root.theme-hc .applogo.tg { background: #ffffff; } :root.theme-hc .applogo.tg .logo { background: #000000; }
+.labbox { margin: 0.8rem 0; } .labbox p { margin: 0.3rem 0; }
+
+/* The Telegram card leads the Check screen: its own blue, one big way in, and a short history of what it caught. */
+.sectionlabel { font-weight: 700; color: var(--muted); margin: 1.2rem 0 0.2rem; font-size: 0.95rem; letter-spacing: 0.02em; }
+.tgcard { background: linear-gradient(160deg, #e8f5fd 0%, #f3f9fe 100%); border: 1px solid #bfe2f6; color: #0b1f2a; }
+.tgcard .muted { color: #3d5a6b; }
+.tgcard .ok { color: #0a5d36; font-weight: 700; }
+.btnlink.tgopen { display: block; text-align: center; background: #229ed9; color: #fff; text-decoration: none; font-weight: 700; font-size: 1.1rem; border-radius: var(--radius-sm); padding: 0.95rem 1rem; min-height: 3.4rem; margin: 0.7rem 0; }
+.tgfeed { margin-top: 0.8rem; border-top: 1px solid #bfe2f6; padding-top: 0.6rem; }
+.feedrow { display: flex; gap: 0.7rem; align-items: flex-start; padding: 0.45rem 0; }
+.feedrow > div { display: flex; flex-direction: column; }
+.feedmark { font-weight: 800; width: 1.2rem; text-align: center; margin-top: 0.1rem; }
+.feedrow.l2 .feedmark { color: #8f1d14; } .feedrow.l1 .feedmark { color: #663d00; }
+button.small { min-height: 2.6rem; font-size: 0.95rem; width: auto; padding: 0.4rem 1rem; }
+html.theme-dark .tgcard, :root:not(.theme-light):not(.theme-hc) .tgcard { }
+@media (prefers-color-scheme: dark) { :root:not(.theme-light) .tgcard { background: linear-gradient(160deg, #0e2a3a 0%, #0b1f2a 100%); border-color: #1d4a63; color: #e8f5fd; } :root:not(.theme-light) .tgcard .muted { color: #9cc3d8; } :root:not(.theme-light) .tgcard .ok { color: #86efac; } :root:not(.theme-light) .tgfeed { border-color: #1d4a63; } }
+:root.theme-dark .tgcard { background: linear-gradient(160deg, #0e2a3a 0%, #0b1f2a 100%); border-color: #1d4a63; color: #e8f5fd; } :root.theme-dark .tgcard .muted { color: #9cc3d8; } :root.theme-dark .tgcard .ok { color: #86efac; } :root.theme-dark .tgfeed { border-color: #1d4a63; }
+:root.theme-hc .tgcard { background: #000; border: 2px solid #fff; color: #fff; } :root.theme-hc .tgcard .muted, :root.theme-hc .tgcard .ok { color: #fff; } :root.theme-hc .btnlink.tgopen { background: #fff; color: #000; }
+
+/* ---------- the look: one brand colour, soft cards, real hierarchy ---------- */
+:root { --brand: #3730a3; --brand-2: #5b4bd6; --brand-soft: #eceafd; --tile-call: #dff5f1; --tile-call-ink: #0f6b5f; --tile-people: #fdf1d3; --tile-people-ink: #663d00; --shadow: 0 1px 2px rgba(15, 15, 16, 0.05), 0 8px 22px rgba(55, 48, 163, 0.08); --accent: #3730a3; --accent-ink: #ffffff; }
+@media (prefers-color-scheme: dark) { :root:not(.theme-light):not(.theme-hc) { --brand-soft: #25225a; --tile-call: #0f2f2b; --tile-call-ink: #7be0d0; --tile-people: #2a2007; --tile-people-ink: #fcd34d; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4); --accent: #8b83f5; --accent-ink: #0b0b0c; } }
+:root.theme-dark { --brand-soft: #25225a; --tile-call: #0f2f2b; --tile-call-ink: #7be0d0; --tile-people: #2a2007; --tile-people-ink: #fcd34d; --shadow: 0 1px 2px rgba(0, 0, 0, 0.4); --accent: #8b83f5; --accent-ink: #0b0b0c; }
+:root.theme-hc { --brand-soft: #000; --tile-call: #000; --tile-call-ink: #fff; --tile-people: #000; --tile-people-ink: #fff; --shadow: none; --accent: #ffffff; --accent-ink: #000000; }
+body { background: var(--bg); }
+.card { box-shadow: var(--shadow); border: 1px solid var(--line); }
+input, textarea { background: var(--bg); border: 1.5px solid var(--line); }
+input:focus, textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 4px rgba(91, 75, 214, 0.18); }
+button.ghost { background: var(--bg); border: 1.5px solid var(--line); }
+.brand img { box-shadow: 0 2px 8px rgba(55, 48, 163, 0.35); }
+
+.hero { display: flex; align-items: center; gap: 1rem; margin: 0.4rem 0 0.9rem; padding: 1.1rem 1.2rem; border-radius: var(--radius); color: #fff; background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%); box-shadow: 0 10px 26px rgba(55, 48, 163, 0.28); }
+.hero img { border-radius: 14px; background: rgba(255, 255, 255, 0.18); padding: 4px; flex: none; }
+.hero b { display: block; font-size: 1.25rem; letter-spacing: -0.01em; }
+.hero span { display: block; opacity: 0.92; font-size: 0.98rem; line-height: 1.35; }
+:root.theme-hc .hero { background: #000; border: 2px solid #fff; box-shadow: none; }
+
+.homecard { background: var(--bg); color: var(--ink); border: 1px solid var(--line); box-shadow: var(--shadow); align-items: center; }
+.homecard .tile { flex: none; width: 3.7rem; height: 3.7rem; border-radius: 18px; display: grid; place-items: center; background: var(--brand-soft); color: var(--brand); }
+.homecard.c-call .tile { background: var(--tile-call); color: var(--tile-call-ink); }
+.homecard.small .tile { background: var(--tile-people); color: var(--tile-people-ink); width: 3rem; height: 3rem; border-radius: 15px; }
+.homecard .tile .ico { width: 2rem; height: 2rem; }
+.homecard.small .tile .ico { width: 1.6rem; height: 1.6rem; }
+.homecard .hc-sub { opacity: 1; color: var(--muted); }
+.homecard.small { background: var(--bg); }
+.homecard:active { transform: scale(0.985); }
+:root.theme-hc .homecard { border: 2px solid #fff; background: #000; color: #fff; }
+html.reading .homecard::after { display: none; }
+
+/* The danger banner's buttons stay see-through on red (the softer ghost style must not turn them white). */
+.banner button, .banner button.ghost { background: transparent; border: 0; color: inherit; box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55); }
+.banner button:disabled, .banner button.ghost:disabled { color: rgba(255, 255, 255, 0.85); }
+.overlay.alert button.ghost { border: 0; }
+.homecard .hc-text { min-width: 0; }
+.homecard .hc-title { overflow-wrap: anywhere; }
+.homecard .hc-title { font-size: 1.35rem; } .homecard.small .hc-title { font-size: 1.2rem; }
+.homecard { gap: 0.9rem; padding: 1.1rem 1rem; }
+
+/* Pop-up notices: noticeable, never in the way, and big enough to tap. */
+#notices { position: fixed; left: 0; right: 0; top: calc(4.6rem + env(safe-area-inset-top, 0px)); z-index: 8; display: grid; gap: 0.5rem; padding: 0 1rem; max-width: 36rem; margin: 0 auto; pointer-events: none; }
+.notice { pointer-events: auto; background: var(--amber-bg); color: var(--amber); border-radius: var(--radius); border: 2px solid currentColor; padding: 0.8rem 1rem; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22); animation: rise 0.25s ease-out both; }
+.notice .ntext { display: flex; flex-direction: column; gap: 0.1rem; }
+.notice .nbtns { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+.notice .nbtns button { margin: 0; min-height: 2.9rem; font-size: 1rem; flex: 1; }
+.notice .nbtns button.ghost { background: transparent; border: 2px solid currentColor; color: inherit; }
+:root.theme-hc .notice { background: #ffd23f; color: #000; }
+
+/* ---------- the call card: light, docked, never a takeover ---------- */
+#dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9; max-width: 36rem; margin: 0 auto; pointer-events: none; }
+.dock { pointer-events: auto; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-bottom: 0; border-radius: 26px 26px 0 0; padding: 0.5rem 1.1rem calc(1rem + env(safe-area-inset-bottom, 0px)); max-height: 78vh; overflow-y: auto; box-shadow: 0 -16px 48px rgba(15, 15, 16, 0.22); animation: sheet 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both; transition: background-color 0.5s ease, color 0.5s ease; text-align: left; }
+.dock.lv1 { background: var(--amber-bg); color: var(--amber); border-color: currentColor; }
+.dock.lv2 { background: var(--red-bg); color: var(--red); border: 2px solid currentColor; border-bottom: 0; box-shadow: 0 -16px 48px rgba(143, 29, 20, 0.35); }
+.dock .grab { width: 2.8rem; height: 0.3rem; border-radius: 99px; background: currentColor; opacity: 0.25; margin: 0 auto 0.6rem; }
+.dock .livetop { display: flex; align-items: center; gap: 0.6rem; font-size: 0.95rem; letter-spacing: 0; color: inherit; margin: 0 0 0.6rem; font-weight: 600; }
+.dock .livetitle { flex: 1; }
+.dock .calltime { font-size: 1rem; color: inherit; margin: 0; opacity: 0.85; }
+.livedot { width: 0.7rem; height: 0.7rem; border-radius: 50%; background: #16a34a; box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.6); animation: livepulse 1.6s ease-out infinite; flex: none; }
+.dock.lv1 .livedot { background: #d97706; } .dock.lv2 .livedot { background: #dc2626; }
+@keyframes livepulse { 0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.55); } 70% { box-shadow: 0 0 0 0.7rem rgba(22, 163, 74, 0); } 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); } }
+.dock .riskbadge { display: block; text-align: center; font-size: 1.15rem; padding: 0.55rem 1rem; border-radius: 14px; background: var(--green-bg); color: var(--green); border: 2px solid currentColor; }
+.dock .riskbadge.r1 { background: var(--amber-bg); color: var(--amber); }
+.dock .riskbadge.r2 { background: var(--red); color: var(--red-bg); font-size: 1.25rem; }
+.dockhead { margin: 0.7rem 0 0.2rem; } .dockhead b { display: block; font-size: 1.2rem; letter-spacing: -0.01em; } .dockhead span { display: block; font-weight: 500; opacity: 0.92; }
+.dock .coach { background: rgba(255, 255, 255, 0.55); border-left-color: currentColor; color: inherit; }
+.dock.lv0 .coach, .dock.lv0 .ladder { display: none; }
+.dock .ladder { margin: 0.4rem 0; font-size: 0.95rem; } .dock .reason { font-size: 0.95rem; margin: 0.2rem 0; }
+.dock .doit { background: rgba(255, 255, 255, 0.55); font-size: 0.98rem; }
+.dock #livewordarea { background: var(--surface); color: var(--ink); border-radius: var(--radius); padding: 0.8rem 1rem; margin: 0.7rem 0; text-align: center; border: 1px solid var(--line); }
+.dock #livewordarea .muted { color: var(--muted); }
+.dock .captions { background: rgba(0, 0, 0, 0.05); color: inherit; min-height: 3.2rem; max-height: 6.5rem; font-size: 1rem; margin-top: 0.7rem; }
+.dock .captions .dim { color: inherit; opacity: 0.6; }
+.dock .captions mark { background: #ffd23f; color: #000; padding: 0 0.2rem; border-radius: 4px; }
+.dock .wave { height: 1.6rem; margin: 0.4rem 0; color: inherit; } .dock .wave i { width: 0.32rem; }
+.dock .livestatus { color: inherit; opacity: 0.8; font-size: 0.88rem; margin: 0.2rem 0; min-height: 1.2em; }
+.dockbtns { display: flex; gap: 0.6rem; margin-top: 0.4rem; } .dockbtns button { margin: 0; flex: 1; min-height: 3.2rem; }
+.dockbtns button.ghost { background: transparent; border: 2px solid currentColor; color: inherit; flex: 0 0 auto; padding: 0.5rem 1.1rem; }
+body.docked #app { padding-bottom: 24rem; }
+.callbar { background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: #fff; box-shadow: var(--shadow); }
+.callbar button { background: #fff; color: var(--brand); border: 0; }
+:root.theme-hc .dock { background: #000; color: #fff; border: 3px solid #fff; } :root.theme-hc .dock.lv1 { background: #ffd23f; color: #000; } :root.theme-hc .dock.lv2 { background: #ff9a9a; color: #000; }
+html.calm .livedot { animation: none; }
+
+/* ---------- real icons instead of text glyphs: one line-icon family for status and navigation ---------- */
+.mk, .riskbadge::before, .verdict h3::before, .banner .bannerhead::before, .kicker::before, .notice b::before, button.back::before, .homecard::after, .feedmark::before {
+  content: ""; display: inline-block; flex: none; width: 1.15em; height: 1.15em; background: currentColor; vertical-align: -0.2em;
+  -webkit-mask: var(--mk) center / contain no-repeat; mask: var(--mk) center / contain no-repeat; margin-right: 0.4em; font-size: inherit; }
+.mk.ok, .riskbadge.r0::before, .verdict.green h3::before { --mk: url(/img/ui/check-circle.svg); }
+.mk.off { --mk: url(/img/ui/circle.svg); }
+.mk.warn, .riskbadge.r1::before, .verdict.amber h3::before, .banner.soft .bannerhead::before, .overlay.alert.soft .kicker::before, .notice b::before { --mk: url(/img/ui/alert-triangle.svg); }
+.mk.stop, .riskbadge.r2::before, .verdict.red h3::before, .banner .bannerhead::before, .kicker::before { --mk: url(/img/ui/alert-octagon.svg); }
+.banner .bannerhead::before, .kicker::before, .notice b::before { margin-right: 0.45em; }
+button.back::before { --mk: url(/img/ui/back.svg); width: 1.3em; height: 1.3em; margin: 0 0.35rem 0 -0.2rem; font-size: 1rem; }
+.homecard::after { --mk: url(/img/ui/chevron.svg); width: 1.5rem; height: 1.5rem; margin: 0 0 0 auto; color: var(--muted); }
+.feedmark { width: 1.3rem; text-align: center; } .feedmark::before { margin: 0; width: 1.2rem; height: 1.2rem; }
+.feedrow.l2 .feedmark::before { --mk: url(/img/ui/alert-octagon.svg); } .feedrow.l1 .feedmark::before { --mk: url(/img/ui/alert-triangle.svg); }
+.feedrow.kcall .feedmark::before { --mk: url(/img/ui/call.svg); }
+.ladder .tickmark { width: 1.2rem; height: 1.2rem; margin-right: 0.2rem; } .ladder .tickmark.mk { margin-right: 0.5rem; }
+
+/* ---------- Home, as an app: greeting, two tiles, people, recent ---------- */
+.hero { margin-top: 0.8rem; }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; margin: 0.9rem 0; }
+.actiontile { display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem; text-align: left; margin: 0; padding: 1rem 1rem 1.1rem; min-height: 11rem; border-radius: 22px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); box-shadow: var(--shadow); transition: transform 0.12s ease, box-shadow 0.12s ease; animation: rise 0.34s ease-out both; }
+.actiontile:nth-child(2) { animation-delay: 0.08s; }
+.actiontile .tile { width: 3.8rem; height: 3.8rem; border-radius: 20px; display: grid; place-items: center; background: var(--brand-soft); color: var(--brand); margin-bottom: 0.8rem; }
+.actiontile.c-call .tile { background: var(--tile-call); color: var(--tile-call-ink); }
+.actiontile .tile .ico { width: 2.1rem; height: 2.1rem; }
+.actiontile .hc-title { font-size: 1.3rem; font-weight: 800; line-height: 1.15; letter-spacing: -0.01em; }
+.actiontile .hc-sub { font-size: 0.98rem; font-weight: 500; color: var(--muted); line-height: 1.3; }
+.actiontile:active { transform: scale(0.97); }
+.setupcard { text-align: left; }
+.peoplerow { display: flex; align-items: center; gap: 0.8rem; width: 100%; text-align: left; margin: 0 0 0.4rem; padding: 0.9rem 1rem; border-radius: 20px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.peoplerow .ptext { display: flex; flex-direction: column; flex: 1; min-width: 0; } .peoplerow .ptext b { font-size: 1.15rem; } .peoplerow .ptext .muted { font-weight: 500; font-size: 0.95rem; }
+.avatars { display: flex; } .avatar { width: 2.4rem; height: 2.4rem; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 1rem; color: #fff; border: 2px solid var(--bg); margin-left: -0.5rem; }
+.a0 { background: #3730a3; } .a1 { background: #0f766e; } .a2 { background: #b45309; } .a3 { background: #be185d; } .a4 { background: #1d4ed8; } .a5 { background: #4d7c0f; }
+.peoplerow .chev { width: 1.4rem; height: 1.4rem; background: var(--muted); -webkit-mask: url(/img/ui/chevron.svg) center / contain no-repeat; mask: url(/img/ui/chevron.svg) center / contain no-repeat; flex: none; }
+.feed { margin-top: 0.4rem; } .feed .feedrow { padding: 0.6rem 0; border-bottom: 1px solid var(--line); } .feed .feedrow:last-child { border-bottom: 0; }
+.feed .feedrow b { font-size: 1.02rem; } .feed .feedrow .muted { font-size: 0.9rem; }
+.statuschip { display: inline-flex; align-items: center; gap: 0.2rem; font-weight: 700; }
+:root.theme-hc .actiontile, :root.theme-hc .peoplerow { background: #000; color: #fff; border: 2px solid #fff; box-shadow: none; }
+html.reading .tiles { grid-template-columns: 1fr; }
+
+.dockmore { margin: 0.5rem 0 0.2rem; border-top: 1px solid currentColor; border-top-color: rgba(0, 0, 0, 0.12); }
+.dockmore summary { font-weight: 700; padding: 0.7rem 0; cursor: pointer; }
+.dock .dockbtns { position: sticky; bottom: 0; padding: 0.6rem 0 0.1rem; background: inherit; }
+.dock { max-height: 70vh; }
+body.docked #app { padding-bottom: 20rem; }
+
+/* The call card's two buttons sit side by side and never overflow. */
+.dock .dockbtns { display: flex; gap: 0.6rem; }
+.dock .dockbtns button { width: auto; min-width: 0; flex: 1 1 0; margin: 0; padding: 0.5rem 0.6rem; font-size: 1.02rem; line-height: 1.15; }
+.dock .dockbtns button.ghost { flex: 1 1 0; }
+.dock .wave { display: none; } .dock.lv0 .wave { display: flex; }
+
+/* The call summary and the recording player. */
+.recplayer { width: 100%; margin: 0.5rem 0; }
+#recslot { margin: 1rem 0 0.4rem; } #recslot .btnlink { display: block; text-align: center; margin: 0.4rem 0; padding: 0.8rem; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-ink); text-decoration: none; font-weight: 700; }
+
+/* =====================================================================================================================
+   THE LOOK: a calm, flat, call-protection-app palette (white, cool grey, one clear blue; red only for danger, green for safe).
+   No purple, no black blocks, no gradients, no heavy shadows. This block comes last so it wins over everything above it.
+   ===================================================================================================================== */
+:root {
+  --bg: #ffffff; --surface: #f2f5f9; --surface-2: #e6ebf2; --ink: #0f1722; --muted: #55606e; --line: #e1e6ee;
+  --brand: #0a64d8; --brand-2: #0a64d8; --brand-soft: #e6f0fd; --accent: #0a64d8; --accent-ink: #ffffff;
+  --green: #0d6b3f; --green-bg: #e3f5ec; --amber: #7a4a00; --amber-bg: #fdf3d8; --red: #b3261e; --red-bg: #fdecea;
+  --tile-call: #e3f5ec; --tile-call-ink: #0d6b3f; --tile-people: #fdf3d8; --tile-people-ink: #7a4a00;
+  --radius: 14px; --radius-sm: 12px; --shadow: 0 1px 2px rgba(15, 23, 34, 0.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light):not(.theme-hc) {
+    --bg: #0e141b; --surface: #17202b; --surface-2: #202b38; --ink: #eef3f8; --muted: #9aa7b6; --line: #25303d;
+    --brand: #5aa2ff; --brand-2: #5aa2ff; --brand-soft: #14304f; --accent: #5aa2ff; --accent-ink: #06121f;
+    --green: #7be0b0; --green-bg: #0f2a1f; --amber: #fcd34d; --amber-bg: #2a2007; --red: #ff9b93; --red-bg: #2e1311;
+    --tile-call: #0f2a1f; --tile-call-ink: #7be0b0; --tile-people: #2a2007; --tile-people-ink: #fcd34d; --shadow: none;
+  }
+}
+:root.theme-light { --bg: #ffffff; --surface: #f2f5f9; --surface-2: #e6ebf2; --ink: #0f1722; --muted: #55606e; --line: #e1e6ee; --brand: #0a64d8; --accent: #0a64d8; --accent-ink: #ffffff; --brand-soft: #e6f0fd; --green: #0d6b3f; --green-bg: #e3f5ec; --amber: #7a4a00; --amber-bg: #fdf3d8; --red: #b3261e; --red-bg: #fdecea; --tile-call: #e3f5ec; --tile-call-ink: #0d6b3f; --tile-people: #fdf3d8; --tile-people-ink: #7a4a00; --shadow: 0 1px 2px rgba(15, 23, 34, 0.06); }
+:root.theme-dark { --bg: #0e141b; --surface: #17202b; --surface-2: #202b38; --ink: #eef3f8; --muted: #9aa7b6; --line: #25303d; --brand: #5aa2ff; --accent: #5aa2ff; --accent-ink: #06121f; --brand-soft: #14304f; --green: #7be0b0; --green-bg: #0f2a1f; --amber: #fcd34d; --amber-bg: #2a2007; --red: #ff9b93; --red-bg: #2e1311; --tile-call: #0f2a1f; --tile-call-ink: #7be0b0; --tile-people: #2a2007; --tile-people-ink: #fcd34d; --shadow: none; }
+
+/* header: just the mark, the name, and a settings icon. A healthy connection shows nothing; it only speaks up when it has something to say. */
+header { border-bottom: 1px solid var(--line); background: var(--bg); }
+.brand { font-weight: 800; letter-spacing: -0.02em; color: var(--ink); }
+.brand img { box-shadow: none; border-radius: 9px; }
+.pill.ok { display: none; }
+.pill.live { background: var(--green-bg); color: var(--green); border: 1px solid currentColor; font-weight: 700; }
+.pill.wait { background: var(--surface); color: var(--muted); }
+.pill.off { background: var(--red-bg); color: var(--red); font-weight: 700; }
+.iconbtn { width: 2.9rem; height: 2.9rem; min-height: 2.9rem; padding: 0; display: grid; place-items: center; border-radius: 50%; background: var(--surface); border: 0; color: var(--ink); }
+.iconbtn .ico { width: 1.5rem; height: 1.5rem; }
+
+/* buttons: one blue, flat. Danger is red. Nothing is black. */
+button { background: var(--accent); color: var(--accent-ink); box-shadow: none; }
+button.ghost { background: var(--surface); color: var(--ink); border: 0; }
+button.yes { background: var(--green); color: #fff; } button.no { background: var(--red); color: #fff; }
+.overlay.alert button { background: var(--red); color: #fff; }
+.overlay.alert.soft button { background: var(--amber); color: #fff; }
+.overlay.alert button.ghost, .overlay.alert .actions button.quiet { background: transparent; color: var(--red); box-shadow: inset 0 0 0 2px currentColor; }
+.overlay.alert.soft button.ghost { color: var(--amber); }
+.overlay.good button { background: var(--green); color: #fff; }
+.banner { background: var(--red); color: #fff; box-shadow: none; border-radius: var(--radius); }
+.banner.soft { background: var(--amber); color: #fff; }
+.banner button { color: #fff; }
+.dockbtns button.no { background: var(--red); color: #fff; }
+.notice { box-shadow: 0 4px 16px rgba(15, 23, 34, 0.18); }
+.callbar { background: var(--brand); box-shadow: none; } .callbar button { color: var(--brand); }
+
+/* Home: flat rows and cards, like a contacts and calls list. */
+.hero { background: var(--brand-soft); color: var(--ink); box-shadow: none; border: 0; border-radius: var(--radius); }
+.hero img { background: transparent; padding: 0; border-radius: 12px; }
+.hero span { color: var(--muted); opacity: 1; }
+.actiontile, .peoplerow, .card { box-shadow: none; border: 1px solid var(--line); background: var(--bg); border-radius: var(--radius); }
+.actiontile .tile { border-radius: 50%; width: 3.6rem; height: 3.6rem; }
+.actiontile .hc-sub { color: var(--muted); }
+.setupcard { background: var(--surface); border: 0; }
+.avatar { border-color: var(--bg); } .a0 { background: #0a64d8; } .a1 { background: #0d7f5f; } .a2 { background: #b45309; } .a3 { background: #c2185b; } .a4 { background: #1565c0; } .a5 { background: #558b2f; }
+.feed .feedrow { border-bottom: 1px solid var(--line); }
+.feedrow.l2 .feedmark { color: var(--red); } .feedrow.l1 .feedmark { color: var(--amber); }
+.sectionlabel { color: var(--muted); text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.08em; font-weight: 800; }
+
+/* the Telegram card: Telegram's own blue, flat */
+.tgcard { background: #eaf5fd; border: 1px solid #cfe7f8; }
+.btnlink.tgopen { background: #229ed9; border-radius: var(--radius-sm); }
+input, textarea { border: 1.5px solid var(--line); background: var(--bg); } input:focus, textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 4px rgba(10, 100, 216, 0.15); }
+.chipbtn[aria-pressed="true"] { background: var(--brand); color: #fff; }
+.riskbadge.r2, .dock .riskbadge.r2 { background: var(--red); color: #fff; }
+:root.theme-hc { --brand: #fff; --accent: #fff; --accent-ink: #000; --brand-soft: #000; }
+:root.theme-hc button { background: #fff; color: #000; }
+
+/* Telegram card: the logo and name on one line, the handle and status underneath, nothing breaking mid-word. */
+.tgcard .apphead { display: grid; grid-template-columns: auto 1fr; column-gap: 0.8rem; row-gap: 0.1rem; align-items: center; }
+.tgcard .apphead .applogo { grid-row: 1 / span 2; }
+.tgcard .appname { min-width: 0; } .tgcard .appname .muted { overflow-wrap: normal; white-space: nowrap; }
+.tgcard .statuschip { grid-column: 2; justify-self: start; }
+
+/* Who is on the line, and who Vouch is protecting. */
+.wholine { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.7rem; align-items: baseline; font-size: 0.95rem; margin: 0.2rem 0 0.5rem; padding: 0.55rem 0.75rem; background: var(--surface); border-radius: var(--radius-sm); }
+.wholine .wk { color: var(--muted); font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }

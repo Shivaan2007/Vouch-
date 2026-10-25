@@ -250,8 +250,9 @@ const CALL_ORDER = ['OTP', 'SAFE_ACCOUNT', 'REMOTE_ACCESS', 'CASH_PICKUP', 'PIN'
 // A negative word just before the phrase ("we will NEVER ask you to read out a code") turns it from a threat into reassurance.
 // Only the same sentence counts: "Don't tell mom. A courier will collect the cash." must not cancel the second sentence.
 function negated(t, index) {
-  const sentence = t.slice(Math.max(0, index - 40), index).split(/[.?!]/).pop();
-  return /\b(never|don'?t|do not|won'?t|will not|not)\b(?:\W+\w+){0,3}\W*$/.test(sentence);
+  // Reach back far enough for a list ("we will never ask for your PIN or your password"), but not across a "but" or a comma-and-ask.
+  const sentence = t.slice(Math.max(0, index - 70), index).split(/[.?!;]|\b(?:but|however|except)\b/).pop();
+  return /\b(never|don'?t|do not|won'?t|will not|not)\b(?:\W+\w+){0,7}\W*$/.test(sentence);
 }
 
 /** A fresh state for one call. */
@@ -329,6 +330,28 @@ export function callWhy(state) {
     reasons,
     action: st.level >= 2 ? 'Hang up. Then call the number on your card or the official website yourself.' : st.level === 1 ? 'Be careful. Do not give any codes or money. Make sure it is really them.' : '',
   };
+}
+
+/**
+ * The assistant on a live call: one thing to say next, in plain words, chosen from what has been heard so far. It never decides
+ * anything for the person; it suggests the safest next sentence. A rule-based coach, so it works offline and never invents advice.
+ * @param {ReturnType<typeof callInit>} state
+ * @param {{wordHeard?: boolean, haveFriend?: boolean}} [ctx] wordHeard: the caller said the current code word; haveFriend: there is someone to ask for a word
+ * @returns {{kind: 'good'|'stop'|'ask'|'', text: string}}
+ */
+export function callCoach(state, ctx = {}) {
+  const st = state || callInit();
+  const c = st.cats;
+  if (ctx.wordHeard) return { kind: 'good', text: 'They said our code word, and it matches. Tap "It matches" if you are sure it is really them.' };
+  if (!c.size && st.level < 1) return { kind: '', text: '' };
+  if (c.has('OTP')) return { kind: 'stop', text: 'Do not read out any code. Say: "I\'ll call you back on the number on my card." Then hang up.' };
+  if (c.has('SAFE_ACCOUNT') || c.has('REMOTE_ACCESS') || c.has('CASH_PICKUP') || c.has('PIN') || c.has('PAY_METHOD')) {
+    return { kind: 'stop', text: 'Do not do what they ask. Say: "I\'m going to hang up and call you back myself." Then hang up.' };
+  }
+  if (c.has('CREDENTIAL')) return { kind: 'stop', text: 'Do not give personal or card details. Say: "I\'ll call the bank on the number on my card."' };
+  if (st.level >= 1 && ctx.haveFriend) return { kind: 'ask', text: 'Ask them: "What\'s our word?" Do not say it first. If they cannot say it, it is not them.' };
+  if (st.level >= 1) return { kind: 'ask', text: 'Ask who they are, and say you will call them back on a number you already have.' };
+  return { kind: '', text: '' };
 }
 
 const has = (tags, ...names) => names.some((n) => tags.includes(n));

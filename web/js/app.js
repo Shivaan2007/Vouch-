@@ -8,7 +8,7 @@ import {
 import { authString } from './lib/canonical.js';
 import * as store from './lib/store.js';
 import { connect, call, on } from './lib/api.js';
-import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify, highlight, callInit, callStep, callWhy } from './lib/scan.js';
+import { TAG_LABELS as TAGS, suggest, riskyEnough, callRisk, classify, highlight, callInit, callStep, callWhy, callCoach } from './lib/scan.js';
 import { chunkToWav } from './lib/audio.js';
 
 // ---------- helpers ----------
@@ -210,7 +210,7 @@ function notify(title, body, tag) {
 const DISPLAY_KEY = 'vouch-display';
 // Nothing is spoken unless the person asks (the "Read this to me" button) or switches spoken warnings on. A voice that talks on its
 // own, "don't send money" out of nowhere, is more frightening than helpful; the screen and a vibration are enough by default.
-const DISPLAY_DEFAULT = { size: 1, theme: 'auto', reading: false, calm: false, aloud: false };
+const DISPLAY_DEFAULT = { size: 1, theme: 'auto', reading: false, calm: false, aloud: false, record: false };
 function loadDisplay() {
   try {
     const saved = JSON.parse(localStorage.getItem(DISPLAY_KEY) || 'null');
@@ -262,6 +262,7 @@ function toast(msg, kind) {
 const PAUSE_SECONDS = 10; // the same cooling-off pause the server config documents
 const A = { active: false, level: 0, reason: '', source: '', friendId: '', repeats: 0, mutedUntil: 0 };
 let $sticky;
+let $notices;
 
 // Several dangers can be open at once (a bot message, a call, a friend's "not me"). Each is kept under its own source, so
 // resolving one never hides another; the banner shows the worst. They survive a reload for 30 minutes, because reloading is exactly
@@ -376,9 +377,10 @@ async function boot() {
     if (p.has('theme') && ['auto', 'light', 'dark', 'hc'].includes(p.get('theme'))) patch.theme = p.get('theme');
     if (p.has('reading')) patch.reading = p.get('reading') === '1';
     if (p.has('calm')) patch.calm = p.get('calm') === '1';
+    if (p.has('record')) patch.record = p.get('record') === '1';
     if (Object.keys(patch).length) {
       saveDisplay({ ...loadDisplay(), ...patch });
-      for (const k of ['aloud', 'size', 'theme', 'reading', 'calm']) p.delete(k);
+      for (const k of ['aloud', 'size', 'theme', 'reading', 'calm', 'record']) p.delete(k);
       const rest = p.toString();
       history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
       const clean = rest ? `?${rest}` : '';
@@ -397,6 +399,7 @@ async function boot() {
   }
   S.display = loadDisplay();
   applyDisplay(S.display);
+  S.tgFeed = loadFeed();
   try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {}); } catch { /* optional */ }
   buildShell();
   loadAlerts(); paintSticky(); // a warning that was up before a reload is still up after it
@@ -406,7 +409,7 @@ async function boot() {
   globalThis.addEventListener?.('unhandledrejection', (ev) => { oops(ev && ev.reason && ev.reason.message); try { ev.preventDefault?.(); } catch { /* fine */ } });
   globalThis.addEventListener?.('error', (ev) => { if (ev && ev.message && !/ResizeObserver/.test(ev.message)) oops(ev.message); });
   // Coming back to Vouch mid-call: take the screen lock again, and refresh the clock-driven parts at once.
-  globalThis.document?.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'visible') { if (S.listening) holdScreen(); tickWord(); tickWait(); } });
+  globalThis.document?.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'visible') { if (S.listening) { holdScreen(); wakeEngine(); } tickWord(); tickWait(); } });
   if (!store.isPersistent() || S.bootError) {
     const why = S.bootError || store.storageProblem();
     $banners.append(h('div', { class: 'card' },
@@ -524,12 +527,14 @@ function buildShell() {
   $conn = h('div', { role: 'status', 'aria-live': 'polite' });
   $sticky = h('div');
   $callbar = h('div', { id: 'callbar' });
+  $notices = h('div', { id: 'notices', 'aria-live': 'polite' });
+  $dock = h('div', { id: 'dock' });
   $banners = h('div', { role: 'alert' });
   $toast = h('div', { role: 'status', 'aria-live': 'polite' });
   $content = h('main');
   $overlay = h('div');
-  const size = h('button', { class: 'ghost size', 'aria-label': 'Display and reading settings', onclick: () => { S.displayOpen = true; renderOverlay(); } }, 'Aa');
-  $app.replaceChildren(h('header', null, h('h1', { class: 'brand' }, h('img', { src: 'icon.svg', alt: '', width: '28', height: '28' }), 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $callbar, $sticky, $banners, $toast, $content, $overlay);
+  const size = h('button', { class: 'ghost size iconbtn', 'aria-label': 'Display and reading settings', onclick: () => { S.displayOpen = true; renderOverlay(); } }, h('span', { class: 'ico', 'aria-hidden': 'true', style: '--src:url(/img/ui/settings.svg)' }));
+  $app.replaceChildren(h('header', null, h('h1', { class: 'brand' }, h('img', { src: 'icon.svg', alt: '', width: '28', height: '28' }), 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $callbar, $notices, $sticky, $banners, $toast, $content, $dock, $overlay);
   paintStatus();
 }
 
@@ -537,7 +542,7 @@ function paintStatus() {
   if (!$status) return;
   // A phone that has not signed up yet is simply "Ready"; "Signing in…" is only for an existing account reconnecting. Neither is an error.
   $status.textContent = (S.listening ? 'Watching call · ' : '') + (S.online ? (S.authed ? 'Online' : (S.me ? 'Signing in…' : 'Ready')) : 'Offline');
-  $status.className = 'pill' + (S.online && S.authed ? '' : S.online ? ' wait' : ' off');
+  $status.className = 'pill' + (S.listening ? ' live' : S.online && S.authed ? ' ok' : S.online ? ' wait' : ' off'); // a healthy connection needs no label: it only speaks up when something is wrong or a call is being watched
   // Only warn once we've been connected before, so the first second of loading isn't an error.
   if (!S.online && S.everConnected) {
     $conn.replaceChildren(h('div', { class: 'card' },
@@ -555,21 +560,36 @@ function setTab(tab) {
 // Every task screen starts the same way: one big way back to Home, and the name of what you are doing.
 const topbar = (title) => h('div', { class: 'topbar' }, h('button', { class: 'ghost back', onclick: () => setTab('home') }, 'Home'), h('h2', null, title));
 
-// Home: two giant buttons for the two things people actually need, and a smaller one for the people they trust.
+// Home: who is watching, the two things people actually need, the people they trust, and what Vouch has caught lately.
+const hueOf = (name) => [...String(name || '?')].reduce((a, c) => a + c.charCodeAt(0), 0) % 6;
+function feedRow(e) {
+  return h('div', { class: `feedrow l${e.level} k${e.kind || 'telegram'}` },
+    h('span', { class: 'feedmark', 'aria-hidden': 'true' }),
+    h('div', null, h('b', null, e.title), h('span', { class: 'muted' }, `${e.kind === 'call' ? 'Call' : 'Telegram'}${e.who ? ` · ${e.who}` : ''}${e.ms ? ` · ${fmtClock(e.ms)}` : ''} · ${ago(e.at)}`)));
+}
+
 function homeView() {
   const n = S.friends.length;
-  const card = (tab, icon, title, sub, cls = '') => h('button', { class: `homecard ${cls}`, onclick: () => setTab(tab) },
-    h('span', { class: 'ico', 'aria-hidden': 'true', style: `--src:url(/img/ui/${icon}.svg)`}),
-    h('span', { class: 'hc-text' }, h('span', { class: 'hc-title' }, title), h('span', { class: 'hc-sub' }, sub)));
-  const linked = (S.watch && S.watch.linked) || [];
-  return h('section', null, h('h2', { class: 'hello' }, `Hi ${S.me.name}`),
-    n ? null : h('div', { class: 'card' }, h('p', { class: 'big' }, 'First, add someone you trust.'),
+  const tg = !!(S.watch && (S.watch.linked || []).includes('telegram'));
+  const line = !S.authed ? 'Connecting…' : n ? `Watching with ${n} trusted ${n === 1 ? 'person' : 'people'}${tg ? ' and Telegram' : ''}` : 'Add someone you trust to finish setting up';
+  const tile = (tab, icon, title, sub, cls) => h('button', { class: `actiontile ${cls}`, onclick: () => setTab(tab) },
+    h('span', { class: 'tile', 'aria-hidden': 'true' }, h('span', { class: 'ico', style: `--src:url(/img/ui/${icon}.svg)` })),
+    h('span', { class: 'hc-title' }, title), h('span', { class: 'hc-sub' }, sub));
+  const avatars = S.friends.slice(0, 5).map((f) => h('span', { class: `avatar a${hueOf(f.name)}`, 'aria-hidden': 'true' }, (f.name || '?').trim().charAt(0).toUpperCase()));
+  const feed = (S.tgFeed || []).slice(0, S.feedAll ? 100 : 5);
+  return h('section', null,
+    h('div', { class: 'hero' }, h('img', { src: '/icon.svg', alt: '', width: '52', height: '52' }), h('div', null, h('b', null, `Hi ${S.me.name}`), h('span', null, line))),
+    n ? null : h('div', { class: 'card setupcard' }, h('p', { class: 'big' }, 'First, add someone you trust.'),
       h('p', null, 'A parent, a child, a close friend. Vouch asks their phone to confirm it is really them.'),
       h('button', { onclick: showMyCode }, 'Add someone')),
-    card('check', 'message', 'Check a message', 'A text, email or chat asking for money?'),
-    card('word', 'call', 'On a call', 'Is the caller really who they say?'),
-    card('friends', 'people', 'My people', n ? `Your ${n} trusted ${n === 1 ? 'person' : 'people'} and connected apps` : 'Add family and friends', 'small'),
-    linked.length ? h('p', { class: 'muted', style: 'text-align:center' }, 'Messages you forward from a connected app are checked too.') : null);
+    h('div', { class: 'tiles' },
+      tile('check', 'message', 'Check a message', tg ? 'Telegram or paste' : 'Paste or forward', 'c-check'),
+      tile('word', 'call', 'On a call', 'Is it really them?', 'c-call')),
+    h('button', { class: 'peoplerow', onclick: () => setTab('friends') },
+      h('span', { class: 'ptext' }, h('b', null, 'My people'), h('span', { class: 'muted' }, n ? `${n} trusted${tg ? ' · Telegram connected' : ''}` : 'Add family and friends')),
+      h('span', { class: 'avatars', 'aria-hidden': 'true' }, ...avatars), h('span', { class: 'chev', 'aria-hidden': 'true' })),
+    feed.length ? h('div', { class: 'feed' }, h('p', { class: 'sectionlabel' }, 'Recent calls and warnings'), ...feed.map(feedRow),
+      (S.tgFeed || []).length > 5 ? h('button', { class: 'ghost small', onclick: () => { S.feedAll = !S.feedAll; renderMain(); } }, S.feedAll ? 'Show fewer' : `Show all ${S.tgFeed.length}`) : null) : null);
 }
 
 // A screen that fails to draw must never leave a blank page. The keys and people are untouched; reloading brings it back.
@@ -832,12 +852,57 @@ function checkView() {
     : [h('button', { onclick: () => setTab('friends') }, 'Add someone to ask their phone')];
 
   return h('section', null, topbar('Check a message'),
+    telegramCard(),
+    S.watch && S.watch.channels && S.watch.channels.some((x) => x.id === 'telegram') ? h('p', { class: 'sectionlabel' }, 'Or paste it here') : null,
     text, h('div', { class: 'row' }, paste, attach), shot, preview, flags, aiLine,
     ...ask,
     h('div', { id: 'result', 'aria-live': 'polite' }),
     h('p', { class: 'muted' }, S.watch && S.watch.listen ? "Not saved by Vouch. If AI is on, the message is read by Google's Gemini." : 'Not saved by Vouch.'),
     example);
 }
+
+// Telegram, as a connected app: the real logo, whether it is connected, one button to connect it, who has been flagged, and when the
+// last warning came in. All of it is live (the server's real status and the real flagged-senders list), nothing here is a placeholder.
+const ago = (ms) => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 45 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
+function telegramCard() {
+  const W = S.watch;
+  const c = W && W.channels && W.channels.find((x) => x.id === 'telegram');
+  if (!c) return null;
+  const linked = (W.linked || []).includes('telegram');
+  const flagged = (S.senders || []).filter((s) => s.channel === 'telegram');
+  const feed = (S.tgFeed || []).filter((e) => e.kind !== 'call');
+  const panel = !linked && S.linkCode && S.linkCode.channel === 'telegram' ? connectPanel(c) : null;
+  const bot = String(c.handle || '').replace('@', '');
+  return h('div', { class: 'card tgcard', id: 'tgcard' },
+    h('div', { class: 'apphead' },
+      h('span', { class: 'applogo tg', 'aria-hidden': 'true' }, h('span', { class: 'logo', style: '--src:url(/img/brands/telegram.svg)' })),
+      h('div', { class: 'appname' }, h('b', null, 'Check it in Telegram'), h('span', { class: 'muted' }, c.handle)),
+      h('span', { class: linked ? 'ok statuschip' : 'muted statuschip' }, linked ? [h('span', { class: 'mk ok', 'aria-hidden': 'true' }), 'Connected'] : 'Not connected')),
+    h('p', null, 'Forward any message to Vouch in Telegram, or add it to a group. The answer comes back in the chat, and here.'),
+    h('a', { class: 'btnlink tgopen', href: `https://t.me/${bot}`, target: '_blank', rel: 'noopener' }, 'Open in Telegram'),
+    panel,
+    !linked && !panel ? h('button', { class: 'ghost', onclick: () => connectApp(c) }, 'Connect Telegram to this app') : null,
+    linked ? h('p', { class: 'muted' }, S.lastTg ? `Last warning: ${S.lastTg.title}${S.lastTg.who ? ` from ${S.lastTg.who}` : ''}, ${ago(S.lastTg.at)}.` : 'Nothing flagged yet. Warnings from Telegram will appear here.') : null,
+    feed.length ? h('div', { class: 'tgfeed' }, h('b', null, 'Recent warnings'),
+      ...feed.slice(0, 4).map((e) => h('div', { class: `feedrow l${e.level} k${e.kind || 'telegram'}` },
+        h('span', { class: 'feedmark', 'aria-hidden': 'true' }),
+        h('div', null, h('b', null, e.title), h('span', { class: 'muted' }, `${e.who ? `${e.who} · ` : ''}${ago(e.at)}`)))),
+      h('button', { class: 'ghost small', onclick: () => { S.tgFeed = []; saveFeed([]); renderMain(); } }, 'Clear this list')) : null,
+    flagged.length ? h('div', null, h('b', null, `Flagged senders (${flagged.length})`),
+      ...flagged.slice(0, 3).map((s) => h('div', { class: 'approw' },
+        h('div', { class: 'apphead' }, h('div', { class: 'appname' }, h('b', null, s.handle || s.name || 'Unknown sender'),
+          h('span', { class: 'muted' }, `flagged ${s.flags} time${s.flags === 1 ? '' : 's'}${s.lastTitle ? ` · ${s.lastTitle}` : ''}`)),
+        h('span', { class: s.maxLevel === 2 ? 'err' : 'muted' }, s.maxLevel === 2 ? 'Scam signs' : 'Asked for money')),
+        h('button', { class: 'ghost', onclick: async () => { try { await call('watch:forget', { id: s.id }); await loadSenders(); renderMain(); } catch (e) { toast(friendly(e)); } } }, 'Forget this sender')))) : null);
+}
+
+// What Telegram has warned about, kept on this phone only so it survives a reload: the kind of scam, who sent it, the level and when.
+// Never the message or the words of a call. A month at most, a hundred at most.
+const FEED_KEY = 'vouch-tgfeed';
+function loadFeed() {
+  try { return JSON.parse(localStorage.getItem(FEED_KEY) || '[]').filter((e) => e && e.title && Date.now() - e.at < 30 * 86400000).slice(0, 100); } catch { return []; }
+}
+function saveFeed(list) { try { localStorage.setItem(FEED_KEY, JSON.stringify(list.slice(0, 100))); } catch { /* private mode */ } }
 
 async function effective(u) {
   if (u.verdict !== 'green') return u;
@@ -1025,7 +1090,7 @@ function wordView() {
   const typed = h('textarea', { id: 'callsays', placeholder: 'Type or paste what the caller is saying', 'aria-label': 'What the caller is saying',
     oninput: () => {
       S.heard = typed.value; S.cur = '';
-      if (!typed.value.trim()) { S.callLevel = 0; S.callAi = null; S.callState = null; }
+      if (!typed.value.trim()) { S.callLevel = 0; S.callAi = null; S.callState = null; S.wordHeard = false; }
       S.listen.mode = typed.value.trim() ? 'typed' : 'off';
       paintListen();
       scanCall();
@@ -1060,6 +1125,10 @@ function wordView() {
   return h('section', null, topbar('On a call'), who, word, ...listen,
     f ? h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money") : null,
     h('details', { class: 'more', ...(S.openMore ? { open: true } : {}) }, h('summary', null, 'More'),
+      h('div', { class: 'labbox' }, h('b', null, 'Check my setup'),
+        h('p', { class: 'muted' }, 'Tests the microphone and shows what speech-to-text hears.'),
+        h('button', { class: 'ghost', id: 'setupcheck', onclick: () => runSetupCheck(document.getElementById('setupout')) }, 'Test the microphone and listening'),
+        h('div', { id: 'setupout', role: 'status', 'aria-live': 'polite' })),
       rec ? h('div', null, h('label', { for: 'recfile' }, 'Analyze a recording'), rec) : null,
       h('label', { for: 'callsays' }, 'Or type what you hear'), typed, h('div', { id: 'listenguide' }),
       h('p', { class: 'muted' }, "The browser's speech service or the Vouch server may process the audio; nothing is saved. Tell the other person you're using it.")));
@@ -1109,8 +1178,27 @@ function paintListen() {
     const g = document.getElementById(id);
     if (!g) continue;
     // On the call screen show the guide only once there is something to say.
-    g.replaceChildren(...(c && (id === 'listenguide' || level >= 1) ? [guideCard(c, !!S.callAi)] : []));
+    if (id === 'lv-guide') {
+      // In the call card: just what the AI made of the call, in one headline and one sentence.
+      g.replaceChildren(...(c && level >= 1 ? [h('div', { class: 'dockhead' }, h('b', null, c.title), c.why ? h('span', null, c.why) : null)] : []));
+      continue;
+    }
+    g.replaceChildren(...(c && id === 'listenguide' ? [guideCard(c, !!S.callAi)] : []));
   }
+  // Who is on the line, and who Vouch is protecting. Vouch cannot read caller ID from a web page, so "who" is what YOU picked from
+  // your trusted people, or who the caller CLAIMS to be (as heard); it is never presented as proven.
+  const who = document.getElementById('lv-who');
+  if (who) {
+    const claim = (S.callAi && S.callAi.impersonating) || '';
+    if (claim) S.callClaims = claim;
+    const f = callFriend();
+    const caller = f ? [h('b', null, f.name), ' (on your trusted list). Ask for the code word to be sure.']
+      : S.callClaims ? [h('b', null, S.callClaims), ' (as the caller says). Not on your list, so not confirmed.']
+        : ['Not known yet. Not on your list.'];
+    who.replaceChildren(h('span', { class: 'wk' }, 'Caller'), h('span', null, ...caller), h('span', { class: 'wk' }, 'You'), h('span', null, h('b', null, S.me ? S.me.name : ''), ' (this phone)'));
+  }
+  const coachBox = document.getElementById('lv-coach');
+  if (coachBox) coachBox.replaceChildren(...coachNodes());
   const whyBox = document.getElementById('lv-why');
   if (whyBox) whyBox.replaceChildren(...whyNodes());
   const cap = document.getElementById('lv-cap');
@@ -1118,7 +1206,7 @@ function paintListen() {
   const risk = document.getElementById('lv-risk');
   if (risk) { risk.textContent = RISK_TEXT[level]; risk.className = `riskbadge r${level}`; }
   const root = document.getElementById('livecall');
-  if (root) root.className = `overlay live lv${level}`;
+  if (root) root.className = `dock lv${level}`;
   tickCall();
 }
 
@@ -1143,39 +1231,62 @@ function tickCall() {
   if (bar) {
     if (S.callMin) {
       if (!bar.children.length) bar.append(h('div', { class: 'callbar' }, h('span', { id: 'cb-time' }, t), h('span', null, 'Vouch is listening to your call'),
-        h('button', { onclick: () => { S.callMin = false; renderOverlay(); } }, 'Back to call')));
+        h('button', { onclick: () => { S.callMin = false; paintDock(); } }, 'Back to call')));
       else { const cb = document.getElementById('cb-time'); if (cb) cb.textContent = t; }
     } else if (bar.children.length) bar.replaceChildren();
   }
 }
 
-// The call screen: one status that turns amber and then red, what is being said (risky words marked), and two buttons.
-function liveCallOverlay() {
+// The call card. While Vouch listens to a call it lives in a light card docked at the bottom of the screen, NOT a full-screen takeover:
+// the app stays usable behind it, it can be folded away to a slim bar, and it takes on the app's own colours (calm, then amber, then
+// red). It leads with what the AI inferred about the call and one sentence to say; the detail is underneath.
+function dockView() {
   const f = callFriend();
   const level = S.callLevel || 0;
   const rec = S.listen && S.listen.mode === 'recording';
-  const el = h('div', { id: 'livecall', class: `overlay live lv${level}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Listening to your call' },
-    h('div', { class: 'inner' },
-      h('div', { class: 'livetop' }, h('span', null, rec ? 'Analyzing a recording' : (f ? `Listening to your call with ${f.name}` : 'Listening to your call')),
-        h('span', { class: 'calltime', id: 'lv-time' }, fmtClock(Date.now() - ((S.call && S.call.startedAt) || Date.now())))),
-      h('div', { id: 'lv-risk', class: `riskbadge r${level}`, role: 'status', 'aria-live': 'assertive' }, RISK_TEXT[level]),
+  return h('section', { id: 'livecall', class: `dock lv${level}`, 'aria-label': 'Vouch is listening to your call' },
+    h('div', { class: 'grab', 'aria-hidden': 'true' }),
+    h('div', { class: 'livetop' },
+      h('span', { class: 'livedot', 'aria-hidden': 'true' }),
+      h('span', { class: 'livetitle' }, rec ? 'Analyzing a recording' : (f ? `Listening to your call with ${f.name}` : 'Listening to your call')),
+      h('span', { class: 'calltime', id: 'lv-time' }, fmtClock(Date.now() - ((S.call && S.call.startedAt) || Date.now())))),
+    h('div', { class: 'wholine', id: 'lv-who' }),
+    h('div', { id: 'lv-risk', class: `riskbadge r${level}`, role: 'status', 'aria-live': 'assertive' }, RISK_TEXT[level]),
+    h('div', { id: 'lv-guide' }),
+    h('div', { id: 'lv-coach' }),
+    f ? h('div', { id: 'livewordarea' }) : null,
+    h('div', { class: 'wave idle', id: 'lv-wave', 'aria-hidden': 'true' }, [0, 1, 2, 3, 4].map(() => h('i'))),
+    // The detail is one tap away, so the card stays small: what was heard, and the four steps of a scam call ticked off.
+    h('details', { class: 'dockmore' }, h('summary', null, 'What Vouch heard'),
       h('div', { id: 'lv-why' }),
-      h('div', { class: 'captions', id: 'lv-cap', 'aria-live': 'off' }),
-      h('div', { id: 'lv-guide' }),
-      f ? h('div', { id: 'livewordarea' }) : null,
-      h('p', { class: 'livestatus', id: 'lv-status', role: 'status', 'aria-live': 'polite' }, (S.listen && S.listen.status) || ''),
-      h('div', { class: 'wave idle', id: 'lv-wave', 'aria-hidden': 'true' }, [0, 1, 2, 3, 4].map(() => h('i'))),
-      actions(h('button', { class: 'no', onclick: stopListening }, 'Stop listening'),
-        quiet('Hide this screen (keeps listening)', () => { S.callMin = true; renderOverlay(); tickCall(); }))));
-  queueMicrotask(() => { paintListen(); if (f) paintWordArea(); });
-  return el;
+      h('div', { class: 'captions', id: 'lv-cap', 'aria-live': 'off' })),
+    h('p', { class: 'livestatus', id: 'lv-status', role: 'status', 'aria-live': 'polite' }, (S.listen && S.listen.status) || ''),
+    h('div', { class: 'dockbtns' },
+      h('button', { class: 'no', onclick: stopListening }, 'Stop listening'),
+      h('button', { class: 'ghost', onclick: () => { S.callMin = true; paintDock(); tickCall(); } }, 'Fold away')));
 }
+
+// Shows, updates or removes the card. Safe to call as often as you like: it only rebuilds when who the call is with changes.
+let $dock;
+function paintDock() {
+  if (!$dock) return;
+  const show = !!(S.listening && !S.callMin);
+  document.body.classList.toggle('docked', show);
+  if (!show) { if ($dock.children.length) $dock.replaceChildren(); $dock.dataset.sig = ''; return; }
+  const f = callFriend();
+  const sig = `${f ? f.id : ''}|${S.call ? S.call.startedAt : ''}`;
+  if ($dock.dataset.sig === sig && $dock.children.length) return;
+  $dock.dataset.sig = sig;
+  $dock.replaceChildren(dockView());
+  queueMicrotask(() => { paintListen(); if (f) paintWordArea(); });
+}
+function rebuildDock() { if ($dock) $dock.dataset.sig = ''; paintDock(); }
 
 // One session of watching. Everything about a call (clock, words, engine) is reset here.
 function newCall(mode, status) {
   stopEngine();
   holdScreen();
-  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '', callState: null });
+  Object.assign(S, { heard: '', cur: '', callLevel: 0, listening: true, callMin: false, callAi: null, lastAiText: '', callState: null, wordHeard: false, callClaims: '' });
   S.call = { startedAt: Date.now() };
   S.listen = { mode, status, level: 0, words: 0 };
   S.stt = { q: [], busy: false, retries: 0 };
@@ -1212,20 +1323,27 @@ function startBrowserListening() {
     paintListen();
     scanCall();
   };
+  // A call must never be cut off by a hiccup. The browser's speech service drops out now and then (a network blip, a pause), so a
+  // problem is retried quietly with a short backoff, and only a blocked microphone (which needs the person) ends listening. If the
+  // browser keeps dropping out and Vouch's own listener is available, the call carries on there with everything heard so far kept.
+  let errors = [];
   rec.onerror = (e) => {
     const code = e && e.error;
     if (code === 'no-speech' || code === 'aborted') return;
-    if (code === 'not-allowed') { fail('The microphone is blocked. Allow it in your browser settings, then try again.'); return; }
-    if (S.watch && S.watch.listen) { switchToServer("The browser can't listen here. Switching to Vouch's listener…"); return; }
-    fail(code === 'network' ? "The browser's speech service can't be reached. Open More ways and type what the caller says."
-      : "Couldn't use the microphone. Some phones block it during a call; use a second phone next to the call, or open More ways and type what you hear.");
+    if (code === 'not-allowed' || code === 'service-not-allowed') { fail('The microphone is blocked. Allow it in your browser settings, then try again.'); return; }
+    errors = [...errors, Date.now()].filter((t) => Date.now() - t < 30000);
+    if (S.listen) S.listen.status = 'The speech service dropped out for a moment. Still listening…';
+    paintListen();
+    if (errors.length >= 4 && S.watch && S.watch.listen) switchToServer("The browser keeps dropping out. Carrying on with Vouch's listener…");
   };
   rec.onend = () => { // browsers end a session after a pause; start again while the person is still listening
     if (!S.listening || !S.listen || S.listen.mode !== 'browser' || S.rec !== rec) return;
     S.heard = `${S.heard} ${S.cur}`.slice(-1500); S.cur = '';
-    try { rec.start(); } catch { /* already starting */ }
+    const wait = errors.length ? Math.min(4000, 400 * 2 ** errors.length) : 0;
+    setTimeout(() => { if (S.listening && S.listen && S.listen.mode === 'browser' && S.rec === rec) { try { rec.start(); } catch { /* already running */ } } }, wait);
   };
   try { rec.start(); } catch (err) { fail("Couldn't start listening. Open More ways and type what the caller says."); return; }
+  startRecorder();
   // If nothing comes through in a few seconds, don't wait around: hand over to the server's listener automatically.
   S.listen.timer = setTimeout(() => {
     if (S.listening && S.listen.mode === 'browser' && S.listen.words === 0 && S.watch && S.watch.listen) switchToServer('Not hearing anything with the browser. Switching to Vouch\'s listener…');
@@ -1235,12 +1353,11 @@ function startBrowserListening() {
 }
 
 function switchToServer(status) {
-  const started = S.call && S.call.startedAt;
-  const heard = S.heard;
+  // Everything about the call so far is kept: what was heard, how worried Vouch was, the code-word result and the clock.
+  const keep = { heard: S.heard, callState: S.callState, callLevel: S.callLevel, callAi: S.callAi, wordHeard: S.wordHeard, lastAiText: S.lastAiText, call: S.call };
   stopEngine();
   startServerListening();
-  if (S.call && started) S.call.startedAt = started; // the clock keeps running across the switch
-  if (heard) S.heard = heard;
+  Object.assign(S, keep);
   if (status && S.listen) { S.listen.status = status; paintListen(); }
 }
 
@@ -1272,7 +1389,8 @@ async function pumpStt() {
         if (r.ai && r.read) {
           S.callAi = r.read;
           S.lastAiText = S.heard; // the AI has just read exactly these words
-          if (r.level > (S.callLevel || 0)) escalateCall(r.level, [], false, r.read);
+          const gated = gateCallLevel(r.level, r.read);
+          if (gated > (S.callLevel || 0)) escalateCall(gated, [], false, r.read);
         }
         scanCall();
       } catch (err) {
@@ -1334,6 +1452,7 @@ async function startServerListening() {
   src.connect(proc);
   proc.connect(ctx.destination);
   S.audio = { stream, ctx, proc, src };
+  startRecorder();
   S.listen.status = 'Listening. Put the call on speaker.';
   paintListen();
 }
@@ -1388,6 +1507,12 @@ function releaseScreen() {
   S.wake = null;
 }
 
+// A phone can pause the microphone while the app is in the background. Coming back, put it straight back to work.
+function wakeEngine() {
+  try { if (S.audio && S.audio.ctx && S.audio.ctx.state === 'suspended') S.audio.ctx.resume(); } catch { /* fine */ }
+  try { if (S.listen && S.listen.mode === 'browser' && S.rec) S.rec.start(); } catch { /* already running */ }
+}
+
 function stopEngine() {
   releaseScreen();
   if (S.listen && S.listen.timer) clearTimeout(S.listen.timer);
@@ -1407,22 +1532,119 @@ function stopEngine() {
 }
 
 function fail(message) {
+  // Listening cannot go on (for example the microphone is blocked), but a warning that was already raised stays until the person clears it.
   stopEngine();
-  S.listening = false; S.callLevel = 0;
+  S.listening = false;
   S.listen = { mode: 'off', status: message, level: 0, words: 0 };
-  clearAlert('call');
   paintStatus();
   renderMain();
 }
 
-function stopListening() {
+// ---- the full call, kept on this phone if (and only if) the person switched recording on ----
+// The call is recorded while Vouch listens (nothing is sent anywhere), and when the person ends the call it is saved as "the last call"
+// so they can play it back and check Vouch's read of it. The server never receives it. A phone that cannot record just goes without.
+async function startRecorder() {
+  if (S.recorder || !(S.display && S.display.record) || typeof MediaRecorder === 'undefined') return;
+  try {
+    const own = !(S.audio && S.audio.stream);
+    const stream = own ? await navigator.mediaDevices.getUserMedia({ audio: true }) : S.audio.stream;
+    const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.start(4000);
+    S.recorder = { rec, chunks, own, stream, mime: rec.mimeType || mime };
+  } catch { S.recorder = null; } // no recording is not a reason to stop listening
+}
+function stopRecorder() {
+  const r = S.recorder; S.recorder = null;
+  if (!r) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const done = () => { if (r.own) { try { r.stream.getTracks().forEach((t) => t.stop()); } catch { /* fine */ } } resolve(r.chunks.length ? { blob: new Blob(r.chunks, { type: r.mime || 'audio/webm' }), mime: r.mime || 'audio/webm' } : null); };
+    try { r.rec.onstop = done; r.rec.stop(); } catch { done(); }
+    setTimeout(done, 1500); // never let a stuck recorder hold up the end of a call
+  });
+}
+
+// After the call: wait for all of it, then read the WHOLE call once more and say what happened and what to do now.
+async function summarizeCall({ heard, level, state, aiRead, startedAt, rec }) {
+  if (heard.length < 20 && !rec) return;
+  let guide = aiRead || classify(heard); let finalLevel = level;
+  if (S.watch && heard.length >= 25) {
+    try {
+      const r = await call('watch:read', { text: heard.slice(-2000) }, 12000);
+      if (r.ai && r.read) { guide = r.read; if (r.level > finalLevel) finalLevel = r.level; }
+    } catch { /* the read made during the call stands */ }
+  }
+  let saved = false;
+  if (rec) { try { await store.saveLastCall({ blob: rec.blob, mime: rec.mime, at: Date.now(), ms: Date.now() - startedAt }); saved = true; } catch { /* storage full: no recording, still a summary */ } }
+  S.queue.push({ kind: 'callsummary', data: { requestId: `callsum-${Date.now()}`, level: finalLevel, guide, why: callWhy(state), saved } });
+  renderOverlay();
+}
+
+// What to do now, after the call. The AI's own steps come after these, because these are always right.
+function nextSteps(level, guide) {
+  const base = level >= 2
+    ? ['Do not call back the number that called you.', 'Call your bank on the number on your card or its official website.', 'If you gave out a code, card details or money, tell your bank straight away.']
+    : level === 1 ? ['Check who it really was before you do anything they asked.', 'Call them back on a number you already have.', 'Do not share codes or card details.']
+      : ['Nothing needed. If something about the call still feels wrong, trust that and check.'];
+  return [...base, ...((guide && guide.steps) || []).filter((s) => !base.includes(s)).slice(0, 2)];
+}
+
+function callSummaryOverlay(d) {
+  const stop = d.level >= 2; const check = d.level === 1;
+  const slot = h('div', { id: 'recslot' });
+  if (d.saved) {
+    store.getLastCall().then((r) => {
+      if (!r || !r.blob) return;
+      let url = ''; try { url = URL.createObjectURL(r.blob); } catch { return; }
+      const ext = /mp4/.test(r.mime) ? 'm4a' : 'webm';
+      slot.replaceChildren(h('b', null, 'Recording of this call'), h('audio', { controls: true, src: url, class: 'recplayer' }),
+        h('a', { class: 'btnlink recdl', href: url, download: `vouch-call.${ext}` }, 'Save to my phone'),
+        h('button', { class: 'ghost', onclick: async () => { await store.deleteLastCall(); try { URL.revokeObjectURL(url); } catch { /* fine */ } slot.replaceChildren(h('p', { class: 'muted' }, 'Recording deleted.')); } }, 'Delete the recording'));
+    }).catch(() => {});
+  }
+  return h('div', { class: `overlay ${stop ? 'alert' : check ? 'alert soft' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Call summary' }, h('div', { class: 'inner' },
+    h('div', { class: 'kicker' }, 'Call summary'),
+    h('div', { class: 'stop' }, stop ? 'This call looked like a scam' : check ? 'This call asked for something risky' : 'Nothing suspicious was heard'),
+    d.guide && d.guide.title && d.level >= 1 ? h('p', { class: 'big' }, `${d.guide.title}. ${d.guide.why || ''}`) : null,
+    h('b', null, 'What to do now'),
+    h('ol', { class: 'steps big' }, nextSteps(d.level, d.guide).map((s) => h('li', null, s))),
+    d.level >= 1 ? h('details', { class: 'whybox' }, h('summary', null, 'What Vouch noticed'),
+      h('ul', { class: 'ladder' }, d.why.steps.map((s) => h('li', { class: s.on ? 'on' : '' }, h('span', { class: `tickmark mk ${s.on ? 'ok' : 'off'}`, 'aria-hidden': 'true' }), s.text))),
+      ...d.why.reasons.map((r) => h('p', { class: 'reason' }, r))) : null,
+    slot,
+    actions(h('button', { onclick: dismiss }, 'Done'))));
+}
+
+async function stopListening() {
+  if (S.finishing) return; // a double tap must not end the call twice
+  S.finishing = true;
+  const heard = `${S.heard || ''} ${S.cur || ''}`.trim();
+  const snap = { heard, level: S.callLevel || 0, state: S.callState, aiRead: S.callAi, startedAt: (S.call && S.call.startedAt) || Date.now() };
+  // A call that raised a warning is remembered in Recent (what kind of call and how sure Vouch was; never the words).
+  {
+    const ms = Date.now() - snap.startedAt;
+    if (S.callLevel >= 1 || ms >= 8000) { // every real call is logged, short taps are not
+      const g = S.callAi || classify(`${S.heard || ''} ${S.cur || ''}`);
+      const f = callFriend();
+      const lvl = S.callLevel >= 2 ? 2 : S.callLevel >= 1 ? 1 : 0;
+      const title = lvl >= 1 ? ((g && g.title) || 'A suspicious call') : 'Call checked, nothing suspicious';
+      const who = f ? f.name : (S.callClaims || '');
+      S.tgFeed = [{ kind: 'call', title: S.wordHeard && lvl === 0 ? 'Call checked, code word matched' : title, who, level: lvl, ms, at: Date.now() }, ...(S.tgFeed || [])].slice(0, 100);
+      saveFeed(S.tgFeed);
+    }
+  }
+  const rec = await stopRecorder(); // let the last seconds of audio land before anything is torn down
   stopEngine();
   S.listening = false;
-  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; S.callState = null; // the next call starts calm, so it can warn again
+  S.heard = ''; S.cur = ''; S.callMin = false; S.callLevel = 0; S.callAi = null; S.lastAiText = ''; S.callState = null; S.wordHeard = false; S.callClaims = ''; // the next call starts calm, so it can warn again
   S.listen = { mode: 'off', status: '', level: 0, words: 0 };
   clearAlert('call');
   paintStatus();
   renderMain();
+  S.finishing = false;
+  summarizeCall({ ...snap, rec });
 }
 
 // 0 = nothing; 1 = someone is asking for money (check who it is); 2 = asking for money with scam warning signs.
@@ -1432,6 +1654,7 @@ function scanCall() {
   // second opinion, and whichever is higher wins. The AI read below can raise it further, never lower it.
   const st = S.callState || (S.callState = callInit());
   callStep(st, text, Date.now());
+  scanForWord(); // did the caller just say our code word?
   const r = callRisk(text);
   const level = Math.max(st.level, r.level);
   aiScanCall(); // the AI reads the same words a moment later and can raise this itself
@@ -1439,12 +1662,84 @@ function scanCall() {
   escalateCall(level, r.tags, r.institution, null);
 }
 
+// Did the caller SAY the current code word? The phone is already listening, so it compares every pair of neighbouring words with
+// the real rotating word (this minute or last). A match is shown as good news, but a person still taps "It matches": hearing the
+// word is evidence, not a verdict. (If the person reads the word out loud first, a repeat proves nothing; the screen tells them not to.)
+let wordScanAt = 0;
+async function scanForWord() {
+  const f = likelyFriend();
+  if (!f || !f.wordKey || !S.listening || S.wordHeard || Date.now() - wordScanAt < 1500) return;
+  wordScanAt = Date.now();
+  const words = `${S.heard || ''} ${S.cur || ''}`.toLowerCase().replace(/[^a-z' -]+/g, ' ').split(/\s+/).filter(Boolean).slice(-16);
+  for (let i = 0; i < words.length - 1; i++) {
+    try {
+      if (await checkWord(f.wordKey, `${words[i]} ${words[i + 1]}`)) {
+        S.wordHeard = true;
+        if (!S.wordShown) { S.wordFriendId = f.id; S.callWith = f.id; revealWord(); }
+        paintListen();
+        return;
+      }
+    } catch { /* a damaged key: the typed check is still there */ }
+  }
+}
+
+// "Check my setup": for troubleshooting calls on your own. It listens for 4 seconds, says whether the microphone hears anything, and
+// shows what the speech-to-text actually made of it (and how long that took), so a problem is visible before a real call.
+async function runSetupCheck(out) {
+  const rows = [];
+  const say = (ok, text) => { rows.push(h('p', { class: ok ? 'ok' : 'err' }, `${ok ? '\u2713' : '\u2717'} ${text}`)); out.replaceChildren(...rows); };
+  const md = navigator.mediaDevices; const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!md || !md.getUserMedia || !Ctx) { say(false, "This browser can't use the microphone here. Vouch needs a secure (https) address."); return; }
+  out.replaceChildren(h('p', { class: 'muted' }, 'Listening for 4 seconds. Play a call near the phone, or say something.'));
+  let stream;
+  try { stream = await md.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } }); } catch (e) {
+    say(false, e && e.name === 'NotAllowedError' ? 'The microphone is blocked. Allow it in your browser settings, then try again.' : "Couldn't open the microphone. Another app may be using it.");
+    return;
+  }
+  const ctx = new Ctx();
+  try { if (ctx.resume) await ctx.resume(); } catch { /* fine */ }
+  if (!ctx.createScriptProcessor) { stream.getTracks().forEach((t) => t.stop()); say(false, "This browser can't capture audio for Vouch."); return; }
+  const src = ctx.createMediaStreamSource(stream); const proc = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = []; let peak = 0;
+  proc.onaudioprocess = (e) => {
+    const d = new Float32Array(e.inputBuffer.getChannelData(0)); chunks.push(d);
+    let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    peak = Math.max(peak, Math.sqrt(sum / d.length));
+  };
+  src.connect(proc); proc.connect(ctx.destination);
+  await new Promise((r) => setTimeout(r, 4000));
+  try { proc.disconnect(); src.disconnect(); } catch { /* fine */ }
+  stream.getTracks().forEach((t) => t.stop());
+  try { ctx.close(); } catch { /* fine */ }
+  const level = peak > 0.02 ? 'strong' : peak > 0.004 ? 'weak' : 'none';
+  if (level === 'none') { say(false, 'No sound was picked up. Is the call on speaker with the volume up, and is the microphone allowed for this site?'); return; }
+  say(true, `The microphone works (sound level: ${level}${level === 'weak' ? ': move the phone closer or turn the volume up' : ''}).`);
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+  const canServer = !!(S.watch && S.watch.listen);
+  if (canServer && (ios || !speechCtor())) {
+    try {
+      const t0 = Date.now();
+      const { wav } = chunkToWav(chunks, ctx.sampleRate);
+      const r = await call('watch:listen', { wav }, 25000);
+      say(!!r.text, r.text ? `The Vouch server heard: "${r.text.slice(0, 140)}" (${((Date.now() - t0) / 1000).toFixed(1)} s to transcribe).` : 'The server listened but heard no words in that clip. Try again closer to the speaker.');
+    } catch (e) { say(false, e && e.message === 'NO_STT' ? "The Vouch server has no speech key, so it can't listen. Use typing under More." : friendly(e)); }
+  } else if (speechCtor()) say(true, 'This browser has its own speech recognition, so Listen for scams will use it and words appear almost at once. Tap Listen for scams to see them.');
+  else say(false, 'No speech recognition is available here. Type what you hear under More.');
+}
+
+// The assistant: one suggested sentence for what to say next, from what has been heard so far.
+function coachNodes() {
+  const c = callCoach(S.callState, { wordHeard: !!S.wordHeard, haveFriend: !!likelyFriend() });
+  if (!c.text) return [];
+  return [h('div', { class: `coach ${c.kind}`, role: 'status' }, h('b', null, c.kind === 'good' ? 'Code word heard' : 'Say this'), h('p', null, c.text))];
+}
+
 // Why, in plain words: which of the four steps of a scam call have been heard, the top reasons, and the one thing to do.
 function whyNodes() {
   const w = callWhy(S.callState);
   if (!(S.callState && S.callState.level >= 1)) return [];
   return [
-    h('ul', { class: 'ladder', 'aria-label': 'What Vouch has heard so far' }, w.steps.map((s) => h('li', { class: s.on ? 'on' : '' }, h('span', { class: 'tickmark', 'aria-hidden': 'true' }, s.on ? '\u2713' : '\u25CB'), s.text, s.on ? h('span', { class: 'sr' }, ' (heard)') : null))),
+    h('ul', { class: 'ladder', 'aria-label': 'What Vouch has heard so far' }, w.steps.map((s) => h('li', { class: s.on ? 'on' : '' }, h('span', { class: `tickmark mk ${s.on ? 'ok' : 'off'}`, 'aria-hidden': 'true' }), s.text, s.on ? h('span', { class: 'sr' }, ' (heard)') : null))),
     ...w.reasons.map((r) => h('p', { class: 'reason' }, r)),
     w.action ? h('p', { class: 'doit' }, w.action) : null,
   ].filter(Boolean);
@@ -1455,7 +1750,9 @@ function whyNodes() {
 function escalateCall(level, tags, institution, ai) {
   S.callLevel = level;
   const onCallScreen = S.listening && !S.callMin;
-  if (!onCallScreen) S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${level}-${Date.now()}`, level, tags, institution, ai } });
+  const callItem = { kind: 'callscam', data: { requestId: `callscam-${level}-${Date.now()}`, level, tags, institution, ai } };
+  if (!onCallScreen && level >= 2) S.queue.push(callItem); // fully confident: take over the screen
+  else if (!onCallScreen) notice({ kind: 'check', title: 'Someone on this call is asking for money', text: 'Vouch is still listening. Be careful.', actions: [['Open the call screen', () => { S.callMin = false; renderOverlay(); }]] });
   raiseAlert(level, level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call', callFriend() ? callFriend().id : '');
   attention(level === 2 ? 'Stop. This call has scam warning signs. Do not share codes, passwords or money.' : 'Someone on this call is asking for money. Make sure it is really them.',
     level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300], level === 2 ? 'call' : undefined);
@@ -1471,10 +1768,22 @@ function escalateCall(level, tags, institution, ai) {
   if (S.listening && who && level >= 1 && !S.wordShown) {
     S.callWith = who.id; S.wordFriendId = who.id;
     revealWord();
-    $overlay.dataset.key = ''; // rebuild the call screen so the word area is part of it
+    rebuildDock(); // rebuild the call card so the word area is part of it
   }
   paintListen();
   renderOverlay();
+}
+
+// How sure is sure enough to speak up during a call? The AI is good at noticing, but a call is only STOPPED when there is a clear flag:
+// the caller has actually ASKED for something (a code, card details, money, remote access, gift cards). Before that the AI can say
+// "noticing something" if the offline listener also saw a sign (or the AI gave two separate reasons), and otherwise says nothing. A
+// harmless call that merely mentions a bank stays quiet; a scam that is still only a story gets a yellow flag, not a red one.
+function gateCallLevel(level, read) {
+  const st = S.callState;
+  const asked = !!(st && st.stages.has('action'));
+  if (level >= 2) return asked ? 2 : 1;
+  if (level === 1) return (st && st.cats.size > 0) || ((read && read.signals) || []).length >= 2 ? 1 : 0;
+  return 0;
 }
 
 // The AI's read of the call so far, for the browser and typed paths (the server path gets it in the same request as the words).
@@ -1492,7 +1801,8 @@ async function aiScanCall() {
     if (r.ai && r.read) {
       S.callAi = r.read;
       paintListen();
-      if (r.level > (S.callLevel || 0)) escalateCall(r.level, r.tags || [], false, r.read);
+      const level = gateCallLevel(r.level, r.read);
+      if (level > (S.callLevel || 0)) escalateCall(level, r.tags || [], false, r.read);
     }
   } catch { /* the instant rules already answered */ } finally { aiCallBusy = false; }
 }
@@ -1506,6 +1816,7 @@ function callScamOverlay({ level, tags, institution, ai }) {
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
       ai ? h('p', { class: 'sender' }, ai.title) : null,
+      ...coachNodes(),
       ...whyNodes(),
       ...scamBody(guide, ai && ai.signals, ai && ai.impersonating, tags),
       // One main thing to do: make sure it is really them. The code word comes first, because it works on a live call.
@@ -1796,13 +2107,13 @@ function scanOverlay() {
 // ---------- overlays: scanner, pairing code, incoming prompts ----------
 
 function renderOverlay() {
+  paintDock(); // the call card is not an overlay: it never blocks the page
   if (!$overlay) return;
   const item = S.queue[0];
   let key = '';
   if (item) {
     key = `${item.kind}:${(item.data && item.data.requestId) || (item.data && item.data.u && item.data.u.requestId) || (item.peer && item.peer.id)}`;
   } else if (S.displayOpen) key = 'display';
-  else if (S.listening && !S.callMin) key = 'live';
   else if (S.scanning) key = 'scan';
   else if (S.codeView) key = `code:${S.codeView}:${S.codeExpired ? 'x' : 'ok'}`;
   if ($overlay.dataset.key === key) return; // already showing it; don't wipe what the person is typing
@@ -1813,18 +2124,32 @@ function renderOverlay() {
   for (const el of [$conn, $sticky, $banners, $toast, $content, document.getElementById('nav')]) if (el) el.inert = !!key;
   if (item) $overlay.replaceChildren(overlayFor(item));
   else if (key === 'display') $overlay.replaceChildren(displayOverlay());
-  else if (key === 'live') $overlay.replaceChildren(liveCallOverlay());
+
   else if (S.scanning) $overlay.replaceChildren(scanOverlay());
   else if (S.codeView) $overlay.replaceChildren(codeOverlay(S.codeView));
   else $overlay.replaceChildren();
   // Move focus into the dialog so screen readers read it first.
-  const first = key !== 'scan' && key !== 'live' && $overlay.querySelector('.inner > *');
+  const first = key !== 'scan' && $overlay.querySelector('.inner > *');
   if (first) { first.setAttribute('tabindex', '-1'); first.focus({ preventScroll: true }); }
 }
 
 // Close one message. With the message's own data it closes exactly that one, even if the queue changed while an answer was in
 // flight; with nothing it closes the one on screen.
 function stopSpeaking() { try { if ('speechSynthesis' in globalThis) speechSynthesis.cancel(); } catch { /* none */ } }
+// A pop-up notice: when Vouch is suspicious but not fully sure, it says so quietly and lets you carry on (a call keeps going, a page
+// keeps its place). Only a fully confident warning takes over the whole screen. Notices announce themselves to screen readers, have
+// big buttons, vibrate once, and leave on their own after a while (the red banner stays if the danger is real).
+function notice({ kind = 'check', title, text = '', actions: buttons = [], ms = 20000 }) {
+  if (!$notices) return;
+  try { if (navigator.vibrate) navigator.vibrate(120); } catch { /* not supported */ }
+  const card = h('div', { class: `notice ${kind}`, role: 'status' },
+    h('div', { class: 'ntext' }, h('b', null, title), text ? h('span', null, text) : null),
+    h('div', { class: 'nbtns' }, ...buttons.map(([label, fn]) => h('button', { onclick: () => { card.remove(); fn(); } }, label)), h('button', { class: 'ghost', onclick: () => card.remove() }, 'Dismiss')));
+  while ($notices.children.length >= 2) $notices.firstChild.remove();
+  $notices.append(card);
+  setTimeout(() => { try { card.remove(); } catch { /* gone */ } }, ms);
+}
+
 function dismissItem(data) {
   stopSpeaking();
   const i = S.queue.findIndex((q) => q.data === data);
@@ -1860,8 +2185,8 @@ function displayOverlay() {
     h('h2', null, 'Display'),
     group('Text size', [[1, 'Normal'], [2, 'Large'], [3, 'Larger'], [4, 'Largest']], d.size, (v) => set({ size: v })),
     group('Colours', [['auto', 'Match my phone'], ['light', 'Light'], ['dark', 'Dark'], ['hc', 'High contrast']], d.theme, (v) => set({ theme: v })),
-    h('div', { class: 'people' }, h('div', { class: 'chips' }, toggle('Reading mode', d.reading, { reading: !d.reading }), toggle('Less motion', d.calm, { calm: !d.calm }), toggle('Speak warnings aloud', d.aloud, { aloud: !d.aloud }))),
-    h('p', { class: 'muted' }, 'Saved on this phone only.'),
+    h('div', { class: 'people' }, h('div', { class: 'chips' }, toggle('Reading mode', d.reading, { reading: !d.reading }), toggle('Less motion', d.calm, { calm: !d.calm }), toggle('Speak warnings aloud', d.aloud, { aloud: !d.aloud }), toggle('Keep a recording of calls on this phone', d.record, { record: !d.record }))),
+    h('p', { class: 'muted' }, d.record ? 'Only the last call is kept, on this phone only, until you delete it. Tell the other person you are recording.' : 'Saved on this phone only.'),
     actions(h('button', { onclick: () => { S.displayOpen = false; renderOverlay(); } }, 'Done'))));
 }
 
@@ -1877,6 +2202,7 @@ function overlayFor(item) {
   if (item.kind === 'scam') return scamOverlay(item.data);
   if (item.kind === 'call') return callOverlay(item.data);
   if (item.kind === 'callscam') return callScamOverlay(item.data);
+  if (item.kind === 'callsummary') return callSummaryOverlay(item.data);
   return pairedOverlay(item);
 }
 
@@ -2124,15 +2450,23 @@ function wireEvents() {
     S.linkCode = null;
     await loadWatch();
     toast(`${SOURCE_APP[m && m.channel] || 'That app'} is connected. Forward it a suspicious message to try it.`, 'ok');
-    if (S.tab === 'friends') renderMain();
+    if (S.tab === 'friends' || S.tab === 'check') renderMain();
   });
   // A message bot (Telegram, text, WhatsApp) flagged something sent to a chat linked to this account.
   on('scam:alert', (a) => {
     if (!a) return;
     const id = `bot-${a.ts || Date.now()}`;
     const guide = a.ai ? { title: a.ai.title, why: a.ai.why, steps: a.ai.steps, links: a.ai.links, image: a.ai.image } : { title: a.title, why: a.why, steps: a.steps || [] };
-    S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source, sender: a.sender, ai: a.ai, aid: a.id, repeat: a.repeat, soft: a.level !== 2, signals: a.signals, impersonating: a.impersonating } });
-    if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends') renderMain(); });
+    const item = { kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source, sender: a.sender, ai: a.ai, aid: a.id, repeat: a.repeat, soft: a.level !== 2, signals: a.signals, impersonating: a.impersonating } };
+    // Fully confident (a stop): the whole screen. Otherwise a pop-up notice that can be opened when the person is ready.
+    if (a.level === 2) { S.queue = S.queue.filter((q) => q.kind !== 'callsummary'); S.queue.push(item); } // a fresh stop matters more than yesterday's summary
+    else notice({ kind: 'check', title: a.title || 'Check this message', text: `Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, actions: [['Review', () => { S.queue.push(item); renderOverlay(); }]] });
+    if (a.source === 'telegram') {
+      S.lastTg = { title: a.title, who: a.sender && !a.sender.hidden ? (a.sender.handle || a.sender.name || '') : '', at: Date.now() };
+      S.tgFeed = [{ ...S.lastTg, level: a.level === 2 ? 2 : 1 }, ...(S.tgFeed || [])].slice(0, 100);
+      saveFeed(S.tgFeed);
+    }
+    if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends' || S.tab === 'check') renderMain(); });
     raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);
     attention(a.level === 2 ? `Warning. ${a.title}. Do not act on it.` : `${a.title}. Make sure it is really them.`, a.level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
     notify(a.level === 2 ? 'Vouch: this message looks like a scam' : 'Vouch: this message asks for money', a.title, `bot-${a.source}`);
