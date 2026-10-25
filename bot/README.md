@@ -88,3 +88,11 @@ The Telegram bot only sees chats it is in; it sees a group only if privacy mode 
 Every request is checked against Twilio's `X-Twilio-Signature`; unsigned or tampered requests get a 403. Guardian heads-ups show a masked sender number and never the message.
 
 Limits: US carriers filter texts from unregistered numbers and registration takes days; trial accounts only reach verified numbers; the WhatsApp sandbox needs the one-time join, and a production WhatsApp number needs Meta's approval. This adapter is tested against a mocked Twilio, not yet against a live account.
+
+## Voice (ElevenLabs, optional)
+
+Set ELEVENLABS_API_KEY (and optionally ELEVENLABS_VOICE_ID) in .env. Then:
+
+- **Hearing:** Telegram voice notes and the app's call listener are transcribed by ElevenLabs Scribe; Gemini judges the words (with the earlier words of the call). With no key, Gemini hears the call audio itself and voice notes get a polite no.
+- **Speaking:** a voice note to the bot is answered in writing and out loud; send /voice to have every answer read aloud. The spoken verdict is the headline plus the first step.
+- Nothing is stored or logged: not the audio, not the words.

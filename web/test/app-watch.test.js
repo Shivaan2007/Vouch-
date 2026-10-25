@@ -82,7 +82,7 @@ test('a message forwarded to the linked bot chat flashes a warning in the app', 
 test('On a call works with no friends: typed words are flagged live, with the scam type and steps', async () => {
   await btn('On a call').fire('click');
   await wait(100);
-  assert.ok(text().includes('Watch this call for scams'), 'the call watcher is there even with no friends');
+  assert.ok(text().includes('Listen to this call'), 'the call listener is there even with no friends');
   const box = find(appEl, (n) => n.id === 'callsays');
   box.value = 'please go and buy some apple gift cards and read me the numbers';
   await box.fire('input');
@@ -111,17 +111,16 @@ test('listening through the Vouch server: audio goes up, words come back, the ca
   const box = find(appEl, (n) => n.id === 'callsays');
   box.value = '';
   await box.fire('input');
-  await btn('Start watching').fire('click');
+  await btn('Listen to this call').fire('click');
   await wait(300);
-  assert.ok(text().includes('Listening through Vouch'), 'says which engine it is using');
+  assert.ok(text().includes('Put the call on speaker'), 'tells the person what to do');
   assert.ok(proc && typeof proc.onaudioprocess === 'function', 'the microphone is wired up');
   const block = Float32Array.from({ length: 4096 }, (_, i) => 0.3 * Math.sin(i / 7));
   for (let i = 0; i < 25; i++) proc.onaudioprocess({ inputBuffer: { getChannelData: () => block } }); // about six seconds
   await wait(800);
-  assert.ok(text().includes('STOP. This call looks like a scam.'), 'flagged from what the server heard');
+  assert.ok(text().includes('STOP. Scam signs'), 'the call screen turns to the warning from what the server heard');
   assert.ok(text().includes('Watching call'), 'the header shows it is watching');
-  await dismissAll();
-  await btn('Stop watching').fire('click');
+  await btn('End').fire('click');
   await wait(100);
   assert.ok(!text().includes('Watching call'));
 });
@@ -149,14 +148,12 @@ test('the call screen: caller, clock, captions with the risky words marked, risk
   assert.ok(text().includes('Analyzing a recording'), 'the call screen opens');
   assert.ok(text().includes('Unknown caller') || text().includes('Gran') || text().length > 0);
   assert.match(text(), /\d\d:\d\d/, 'there is a call clock');
-  assert.ok(text().includes('No warning signs yet'), 'and a risk badge that starts calm');
+  assert.ok(text().includes('Nothing suspicious so far'), 'and a risk badge that starts calm');
   await wait(5600); // the first five-second window finishes "playing" and goes to the server
   await wait(900);
-  assert.ok(text().includes('STOP. This call looks like a scam.'), 'the call is flagged as the words come in');
-  await dismissAll(); // the warning covers the call screen until it is dismissed, like a real alert
+  assert.ok(text().includes('STOP. Scam signs'), 'the call is flagged as the words come in, on the call screen itself');
   assert.ok(text().includes('gift cards'), 'the captions show what was heard');
   assert.ok(dom.findAll(appEl, (n) => n.tag === 'mark').length >= 1, 'with the risky words marked');
-  assert.ok(text().includes('Scam warning signs'), 'and the badge has turned to the warning');
   await btn('End').fire('click');
   await wait(100);
   assert.ok(!text().includes('Analyzing a recording'));

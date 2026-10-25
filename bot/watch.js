@@ -7,6 +7,7 @@
 import crypto from 'node:crypto';
 import { analyzeSafe } from '../server/src/analyze.js';
 import { DEFAULT_MODELS, geminiConfig } from '../server/src/risk/gemini.js';
+import { createVoice } from './voice.js';
 import { createCore } from './core.js';
 import { createBot } from './telegram-bot.js';
 import { createTwilioHandler } from './twilio-webhook.js';
@@ -123,13 +124,16 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     },
   };
 
+  // ElevenLabs, when a key is set: Scribe hears (voice notes, call audio) and a voice reads verdicts aloud. Without it, Gemini hears.
+  const voice = createVoice({ apiKey: env.ELEVENLABS_API_KEY || '', voiceId: env.ELEVENLABS_VOICE_ID || '', fetchImpl });
+
   // ---- doors ----
   let telegramUser = '';
   let telegram = null;
   let ready = Promise.resolve(); // resolves once Telegram has answered, so a startup message can be honest
   if (env.BOT_TOKEN) {
     telegram = createBot({
-      token: env.BOT_TOKEN, fetchImpl, analyze, infer, vouchUrl: env.VOUCH_URL || '', link, onFlag: pushAlert, onAi: pushAi, track, log,
+      token: env.BOT_TOKEN, fetchImpl, analyze, infer, vouchUrl: env.VOUCH_URL || '', link, onFlag: pushAlert, onAi: pushAi, track, log, voice,
       guardians: (env.GUARDIAN_CHAT_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
     });
     // Only start listening once Telegram accepts the token, so a wrong or revoked token is one clear log line, not a retry loop.
@@ -221,7 +225,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     socket.on('watch:status', (_p, ack) => {
       const uid = who();
       if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
-      return reply(ack, { ok: true, channels: channels(), linked: q.linkedFor.all(uid).map((r) => r.channel), listen: !!geminiConfig().apiKey });
+      return reply(ack, { ok: true, channels: channels(), linked: q.linkedFor.all(uid).map((r) => r.channel), listen: !!(geminiConfig().apiKey || voice.enabled), voice: voice.enabled });
     });
     socket.on('watch:link', (_p, ack) => {
       const uid = who();
@@ -287,7 +291,23 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
       const wav = p && p.wav;
       if (typeof wav !== 'string' || !wav || wav.length > MAX_WAV_B64) return reply(ack, { ok: false, error: 'BAD_INPUT' });
       if (!allow(`listen:${uid}`, LISTEN_PER_MIN)) return reply(ack, { ok: false, error: 'RATE_LIMITED' });
-      try { return reply(ack, { ok: true, text: await transcribe(wav) }); } catch (e) {
+      if (!geminiConfig().apiKey && !voice.enabled) return reply(ack, { ok: false, error: 'NO_STT' });
+      const prior = typeof (p && p.prior) === 'string' ? p.prior.slice(-900) : '';
+      try {
+        if (voice.enabled) {
+          // ElevenLabs Scribe hears; the AI judges the words together with the earlier ones.
+          const heard = await voice.transcribe(Buffer.from(wav, 'base64'), 'audio/wav');
+          if (heard !== null) {
+            if (!heard) return reply(ack, { ok: true, text: '', ai: false });
+            const a = await core.assess({ text: `${prior} ${heard}`.trim() });
+            return reply(ack, { ok: true, text: heard, ai: a.ai, level: a.level, tags: a.tags, read: a.ai ? aiView(a) : null });
+          }
+        }
+        // One request: the AI writes down what was said and judges the call so far, from the words already heard plus the new audio.
+        const a = await core.assess({ text: prior, audioBase64: wav });
+        if (a.ai) return reply(ack, { ok: true, text: a.heard || '', ai: true, level: a.level, tags: a.tags, read: aiView(a) });
+        return reply(ack, { ok: true, text: await transcribe(wav), ai: false }); // the AI read failed: at least get the words, the phone's rules still scan them
+      } catch (e) {
         return reply(ack, { ok: false, error: e.code || 'STT_FAILED' }); // never the audio or the words
       }
     });

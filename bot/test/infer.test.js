@@ -208,3 +208,22 @@ test('with no AI, the most obvious link tricks still raise the level', async () 
   assert.equal((await core.assess({ text: 'see https://www.amazon.com/orders' })).level, 0);
   assert.equal(core.quick('http://203.0.113.9/login').level, 2);
 });
+
+test('call audio goes to the AI once: it writes down what was said and judges the call with the earlier words', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push(JSON.parse(init.body)); return reply({ ...GOOD, heard: 'buy gift cards and read me the numbers', risk: 'high', moneyRequest: true }); };
+  const wav = 'UklGRgAAAAA=';
+  const r = await inferScam({ text: 'hello this is your bank', audioBase64: wav }, { fetchImpl, apiKey: 'k' });
+  const parts = seen[0].contents[0].parts;
+  assert.equal(parts.find((p) => p.inline_data).inline_data.mime_type, 'audio/wav');
+  assert.match(JSON.stringify(parts), /THE CALL SO FAR/);
+  assert.equal(r.heard, 'buy gift cards and read me the numbers');
+  assert.equal(await inferScam({ text: '', audioBase64: 'not-a-wav' }, { fetchImpl, apiKey: 'k' }), null);
+});
+
+test('the core reads the new words together with the earlier ones, so a scam built up over a call is caught', async () => {
+  const core = createCore({ analyze: rules, infer: async () => ({ ...GOOD, risk: 'none', moneyRequest: false, scamType: 'Ordinary message', signals: [], steps: [], why: '', tags: [], links: [], image: null, heard: 'go and buy apple gift cards now' }) });
+  const a = await core.assess({ text: 'I am calling from your bank', audioBase64: 'UklGRgAAAAA=' });
+  assert.equal(a.heard, 'go and buy apple gift cards now');
+  assert.ok(a.level >= 1, 'the rules read what the AI heard');
+});

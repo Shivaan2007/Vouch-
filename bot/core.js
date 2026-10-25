@@ -70,16 +70,18 @@ export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl 
    * The full read. The AI decides what the message is; the rules are the floor under it.
    * @param {{text?: string, imageBase64?: string, context?: string[]}} input
    */
-  async function assess({ text = '', imageBase64, context = [] } = {}) {
-    const local = suggest(text);
-    const ruleGuide = classify(text);
+  async function assess({ text = '', imageBase64, context = [], audioBase64 } = {}) {
     let ai = null;
-    try { ai = await infer({ text, imageBase64, context }); } catch { ai = null; }
-    if (ai) ai = { links: [], image: null, signals: [], steps: [], tags: [], ...ai }; // tolerate a result that leaves a field out
+    try { ai = await infer({ text, imageBase64, context, audioBase64 }); } catch { ai = null; }
+    if (ai) ai = { links: [], image: null, signals: [], steps: [], tags: [], heard: '', ...ai }; // tolerate a result that leaves a field out
+    // For a call, the words are what the AI just heard on top of what was already known; the rules read all of them.
+    const words = `${text} ${(ai && ai.heard) || ''}`.trim();
+    const local = suggest(words);
+    const ruleGuide = classify(words);
 
     if (ai) {
       const tags = [...new Set([...local.tags, ...ai.tags])];
-      const level = Math.max(levelOf(local.tags, METHOD_RISK_OF[ai.paymentMethod] || 'low', local), aiLevel(ai), withLinkFloor(text, 0, null).level);
+      const level = Math.max(levelOf(local.tags, METHOD_RISK_OF[ai.paymentMethod] || 'low', local), aiLevel(ai), withLinkFloor(words, 0, null).level);
       // The AI names it in its own words. If it only sees an ordinary-looking request for money, the honest headline is that
       // someone is asking, and that you cannot tell who is behind it. A deceptive link or picture gets its own headline.
       const plain = !ai.scamType || /^(ordinary|unclear|normal|nothing)/i.test(ai.scamType);
@@ -93,7 +95,7 @@ export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl 
       return {
         tags, level, ask: local.ask || ai.moneyRequest, guide, explanation: ai.why, signals: ai.signals, impersonating: ai.impersonating, links: ai.links, image: ai.image,
         amount: ai.amountUSD != null ? String(ai.amountUSD) : local.amount, hadImage: !!imageBase64, ai: true, aiRisk: ai.risk, method: ai.paymentMethod,
-        intent: ai.intent, chat: ai.reply,
+        intent: ai.intent, chat: ai.reply, heard: ai.heard,
       };
     }
 
@@ -105,8 +107,8 @@ export function createCore({ analyze = analyzeSafe, infer = inferScam, vouchUrl 
       tags = [...new Set([...tags, ...((r && r.tags) || [])])];
       risk = (r && r.paymentRisk) || 'low';
     } catch { /* the phone's instant hints still apply */ }
-    const floored = withLinkFloor(text, levelOf(tags, risk, local), ruleGuide);
-    return { tags, level: floored.level, ask: local.ask, guide: floored.guide, explanation: '', signals: [], impersonating: '', links: [], image: null, amount: local.amount, hadImage: !!imageBase64, ai: false, aiRisk: null, intent: looksLikeChat(text, local) ? 'chat' : 'message', chat: '' };
+    const floored = withLinkFloor(words, levelOf(tags, risk, local), ruleGuide);
+    return { tags, level: floored.level, ask: local.ask, guide: floored.guide, explanation: '', signals: [], impersonating: '', links: [], image: null, amount: local.amount, hadImage: !!imageBase64, ai: false, aiRisk: null, intent: looksLikeChat(words, local) ? 'chat' : 'message', chat: '', heard: '' };
   }
 
   /**
