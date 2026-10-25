@@ -356,3 +356,15 @@ html.reading #app { max-width: 40rem; }
 
 /* Less motion: the same as the phone's own setting, but one switch inside the app. */
 html.calm *, html.calm *::before, html.calm *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+
+/* Warnings: a clear label above the title, and the danger banner kept slim and readable on every screen. */
+.kicker { font-size: 0.85rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; margin: 0.4rem 0 0; }
+.kicker::before { content: "\25A0\00a0"; }
+.overlay.alert.soft .kicker::before { content: "\25B2\00a0"; }
+.banner { padding: 0.7rem 1rem; margin: 0.5rem 0; }
+.banner p { margin: 0.2rem 0 0.1rem; font-size: 0.95rem; font-weight: 600; }
+.banner button { min-height: 2.9rem; margin-top: 0.45rem; font-size: 0.98rem; }
+.banner button:disabled { opacity: 1; color: rgba(255, 255, 255, 0.78); box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5); }
+.chips .chipbtn.wide { flex: 1 1 100%; text-align: left; padding-left: 1.1rem; }
+.overlay .inner > p.muted { margin-bottom: 5.5rem; }
+.pill.wait { background: var(--surface-2); color: var(--muted); }
