@@ -168,3 +168,39 @@ test('each model gets its own thinking setting', async () => {
   assert.deepEqual(seen['gemini-3.5-flash'], { thinkingBudget: 0 });
   assert.deepEqual(seen['gemini-3.5-flash-lite'], { thinkingLevel: 'low' });
 });
+
+// ---- hedging: a slow first model must not use up the whole budget ----
+const hangUntilAbort = (signal) => new Promise((_, rej) => signal.addEventListener('abort', () => rej(new Error('aborted'))));
+
+test('first model hangs: the next model is started after the hedge delay and wins', async () => {
+  const tried = [];
+  let firstAborted = false;
+  const fetchImpl = async (url, init) => {
+    tried.push(modelOf(url));
+    if (tried.length === 1) { init.signal.addEventListener('abort', () => { firstAborted = true; }); return hangUntilAbort(init.signal); }
+    return goodReply(url, init);
+  };
+  const t0 = Date.now();
+  const out = await analyze(base, { apiKey: 'k', timeoutMs: 1000, hedgeMs: 40, fetchImpl });
+  assert.equal(out.source, 'gemini');
+  assert.deepEqual(tried, ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']);
+  assert.ok(Date.now() - t0 < 500);
+  assert.equal(firstAborted, true); // the loser is cancelled once there is a winner
+});
+
+test('a fast first answer never starts a second model', async () => {
+  const tried = [];
+  const fetchImpl = async (url, init) => { tried.push(modelOf(url)); return goodReply(url, init); };
+  await analyze(base, { apiKey: 'k', timeoutMs: 500, hedgeMs: 40, fetchImpl });
+  await new Promise((r) => setTimeout(r, 120)); // past the hedge delay
+  assert.equal(tried.length, 1);
+});
+
+test('everything hangs: returns rules-only at the budget, not later', async () => {
+  const fetchImpl = (_u, init) => hangUntilAbort(init.signal);
+  const t0 = Date.now();
+  const out = await analyze({ ...base, text: 'urgent' }, { apiKey: 'k', timeoutMs: 150, hedgeMs: 30, fetchImpl });
+  assert.ok(Date.now() - t0 < 400);
+  assert.equal(out.source, 'rules');
+  assert.deepEqual(out.tags, ['URGENCY']);
+});

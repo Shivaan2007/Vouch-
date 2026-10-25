@@ -8,6 +8,7 @@ import { TAG_LIST } from '../config.js';
 // FIRST_REQUEST comes from the server's database, not from a model.
 export const GEMINI_TAGS = TAG_LIST.filter((t) => t !== 'FIRST_REQUEST');
 const DEFAULT_TIMEOUT_MS = 2700; // whole chain; the server gives analyze() 3 s in total
+const HEDGE_MS = 1000;           // a model slower than this gets the next one started alongside it (seen: first model hanging)
 const MAX_EXPLANATION = 140;
 
 // Checked live on a free key (Oct 24): gemini-2.5-flash returns 404 for new keys; the free tier allows 5 requests per
@@ -99,40 +100,69 @@ export async function geminiAnalyze({ text, imageBase64 } = {}, opts = {}) {
   if (mime) parts.push({ inline_data: { mime_type: mime, data: imageBase64 } });
 
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs); // one budget for the whole chain
-  try {
-    for (const model of models) {
-      if (ctrl.signal.aborted) return null;
-      try {
-        const res = await doFetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.name)}:generateContent`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, // header, so the key never sits in a URL
-            signal: ctrl.signal,
-            body: JSON.stringify({
-              contents: [{ role: 'user', parts }],
-              generationConfig: {
-                temperature: 0,
-                maxOutputTokens: 300,
-                responseMimeType: 'application/json',
-                responseSchema: RESPONSE_SCHEMA,
-                thinkingConfig: model.thinking,
-              },
-            }),
-          },
-        );
-        if (!res || !res.ok) continue; // 429 (this model's minute is used up), 404 (retired model), 5xx: try the next model
-        const body = await res.json();
-        const out = body?.candidates?.[0]?.content?.parts?.map((p) => p?.text ?? '').join('');
-        const clean = typeof out === 'string' && out ? cleanGeminiOutput(out) : null;
-        if (clean) return clean;
-      } catch {
-        if (ctrl.signal.aborted) return null; // out of time: stop
-      }
+  const hedgeMs = opts.hedgeMs ?? HEDGE_MS;
+
+  // One attempt on one model. Never throws; resolves to a cleaned answer or null.
+  const attempt = async (model) => {
+    try {
+      const res = await doFetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.name)}:generateContent`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, // header, so the key never sits in a URL
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 300,
+              responseMimeType: 'application/json',
+              responseSchema: RESPONSE_SCHEMA,
+              thinkingConfig: model.thinking,
+            },
+          }),
+        },
+      );
+      if (!res || !res.ok) return null; // 429 (this model's minute is used up), 404 (retired model), 5xx
+      const body = await res.json();
+      const out = body?.candidates?.[0]?.content?.parts?.map((p) => p?.text ?? '').join('');
+      return typeof out === 'string' && out ? cleanGeminiOutput(out) : null;
+    } catch {
+      return null; // timeout, network error, bad envelope
     }
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  };
+
+  // Models are tried in order. A quick failure starts the next model at once; a model that is merely slow gets
+  // `hedgeMs` before the next one is started alongside it. The first good answer wins. One budget for everything.
+  return new Promise((resolve) => {
+    let next = 0;
+    let pending = 0;
+    let done = false;
+    let hedge;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(budget);
+      clearTimeout(hedge);
+      ctrl.abort(); // cancel whatever is still in flight
+      resolve(value);
+    };
+    const launch = () => {
+      clearTimeout(hedge);
+      if (done || next >= models.length) return;
+      const model = models[next++];
+      pending++;
+      hedge = setTimeout(launch, hedgeMs);
+      attempt(model).then((clean) => {
+        pending--;
+        if (clean) return finish(clean);
+        if (done) return undefined;
+        if (next < models.length) return launch();
+        if (pending === 0) return finish(null);
+        return undefined;
+      });
+    };
+    const budget = setTimeout(() => finish(null), timeoutMs);
+    launch();
+  });
 }
