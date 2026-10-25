@@ -809,6 +809,7 @@ function announce(u) {
 function renderResult() {
   const box = document.getElementById('result');
   if (!box) return;
+  if (!S.current) { box.replaceChildren(); return; } // nothing has been asked yet: show nothing (it used to say "Asking their phone…" on a fresh screen)
   const u = S.results.get(S.current);
   if (!u) { box.replaceChildren(h('p', { class: 'muted', id: 'waitleft', role: 'status' }, 'Asking their phone…')); tickWait(); return; }
   const info = u.stages.information;
