@@ -34,3 +34,10 @@ test('scam fixtures: phone hints and server rules give the same tags', () => {
   for (const f of fixtures.scams) assert.deepEqual(phone(f.text), server(f.text), f.text);
   assert.deepEqual(phone("I am stuck in traffic, running late"), server("I am stuck in traffic, running late"));
 });
+
+// The second message set (fixtures/flagging.json) added server rules for emergencies, borrowed phones, account alerts and
+// reimbursement lures. The phone hints do not have them yet. Once web/js/lib/scan.js matches, delete the todo flag.
+const flagging = JSON.parse(readFileSync(new URL('./fixtures/flagging.json', import.meta.url), 'utf8'));
+test('flagging fixtures: phone hints and server rules give the same tags', () => {
+    for (const f of [...flagging.scams, ...flagging.normal]) assert.deepEqual(phone(f.text), server(f.text), f.text);
+  });

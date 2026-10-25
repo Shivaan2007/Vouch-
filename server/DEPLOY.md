@@ -20,6 +20,8 @@ Render's free-tier rules change. Confirm them on render.com/pricing.
 | `DB_PATH` | `/tmp/vouch.db` |
 | `DEMO_KEY` | long random string you keep private. Enables `/demo`. Never commit it. |
 | `GEMINI_API_KEY` | optional. Without it everything runs rules-only. |
+| `ELEVENLABS_API_KEY` | optional, for spoken alerts. A key limited to Text to Speech with a monthly credit limit. |
+| `ELEVENLABS_VOICE_ID` | optional, the ID of a voice from the ElevenLabs library (no cloning needed). |
 | `GEMINI_MODEL` | `gemini-2.5-flash` (confirm in AI Studio) |
 Do not set `PORT`: Render provides it.
 
@@ -51,4 +53,5 @@ Wait for the green check, then test HTTPS on a phone, before the expo.
 
 ## Expo day
 - Warm the server. Do not use Wipe on `/demo`; use Reset.
+- Keep `DEMO_KEY=... npm run watch -- https://<name>.onrender.com` open on the laptop: it shows who is online, pairs and open requests. Before each judge, `... --reset --once` clears requests and keeps the paired phones.
 - Revert a bad deploy: press Revert on the last PR on GitHub, or Render > Events > Rollback.

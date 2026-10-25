@@ -6,7 +6,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { createCore, label } from './core.js';
+import { createCore, createContext, label } from './core.js';
 
 const MAX_BODY = 64 * 1024;
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
@@ -26,14 +26,15 @@ const twiml = (text) => `<?xml version="1.0" encoding="UTF-8"?><Response>${text 
  */
 export function createTwilioHandler({
   authToken, accountSid, fromNumber = '', whatsappFrom = '', publicUrl, analyze, vouchUrl = '', guardians = [], fetchImpl = globalThis.fetch, log = () => {},
-  link = null, onFlag = () => {}, path = '/twilio',
+  link = null, onFlag = () => {}, path = '/twilio', infer,
 }) {
-  const core = createCore({ analyze, vouchUrl });
+  const core = createCore({ analyze, infer, vouchUrl });
+  const memory = createContext(); // the last few messages from each number, in memory only
   const basic = `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`;
 
   // A screenshot sent to the number. Twilio media needs the account credentials; only small jpeg/png are read.
   async function fetchImage(url, type) {
-    if (!/^image\/(jpeg|png)$/.test(String(type))) return undefined;
+    if (!/^image\/(jpeg|png|webp)$/.test(String(type))) return undefined;
     try {
       const res = await fetchImpl(url, { headers: { Authorization: basic } });
       if (!res.ok) return undefined;
@@ -67,13 +68,19 @@ export function createTwilioHandler({
     if (lm) {
       if (!link) return twiml('Linking is not set up on this server yet.');
       const who = link.bind(whatsapp ? 'whatsapp' : 'sms', from, lm[1]);
-      return twiml(who ? `Linked to ${who.name}'s Vouch. I'll warn you here, and a warning will flash in the Vouch app.`
+      return twiml(who ? `Linked to ${who.name}'s Vouch.${who.all && who.all.length > 1 ? ` This number now warns: ${who.all.join(', ')}.` : ''} I'll warn you here, and a warning will flash in the Vouch app. Text WHO to see who this number warns, or UNLINK to stop.`
         : 'That code is wrong or has expired. In Vouch, open My people and get a new code.');
     }
-    const a = await core.assess({ text, imageBase64 });
+    if (link && /^\s*\/?(who|unlink)\s*$/i.test(text)) {
+      const ch = whatsapp ? 'whatsapp' : 'sms';
+      if (/unlink/i.test(text)) { link.unbindChat(ch, from); return twiml('Done. This number no longer warns anyone in Vouch.'); }
+      const names = link.who(ch, from);
+      return twiml(names.length ? `This number warns: ${names.join(', ')}.` : 'This number is not linked to a Vouch account yet. In Vouch, tap Connect next to this app.');
+    }
+    const a = await core.assess({ text, imageBase64, context: memory.get(from) });
+    memory.add(from, text);
     if (link && a.level >= 1) {
-      const uid = link.lookup(whatsapp ? 'whatsapp' : 'sms', from);
-      if (uid) onFlag(uid, a, whatsapp ? 'whatsapp' : 'sms');
+      for (const uid of link.lookup(whatsapp ? 'whatsapp' : 'sms', from)) onFlag(uid, a, whatsapp ? 'whatsapp' : 'sms');
     }
     if (a.level === 2) {
       const who = from.replace(/^whatsapp:/, '').replace(/\d(?=\d{2})/g, '*'); // masked: the heads-up names a number, never the message
@@ -106,7 +113,7 @@ export function createTwilioHandler({
     }
   }
 
-  return { handleMessage, handleRequest };
+  return { handleMessage, handleRequest, send };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

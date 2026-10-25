@@ -21,16 +21,18 @@ html { font-size: 112.5%; -webkit-text-size-adjust: 100%; }
 html.size-2 { font-size: 137.5%; } html.size-3 { font-size: 162.5%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 1rem/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font-family: inherit; }
-#app { max-width: 36rem; margin: 0 auto; padding: 0 1.1rem 7.5rem; }
+#app { max-width: 36rem; margin: 0 auto; padding: 0 1.1rem 3rem; }
 :focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
 
 /* header */
 header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.8rem 0; background: var(--bg); border-bottom: 1px solid var(--line); margin-bottom: 0.4rem; }
 .brand { display: flex; align-items: center; gap: 0.5rem; margin: 0; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
 .brand img { display: block; border-radius: 7px; }
-.hgroup { display: flex; align-items: center; gap: 0.5rem; }
+.hgroup { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
 .pill { font-size: 0.78rem; font-weight: 600; padding: 0.2rem 0.65rem; border-radius: 99px; background: var(--green-bg); color: var(--green); white-space: nowrap; }
 .pill.off { background: var(--red-bg); color: var(--red); }
+.peoplebtn { width: auto; margin: 0; padding: 0.25rem 0.8rem; min-height: 0; font-size: 0.9rem; border-radius: 99px; }
+.peoplebtn.on { background: var(--ink); color: var(--bg); }
 .size { width: auto; margin: 0; padding: 0.25rem 0.75rem; min-height: 0; font-size: 0.9rem; border-radius: 99px; }
 
 /* type */
@@ -62,6 +64,13 @@ button.yes { background: var(--green); color: var(--green-bg); min-height: 4.25r
 button.no { background: var(--red); color: var(--red-bg); min-height: 4.25rem; font-size: 1.15rem; }
 button:disabled { opacity: 0.45; cursor: default; }
 .row { display: flex; gap: 0.6rem; } .row > * { flex: 1; }
+button.bigbtn { min-height: 4.25rem; font-size: 1.15rem; }
+/* the trusted people: one pill each, wrapping neatly; the picked one is solid */
+.people { margin: 0.9rem 0 0.4rem; }
+.peoplelabel { font-weight: 600; font-size: 0.95rem; margin: 0 0 0.4rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chipbtn { width: auto; margin: 0; flex: 1 1 7rem; min-height: 3.25rem; background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 2px transparent; }
+.chipbtn[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
 
 /* panels */
 .card { background: var(--surface); border-radius: var(--radius); padding: 1rem 1.1rem; margin: 0.8rem 0; }
@@ -103,10 +112,25 @@ button:disabled { opacity: 0.45; cursor: default; }
 .stage:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .stage b { display: block; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.15rem; }
 
-/* tab bar */
+/* Home: the two things people need are two giant buttons. Every other screen starts with one big way back. */
+.hello { font-size: 2.2rem; margin: 1.2rem 0 0.8rem; }
+.homecard { display: flex; align-items: center; gap: 1rem; width: 100%; text-align: left; margin: 0.8rem 0 0; padding: 1.3rem 1.2rem; min-height: 7rem; border-radius: var(--radius); background: var(--accent); color: var(--accent-ink); }
+.homecard .ico { flex: none; width: 3rem; height: 3rem; }
+.homecard .hc-text { display: flex; flex-direction: column; gap: 0.2rem; }
+.homecard .hc-title { font-size: 1.55rem; font-weight: 800; line-height: 1.15; letter-spacing: -0.01em; }
+.homecard .hc-sub { font-size: 1.02rem; font-weight: 500; opacity: 0.85; line-height: 1.3; }
+.homecard.small { background: var(--surface); color: var(--ink); min-height: 5rem; padding: 1rem 1.2rem; }
+.homecard.small .hc-title { font-size: 1.25rem; } .homecard.small .ico { width: 2.2rem; height: 2.2rem; }
+.topbar { display: flex; align-items: center; gap: 0.8rem; margin: 0.6rem 0 0.2rem; }
+.topbar h2 { margin: 0; font-size: 1.6rem; }
+button.back { width: auto; flex: none; margin: 0; min-height: 3rem; padding: 0.4rem 1rem 0.4rem 0.8rem; border-radius: 99px; font-size: 1.05rem; }
+button.back::before { content: "\2039"; font-size: 1.7rem; line-height: 1; margin-right: 0.35rem; vertical-align: -0.1em; }
+
+/* tab bar (no longer used on the main screens) */
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4; display: flex; background: var(--bg); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom, 0px); }
 nav button { margin: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 0.55rem 0.2rem 0.6rem; min-height: 3.6rem; font-size: 0.78rem; font-weight: 600; line-height: 1.15; display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
-nav button.on { color: var(--ink); }
+nav button { flex: 1; font-size: 0.95rem; font-weight: 700; min-height: 4rem; }
+nav button.on { background: var(--ink); color: var(--bg); }
 .ico { display: block; width: 1.5rem; height: 1.5rem; background: currentColor; -webkit-mask-image: var(--src); mask-image: var(--src); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-size: contain; mask-size: contain; }
 
 /* sticky danger banner */
@@ -117,8 +141,17 @@ nav button.on { color: var(--ink); }
 .banner button { background: transparent; box-shadow: inset 0 0 0 2px currentColor; color: inherit; margin-top: 0.5rem; min-height: 2.9rem; }
 
 /* full-screen dialogs */
-.overlay { position: fixed; inset: 0; z-index: 10; background: var(--bg); padding: 1.5rem 1.2rem; padding-top: calc(1.5rem + env(safe-area-inset-top, 0px)); overflow: auto; }
-.overlay .inner { max-width: 36rem; margin: 0 auto; }
+.overlay { position: fixed; inset: 0; z-index: 10; background: var(--bg); padding: 1.5rem 1.2rem 0; padding-top: calc(1.5rem + env(safe-area-inset-top, 0px)); overflow: auto; display: flex; flex-direction: column; }
+.overlay .inner { max-width: 36rem; margin: 0 auto; width: 100%; flex: 1 0 auto; display: flex; flex-direction: column; }
+/* The buttons of every full-screen message sit at the bottom of the screen, always in view, main one first. */
+.actions { position: sticky; bottom: 0; margin-top: auto; padding: 0.9rem 0 calc(0.9rem + env(safe-area-inset-bottom, 0px)); background: inherit; display: grid; gap: 0.6rem; }
+.actions button { margin: 0; min-height: 3.6rem; font-size: 1.1rem; }
+.actions button.quiet { background: transparent; box-shadow: none; text-decoration: underline; min-height: 2.8rem; font-size: 1rem; color: inherit; }
+.overlay.alert .actions button.quiet { box-shadow: none; }
+.overlay.live .actions button.quiet { color: rgba(255, 255, 255, 0.8); }
+.whybox { background: rgba(0, 0, 0, 0.06); border-radius: var(--radius); padding: 0.1rem 1rem; margin: 0.8rem 0; }
+.whybox[open] { padding-bottom: 0.8rem; }
+.hidefile { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
 .overlay.alert { background: var(--red-bg); color: var(--red); }
 .overlay.alert.soft { background: var(--amber-bg); color: var(--amber); }
 .overlay.alert button { background: var(--ink); color: var(--bg); }
@@ -174,3 +207,50 @@ details.more summary { padding: 0.8rem 0; }
 .friend:first-child { border-top: 0; }
 .err { color: var(--red); font-weight: 600; margin-top: 0.5rem; }
 .ok { color: var(--green); font-weight: 600; margin-top: 0.5rem; }
+
+/* live call screen: what a call looks like */
+.overlay.live { background: #0b0b0c; color: #fff; text-align: center; transition: none; }
+.overlay.live.lv1 { background: #2a2107; }
+.overlay.live.lv2 { background: #3b0d0a; }
+.livetop { font-size: 0.85rem; letter-spacing: 0.04em; color: rgba(255, 255, 255, 0.7); margin: 0.2rem 0 1rem; }
+.avatar { width: 5.2rem; height: 5.2rem; border-radius: 50%; background: rgba(255, 255, 255, 0.14); display: grid; place-items: center; font-size: 2.2rem; font-weight: 700; margin: 0 auto 0.6rem; }
+.callername { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.01em; }
+.calltime { font-size: 1.1rem; color: rgba(255, 255, 255, 0.75); font-variant-numeric: tabular-nums; margin: 0.1rem 0 0.8rem; }
+.riskbadge { display: inline-block; font-weight: 700; padding: 0.35rem 1rem; border-radius: 99px; font-size: 1rem; background: rgba(255, 255, 255, 0.16); color: #fff; }
+.riskbadge.r1 { background: #fcd34d; color: #3a2a00; }
+.riskbadge.r2 { background: #ef4444; color: #fff; }
+.livestatus { color: rgba(255, 255, 255, 0.7); font-size: 0.9rem; min-height: 1.4em; margin: 0.7rem 0 0.4rem; }
+.overlay.live .meter { background: rgba(255, 255, 255, 0.18); max-width: 14rem; margin: 0 auto 0.6rem; }
+.overlay.live .meterfill { background: #fff; width: 0; }
+.captions { text-align: left; background: rgba(255, 255, 255, 0.08); border-radius: var(--radius); padding: 0.9rem 1.1rem; min-height: 5.5rem; max-height: 9.5rem; overflow: auto; font-size: 1.15rem; line-height: 1.45; }
+.captions .dim { color: rgba(255, 255, 255, 0.55); }
+mark { background: #fcd34d; color: #000; border-radius: 5px; padding: 0 0.2em; font-weight: 700; }
+.overlay.live .guide { text-align: left; margin-top: 0.8rem; }
+.overlay.live #livewordarea { text-align: center; background: rgba(255, 255, 255, 0.08); border-radius: var(--radius); padding: 0.9rem 1rem; margin-top: 0.8rem; }
+.overlay.live #livewordarea .muted { color: rgba(255, 255, 255, 0.7); }
+.overlay.live #livewordarea details { text-align: left; }
+.callbtns { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.4rem, 1fr)); gap: 0.8rem; margin: 1.4rem auto 0; max-width: 24rem; }
+.cbtn { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; background: transparent; color: #fff; font-size: 0.8rem; min-height: 0; padding: 0; margin: 0; width: auto; }
+.cbtn .circle { width: 3.7rem; height: 3.7rem; border-radius: 50%; background: rgba(255, 255, 255, 0.16); display: grid; place-items: center; }
+.cbtn.end .circle { background: #dc2626; }
+.callbar { display: flex; align-items: center; gap: 0.7rem; background: #0b0b0c; color: #fff; border-radius: var(--radius); padding: 0.55rem 0.9rem; margin: 0.6rem 0; font-size: 0.9rem; font-weight: 600; }
+.callbar span:nth-child(2) { flex: 1; }
+.callbar button { width: auto; margin: 0; min-height: 2.4rem; padding: 0.4rem 0.9rem; background: #fff; color: #000; }
+
+/* sender and AI lines on a warning */
+.sender { font-weight: 700; margin: 0.4rem 0; }
+.airead { background: var(--surface); border-radius: var(--radius-sm); padding: 0.7rem 0.9rem; margin: 0.6rem 0 0; font-weight: 500; }
+.overlay.alert .airead { background: rgba(0, 0, 0, 0.08); }
+
+/* links and pictures the AI looked at */
+.evidence { margin: 0.7rem 0 0; }
+.evidence b { display: block; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.75; margin-bottom: 0.25rem; }
+.evidence p { margin: 0.2rem 0; }
+.linkrow { display: grid; grid-template-columns: auto 1fr; gap: 0.1rem 0.6rem; align-items: baseline; padding: 0.35rem 0; border-top: 1px solid var(--line); }
+.linkrow:first-of-type { border-top: 0; }
+.linkrow .linkurl { font-weight: 700; overflow-wrap: anywhere; }
+.linkrow .muted { grid-column: 2; font-size: 0.9rem; }
+.riskpill { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.05em; padding: 0.1rem 0.5rem; border-radius: 99px; background: var(--surface-2); color: var(--ink); }
+.linkrow.r-high .riskpill { background: var(--red); color: var(--red-bg); }
+.linkrow.r-medium .riskpill { background: var(--amber); color: var(--amber-bg); }
+.overlay.alert .riskpill { background: rgba(0, 0, 0, 0.18); color: inherit; }

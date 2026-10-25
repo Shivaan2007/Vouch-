@@ -7,11 +7,14 @@
 import crypto from 'node:crypto';
 import { analyzeSafe } from '../server/src/analyze.js';
 import { DEFAULT_MODELS, geminiConfig } from '../server/src/risk/gemini.js';
+import { createVoice } from './voice.js';
+import { createCore } from './core.js';
 import { createBot } from './telegram-bot.js';
 import { createTwilioHandler } from './twilio-webhook.js';
 
 const room = (id) => `user:${id}`;
 const CODE_TTL_MS = 10 * 60 * 1000;
+const SENDER_TTL_MS = 30 * 86400000; // a flagged sender is forgotten after 30 days of quiet
 const MAX_WAV_B64 = 1_800_000;   // about 40 s of 16 kHz mono audio
 const LISTEN_PER_MIN = 14;       // Gemini's free tier allows about 5 requests a minute per model, and we try 3 models
 
@@ -19,11 +22,23 @@ const LISTEN_PER_MIN = 14;       // Gemini's free tier allows about 5 requests a
  * @param {{httpServer: import('node:http').Server, io: any, db: any, env?: object, fetchImpl?: typeof fetch,
  *          analyze?: Function, log?: Function, startTelegram?: boolean}} opts
  */
-export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl = globalThis.fetch, analyze = analyzeSafe, log = () => {}, startTelegram = true }) {
+export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl = globalThis.fetch, analyze = analyzeSafe, infer, log = () => {}, startTelegram = true }) {
+  // One chat can warn several Vouch accounts (a couple sharing a Telegram chat, a family group). The first version of this
+  // table was keyed by chat alone, so a second account replaced the first; watch_chats is keyed by chat AND account, and the
+  // old rows are carried over.
   db.exec(`
     CREATE TABLE IF NOT EXISTS watch_links (channel TEXT NOT NULL, ref TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (channel, ref));
+    CREATE TABLE IF NOT EXISTS watch_chats (channel TEXT NOT NULL, ref TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (channel, ref, user_id));
+    INSERT OR IGNORE INTO watch_chats (channel, ref, user_id, created_at) SELECT channel, ref, user_id, created_at FROM watch_links;
     CREATE TABLE IF NOT EXISTS watch_codes (code TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
+    -- Who sent flagged messages to each account: an identifier, a name and a count. Never the message itself.
+    CREATE TABLE IF NOT EXISTS watch_senders (
+      user_id TEXT NOT NULL, channel TEXT NOT NULL, sender_ref TEXT NOT NULL, handle TEXT NOT NULL DEFAULT '', display TEXT NOT NULL DEFAULT '',
+      first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, flags INTEGER NOT NULL DEFAULT 0, max_level INTEGER NOT NULL DEFAULT 0,
+      last_title TEXT NOT NULL DEFAULT '', PRIMARY KEY (user_id, channel, sender_ref));
   `);
+  // The raw chat or number is kept only so the alert bot can message the person back directly.
+  try { db.exec('ALTER TABLE watch_chats ADD COLUMN target TEXT'); } catch { /* already there */ }
   const salt = env.WATCH_SALT || 'vouch-watch-v1';
   const hashRef = (channel, id) => crypto.createHash('sha256').update(`${salt}|${channel}|${id}`).digest('hex');
   const q = {
@@ -31,47 +46,103 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     delUserCodes: db.prepare('DELETE FROM watch_codes WHERE user_id = ?'),
     getCode: db.prepare('SELECT code, user_id, expires_at FROM watch_codes WHERE code = ?'),
     delCode: db.prepare('DELETE FROM watch_codes WHERE code = ?'),
-    bind: db.prepare('INSERT OR REPLACE INTO watch_links (channel, ref, user_id, created_at) VALUES (?, ?, ?, ?)'),
-    lookup: db.prepare('SELECT user_id FROM watch_links WHERE channel = ? AND ref = ?'),
-    linkedFor: db.prepare('SELECT DISTINCT channel FROM watch_links WHERE user_id = ?'),
-    unlink: db.prepare('DELETE FROM watch_links WHERE user_id = ? AND channel = ?'),
+    bind: db.prepare('INSERT OR REPLACE INTO watch_chats (channel, ref, user_id, created_at, target) VALUES (?, ?, ?, ?, ?)'),
+    targets: db.prepare('SELECT channel, target FROM watch_chats WHERE user_id = ? AND target IS NOT NULL'),
+    sGet: db.prepare('SELECT * FROM watch_senders WHERE user_id = ? AND channel = ? AND sender_ref = ?'),
+    sPut: db.prepare('INSERT OR REPLACE INTO watch_senders (user_id, channel, sender_ref, handle, display, first_seen, last_seen, flags, max_level, last_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    sRaise: db.prepare('UPDATE watch_senders SET max_level = MAX(max_level, ?), last_title = ? WHERE user_id = ? AND channel = ? AND sender_ref = ?'),
+    sList: db.prepare('SELECT * FROM watch_senders WHERE user_id = ? AND last_seen > ? ORDER BY last_seen DESC LIMIT 30'),
+    sExpire: db.prepare('DELETE FROM watch_senders WHERE last_seen < ?'),
+    sForget: db.prepare('DELETE FROM watch_senders WHERE user_id = ? AND sender_ref = ?'),
+    lookup: db.prepare('SELECT user_id FROM watch_chats WHERE channel = ? AND ref = ? ORDER BY created_at, rowid'),
+    linkedFor: db.prepare('SELECT DISTINCT channel FROM watch_chats WHERE user_id = ?'),
+    unlink: db.prepare('DELETE FROM watch_chats WHERE user_id = ? AND channel = ?'),
+    unlinkChat: db.prepare('DELETE FROM watch_chats WHERE channel = ? AND ref = ?'),
+    backfill: db.prepare('UPDATE watch_chats SET target = ? WHERE channel = ? AND ref = ? AND target IS NULL'),
     userName: db.prepare('SELECT name FROM users WHERE user_id = ?'),
   };
+  q.sExpire.run(Date.now() - SENDER_TTL_MS);
+  const nameOf = (userId) => { const u = q.userName.get(userId); return (u && u.name) || 'someone'; };
 
-  // Used by the doors: find who a chat belongs to, or bind it with a one-time code.
+  // Used by the doors: find who a chat warns (every account linked to it), link it with a one-time code, or unlink it.
   const link = {
-    lookup: (channel, id) => { const r = q.lookup.get(channel, hashRef(channel, id)); return r ? r.user_id : null; },
+    // A chat linked by an older version has no address to message back. Seeing it speak is the moment to learn it.
+    lookup: (channel, id) => { const ref = hashRef(channel, id); q.backfill.run(String(id), channel, ref); return q.lookup.all(channel, ref).map((r) => r.user_id); },
+    who: (channel, id) => q.lookup.all(channel, hashRef(channel, id)).map((r) => nameOf(r.user_id)),
     bind: (channel, id, code) => {
       const row = q.getCode.get(String(code).trim());
       if (!row || row.expires_at < Date.now()) return null;
-      q.bind.run(channel, hashRef(channel, id), row.user_id, Date.now());
+      q.bind.run(channel, hashRef(channel, id), row.user_id, Date.now(), String(id));
       q.delCode.run(row.code);
       io.to(room(row.user_id)).emit('watch:linked', { channel }); // so the app flips to "Connected" by itself
-      const u = q.userName.get(row.user_id);
-      return { userId: row.user_id, name: (u && u.name) || 'you' };
+      return { userId: row.user_id, name: nameOf(row.user_id), all: link.who(channel, id) };
+    },
+    unbindChat: (channel, id) => { q.unlinkChat.run(channel, hashRef(channel, id)); },
+  };
+
+  // What the app is told about the AI's read. Never the message.
+  const aiView = (a) => ({ title: a.guide ? a.guide.title : '', why: a.guide ? a.guide.why : '', steps: a.guide ? a.guide.steps : [],
+    signals: a.signals || [], impersonating: a.impersonating || '', links: a.links || [], image: a.image || null, level: a.level, risk: a.aiRisk || null, amount: a.amount || '' });
+
+  // A flagged message lights up the person's Vouch app. Never the message itself: what kind of scam it looks like, who sent it
+  // (when the app they used says), and what the AI made of it.
+  function pushAlert(userId, a, source, sender = null) {
+    const g = a.guide || {};
+    const id = crypto.randomBytes(6).toString('hex'); // so the AI's read can be added to this very warning a moment later
+    io.to(room(userId)).emit('scam:alert', {
+      id, level: a.level, source, ts: Date.now(), tags: a.tags,
+      title: g.title || (a.level === 2 ? 'This message looks like a scam' : 'This message asks for money'),
+      why: g.why || '', steps: g.steps || [],
+      ai: a.ai ? aiView(a) : null, signals: a.signals || [], impersonating: a.impersonating || '', repeat: !!a.repeat,
+      sender: sender ? { handle: sender.handle || '', name: sender.name || '', hidden: !!sender.hidden, count: sender.count || 0 } : null,
+    });
+    return id;
+  }
+
+  // The AI finished reading after the instant warning went out: replace the generic words in that same warning with what it
+  // inferred (what this is, who it claims to be, what stood out, what to do). No second alert.
+  function pushAi(userId, id, a) {
+    if (!a.ai || !a.guide) return;
+    io.to(room(userId)).emit('scam:ai', { id, ai: aiView(a) });
+  }
+
+  // Remembers who sent flagged messages, per account, so a repeat offender is recognised (and treated as worse).
+  const senderRef = (channel, sender) => hashRef(`sender:${channel}`, sender.id);
+  const track = {
+    note(users, channel, sender, a) {
+      const ref = senderRef(channel, sender);
+      const now = Date.now();
+      let count = 0; let repeatScam = false;
+      for (const uid of users) {
+        const row = q.sGet.get(uid, channel, ref);
+        if (row && row.max_level === 2) repeatScam = true;
+        const flags = (row ? row.flags : 0) + 1;
+        count = Math.max(count, flags);
+        q.sPut.run(uid, channel, ref, sender.handle || '', sender.name || '', row ? row.first_seen : now, now, flags,
+          Math.max(row ? row.max_level : 0, a.level), (a.guide && a.guide.title) || (row ? row.last_title : ''));
+      }
+      return { count, repeatScam };
+    },
+    raise(users, channel, sender, a) {
+      const ref = senderRef(channel, sender);
+      for (const uid of users) q.sRaise.run(a.level, (a.guide && a.guide.title) || '', uid, channel, ref);
     },
   };
 
-  // A flagged message lights up the person's Vouch app. Never the message itself, only what kind of scam it looks like.
-  function pushAlert(userId, a, source) {
-    const g = a.guide || {};
-    io.to(room(userId)).emit('scam:alert', {
-      level: a.level, source, ts: Date.now(), tags: a.tags,
-      title: g.title || (a.level === 2 ? 'This message looks like a scam' : 'This message asks for money'),
-      why: g.why || '', steps: g.steps || [],
-    });
-  }
+  // ElevenLabs, when a key is set: Scribe hears (voice notes, call audio) and a voice reads verdicts aloud. Without it, Gemini hears.
+  const voice = createVoice({ apiKey: env.ELEVENLABS_API_KEY || '', voiceId: env.ELEVENLABS_VOICE_ID || '', fetchImpl });
 
   // ---- doors ----
   let telegramUser = '';
   let telegram = null;
+  let ready = Promise.resolve(); // resolves once Telegram has answered, so a startup message can be honest
   if (env.BOT_TOKEN) {
     telegram = createBot({
-      token: env.BOT_TOKEN, fetchImpl, analyze, vouchUrl: env.VOUCH_URL || '', link, onFlag: pushAlert, log,
+      token: env.BOT_TOKEN, fetchImpl, analyze, infer, vouchUrl: env.VOUCH_URL || env.PUBLIC_URL || '', link, onFlag: pushAlert, onAi: pushAi, track, log, voice,
       guardians: (env.GUARDIAN_CHAT_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
     });
     // Only start listening once Telegram accepts the token, so a wrong or revoked token is one clear log line, not a retry loop.
-    Promise.resolve(fetchImpl(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`)).then((r) => r.json())
+    ready = Promise.resolve(fetchImpl(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`)).then((r) => r.json())
       .then((j) => {
         if (j && j.ok && j.result) {
           telegramUser = j.result.username || '';
@@ -84,7 +155,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
   if (env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.PUBLIC_URL) {
     twilio = createTwilioHandler({
       authToken: env.TWILIO_AUTH_TOKEN, accountSid: env.TWILIO_ACCOUNT_SID, fromNumber: env.TWILIO_FROM || '',
-      whatsappFrom: env.TWILIO_WHATSAPP_FROM || '', publicUrl: env.PUBLIC_URL.replace(/\/$/, ''), analyze, vouchUrl: env.VOUCH_URL || '',
+      whatsappFrom: env.TWILIO_WHATSAPP_FROM || '', publicUrl: env.PUBLIC_URL.replace(/\/$/, ''), analyze, infer, vouchUrl: env.VOUCH_URL || '',
       guardians: (env.GUARDIAN_NUMBERS || '').split(',').map((s) => s.trim()).filter(Boolean), fetchImpl, log,
       link, onFlag: pushAlert, path: '/watch/twilio',
     });
@@ -129,14 +200,28 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     }
     throw Object.assign(new Error('STT_FAILED'), { code: 'STT_FAILED' });
   }
-  const listenRate = new Map();
-  const allow = (userId) => {
+  const rates = new Map();
+  const allow = (key, perMin) => {
     const now = Date.now();
-    const recent = (listenRate.get(userId) || []).filter((t) => now - t < 60000);
-    if (recent.length >= LISTEN_PER_MIN) return false;
-    recent.push(now); listenRate.set(userId, recent);
+    const recent = (rates.get(key) || []).filter((t) => now - t < 60000);
+    if (recent.length >= perMin) return false;
+    recent.push(now); rates.set(key, recent);
     return true;
   };
+
+  // The alert bot messages the person directly on every app they linked (and their family), so a warning reaches a locked
+  // phone as a real push notification even when Vouch is closed.
+  const core = createCore({ analyze, infer, vouchUrl: env.VOUCH_URL || '' });
+  async function notifyLinked(userId, text) {
+    let sentTo = 0;
+    for (const t of q.targets.all(userId)) {
+      try {
+        if (t.channel === 'telegram' && telegram) { await telegram.say(t.target, text, telegram.openApp); sentTo += 1; }
+        else if ((t.channel === 'sms' || t.channel === 'whatsapp') && twilio) { await twilio.send(t.target, text); sentTo += 1; }
+      } catch { /* one app being unreachable must not stop the others */ }
+    }
+    return sentTo;
+  }
 
   io.on('connection', (socket) => {
     const reply = (ack, obj) => { if (typeof ack === 'function') ack(obj); };
@@ -145,7 +230,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     socket.on('watch:status', (_p, ack) => {
       const uid = who();
       if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
-      return reply(ack, { ok: true, channels: channels(), linked: q.linkedFor.all(uid).map((r) => r.channel), listen: !!geminiConfig().apiKey });
+      return reply(ack, { ok: true, channels: channels(), linked: q.linkedFor.all(uid).map((r) => r.channel), listen: !!(geminiConfig().apiKey || voice.enabled), voice: voice.enabled });
     });
     socket.on('watch:link', (_p, ack) => {
       const uid = who();
@@ -162,17 +247,72 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
       q.unlink.run(uid, String(p && p.channel));
       return reply(ack, { ok: true });
     });
+    // The instant AI read for the app: the person pastes or types, and the AI's view comes back a moment later.
+    socket.on('watch:read', async (p, ack) => {
+      const uid = who();
+      if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
+      const text = p && typeof p.text === 'string' ? p.text.slice(0, 2000) : '';
+      const m = p && typeof p.imageDataUrl === 'string' ? /^data:image\/(jpeg|png|webp);base64,/.exec(p.imageDataUrl) : null;
+      const imageBase64 = m ? p.imageDataUrl.slice(m[0].length) : undefined;
+      if ((imageBase64 && imageBase64.length > 4_000_000) || (text.trim().length < 8 && !imageBase64)) return reply(ack, { ok: false, error: 'BAD_INPUT' });
+      if (!allow(`read:${uid}`, 12)) return reply(ack, { ok: false, error: 'RATE_LIMITED' });
+      try {
+        const a = await core.assess({ text, imageBase64 });
+        return reply(ack, { ok: true, level: a.level, tags: a.tags, ai: a.ai, read: a.ai ? aiView(a) : null }); // never the text back
+      } catch { return reply(ack, { ok: false, error: 'SERVER_ERROR' }); }
+    });
+    // The app flagged something it heard on a call: tell the person on every linked app, and the family.
+    socket.on('watch:alert', async (p, ack) => {
+      const uid = who();
+      if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
+      const level = p && p.level === 2 ? 2 : 1;
+      if (!allow(`alert:${uid}`, 6)) return reply(ack, { ok: false, error: 'RATE_LIMITED' });
+      // Fixed wording only (the client's text is never relayed), and only to the chats this account itself linked.
+      // There is no family broadcast from here: guardian chats are not tied to any one account.
+      const line = level === 2 ? 'Vouch flagged your call as a likely scam. Do not send anything.' : 'Vouch heard someone on your call asking for money. Make sure it is really them.';
+      return reply(ack, { ok: true, notified: await notifyLinked(uid, line) });
+    });
+    // Who has been flagged for sending this account scam messages.
+    socket.on('watch:senders', (_p, ack) => {
+      const uid = who();
+      if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
+      return reply(ack, { ok: true, senders: q.sList.all(uid, Date.now() - SENDER_TTL_MS).map((r) => ({
+        id: r.sender_ref, channel: r.channel, handle: r.handle, name: r.display, flags: r.flags, maxLevel: r.max_level,
+        lastTitle: r.last_title, firstSeen: r.first_seen, lastSeen: r.last_seen })) });
+    });
+    socket.on('watch:forget', (p, ack) => {
+      const uid = who();
+      if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
+      q.sForget.run(uid, String(p && p.id));
+      return reply(ack, { ok: true });
+    });
     socket.on('watch:listen', async (p, ack) => {
       const uid = who();
       if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
       const wav = p && p.wav;
       if (typeof wav !== 'string' || !wav || wav.length > MAX_WAV_B64) return reply(ack, { ok: false, error: 'BAD_INPUT' });
-      if (!allow(uid)) return reply(ack, { ok: false, error: 'RATE_LIMITED' });
-      try { return reply(ack, { ok: true, text: await transcribe(wav) }); } catch (e) {
+      if (!allow(`listen:${uid}`, LISTEN_PER_MIN)) return reply(ack, { ok: false, error: 'RATE_LIMITED' });
+      if (!geminiConfig().apiKey && !voice.enabled) return reply(ack, { ok: false, error: 'NO_STT' });
+      const prior = typeof (p && p.prior) === 'string' ? p.prior.slice(-900) : '';
+      try {
+        if (voice.enabled) {
+          // ElevenLabs Scribe hears; the AI judges the words together with the earlier ones.
+          const heard = await voice.transcribe(Buffer.from(wav, 'base64'), 'audio/wav');
+          if (heard !== null) {
+            if (!heard) return reply(ack, { ok: true, text: '', ai: false });
+            const a = await core.assess({ text: `${prior} ${heard}`.trim() });
+            return reply(ack, { ok: true, text: heard, ai: a.ai, level: a.level, tags: a.tags, read: a.ai ? aiView(a) : null });
+          }
+        }
+        // One request: the AI writes down what was said and judges the call so far, from the words already heard plus the new audio.
+        const a = await core.assess({ text: prior, audioBase64: wav });
+        if (a.ai) return reply(ack, { ok: true, text: a.heard || '', ai: true, level: a.level, tags: a.tags, read: aiView(a) });
+        return reply(ack, { ok: true, text: await transcribe(wav), ai: false }); // the AI read failed: at least get the words, the phone's rules still scan them
+      } catch (e) {
         return reply(ack, { ok: false, error: e.code || 'STT_FAILED' }); // never the audio or the words
       }
     });
   });
 
-  return { link, pushAlert, transcribe, telegram, channels, stop: () => { if (telegram) telegram.stop(); } };
+  return { link, pushAlert, track, notifyLinked, transcribe, telegram, channels, ready, stop: () => { if (telegram) telegram.stop(); } };
 }

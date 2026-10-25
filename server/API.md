@@ -22,8 +22,18 @@ The contract is `docs/PROTOCOL.md` (v2). This file only lists what the server do
   `POST /demo/reset?hard=1`: also deletes users and pairs. `GET /demo/status`: users, online, pairs, open requests.
 - Every reset emits `demo:reset { hard }` to all phones.
 
+## Spoken alerts (ElevenLabs, optional)
+- `GET /tts/stop | wait | ok | call` returns `audio/mpeg`. These four fixed phrases are the only ones that exist (`server/src/tts.js`). The route takes no text,
+  so no message text, name or amount ever reaches ElevenLabs. Each phrase is generated once and kept in memory (at most 4 calls, ever).
+- No key, no voice id, a timeout or an ElevenLabs error: the route answers `503` (`TTS_OFF`, `TTS_COOLING_DOWN`) or `502` (`TTS_FAILED`) and the
+  phone must fall back to its built-in voice. After a failure the server backs off for 30 s instead of calling again.
+- Env: `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` (both needed), optional `ELEVENLABS_MODEL` (default `eleven_flash_v2_5`).
+  The key goes only in Render's Environment or a local `.env`, never in `web/` and never in chat. `/demo/status` shows `tts: on/off` and never the key.
+
 ## Scripts
-`npm run smoke -- <url> [--cleanup]` (full flow with 3 fake phones), `npm run stress [-- <url>]` (12 circles at once).
+`npm run smoke -- <url> [--cleanup]` (full flow with 3 fake phones), `npm run stress [-- <url>]` (12 circles at once),
+`DEMO_KEY=... npm run watch -- <url> [--once] [--reset]` (live view of who is online, pairs and open requests; `--reset` does a soft reset first),
+`npm run parity` (plan test 6: same requests with the installed analyze() and with rules only; verdicts must be identical and the AI must keep every rules tag. Set `GEMINI_API_KEY` to test Gemini).
 
 ## Env
 `PORT`, `DB_PATH` (default `vouch.db`), `DEMO_KEY`, `GEMINI_API_KEY` / `GEMINI_MODEL` (read by C's analyze()).

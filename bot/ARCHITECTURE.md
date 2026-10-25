@@ -94,3 +94,12 @@ Keys never leave the phone. The server stores only a SHA-256 of normalized text.
 3. **Web push** (VAPID) so alerts reach a closed browser.
 
 Any of these changes `docs/PROTOCOL.md`, so they need the whole team.
+
+## How the AI read works (nothing about the meaning is hard-coded)
+
+When a message, a screenshot or a stretch of a call reaches Vouch, `bot/infer.js` asks Gemini to read it and decide, in structured form: does it ask for money and how much, how it is meant to be paid, how risky it looks, what kind of scam it resembles **in the model's own words**, who it claims to be, which specific phrases raised concern, and what to do. For bot chats it also sees the last few messages from the same sender (kept in memory only, never written down), so a scam can be read as it unfolds. It also decides whether the person is simply talking to the bot ("yo", "thanks", "what do you do?") and answers conversationally in that case.
+
+- The fixed rules (`web/js/lib/scan.js`) are only the **instant floor**: they answer in a blink while the AI thinks, and they cover the case with no key or no connection.
+- The final level is the higher of the AI's and the rules'. **The AI can raise a warning and never lowers one**, and it never says anything is safe: only a person's signed answer in Vouch can clear a request.
+- The AI's words replace the generic ones in the same Telegram message and in the warning already on the phone (`scam:ai`), and on calls it re-reads the rolling transcript every few seconds and can raise the alarm itself.
+- Messages and screenshots go to Gemini for analysis and are not stored. Prompt-injection text inside a message is treated as data.

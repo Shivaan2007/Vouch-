@@ -28,8 +28,8 @@ test('private scam message gets an immediate warning', async () => {
 test('private clean message gets a calm answer that does not clear it', async () => {
   const { texts, say } = harness();
   await say(1, 'dinner is at six, bring dessert');
-  assert.match(texts()[0].text, /Nothing stands out/);
-  assert.match(texts()[0].text, /only a Yes/);
+  assert.match(texts()[0].text, /don't see anything in that asking for money/);
+  assert.match(texts()[0].text, /check it with their own phone in Vouch/);
 });
 
 test('groups stay quiet unless something looks wrong', async () => {
@@ -73,4 +73,95 @@ test('bots and empty updates are ignored', async () => {
   await bot.handleUpdate({ update_id: 2 });
   await bot.handleUpdate(undefined);
   assert.equal(texts().length, 0);
+});
+
+test('saying hello to the bot gets a conversation, not a scam analysis', async () => {
+  const { texts, say } = harness();
+  for (const hello of ['yo', 'hi', 'Hello!', 'thanks', 'what do you do?']) {
+    await say(1, hello);
+  }
+  const all = texts().map((t) => t.text);
+  assert.equal(all.length, 5);
+  for (const t of all) {
+    assert.match(t, /I'm Vouch Alert/);
+    assert.doesNotMatch(t, /Nothing stands out|SCAM|does not make it safe|asking for money or showing/);
+  }
+});
+
+test('when the AI is available it answers a greeting itself, in its own words', async () => {
+  const sent = [];
+  const fetchImpl = async (url, init) => { sent.push({ method: url.split('/').pop(), body: JSON.parse(init.body) }); return { json: async () => ({ ok: true, result: { message_id: 1 } }) }; };
+  const infer = async () => ({ moneyRequest: false, amountUSD: null, paymentMethod: 'unknown', risk: 'none', scamType: 'Ordinary message', impersonating: '', signals: [], why: '', steps: [], tags: [], intent: 'chat', reply: 'Hi there! Send me anything that looks off and I will tell you what I see.' });
+  const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, text: 'yo' } });
+  const says = sent.filter((s) => s.method === 'sendMessage');
+  assert.equal(says.length, 1);
+  assert.equal(says[0].body.text, 'Hi there! Send me anything that looks off and I will tell you what I see.');
+});
+
+test('a real message in a private chat waits for the AI instead of saying something premature', async () => {
+  const sent = [];
+  const fetchImpl = async (url, init) => { sent.push({ method: url.split('/').pop(), body: JSON.parse(init.body) }); return { json: async () => ({ ok: true, result: { message_id: 7 } }) }; };
+  const infer = async () => ({ moneyRequest: true, amountUSD: 1000, paymentMethod: 'unknown', risk: 'low', scamType: 'Ordinary message', impersonating: '', signals: [], why: 'A friend asks for $1000 with nothing unusual about it.', steps: ['Check it with their own phone.'], tags: [], intent: 'message', reply: '' });
+  const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, text: 'hey can you help me out, rent is due' } });
+  assert.ok(sent.some((s) => s.method === 'sendChatAction' && s.body.action === 'typing'), 'shows it is thinking');
+  const says = sent.filter((s) => s.method === 'sendMessage');
+  assert.equal(says.length, 1, 'one answer, after the AI has read it');
+  assert.match(says[0].body.text, /Someone is asking you for money/);
+});
+test('a photo sent to the bot is downloaded and read by the AI', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes('/file/bot')) return { ok: true, arrayBuffer: async () => Buffer.from('fake-jpeg-bytes') };
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (u.endsWith('/getFile')) return { json: async () => ({ ok: true, result: { file_path: 'photos/p1.jpg' } }) };
+    calls.push(`say:${body.text || ''}`);
+    return { json: async () => ({ ok: true, result: { message_id: 3 } }) };
+  };
+  let seen;
+  const infer = async (i) => { seen = i; return { moneyRequest: false, amountUSD: null, paymentMethod: 'unknown', risk: 'high', scamType: 'Fake bank alert', impersonating: 'Chase', signals: [], why: 'A fake bank alert.', steps: ['Delete it.'], tags: [], intent: 'message', reply: '', links: [{ url: 'chase-secure.top', risk: 'high', why: 'Not Chase.', lookalikeOf: 'Chase' }], image: { kind: 'Fake bank alert screenshot', aiGenerated: 'unlikely', risk: 'high', concerns: ['urgent threat'] } }; };
+  const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false },
+    photo: [{ file_id: 'small', file_size: 900 }, { file_id: 'big', file_size: 90000 }] } });
+  assert.ok(calls.some((c) => c.endsWith('/getFile')), 'asked Telegram where the picture is');
+  assert.ok(calls.some((c) => c.includes('/file/botT/photos/p1.jpg')), 'downloaded it');
+  assert.equal(seen.imageBase64, Buffer.from('fake-jpeg-bytes').toString('base64'), 'and gave the bytes to the AI');
+  const said = calls.filter((c) => c.startsWith('say:')).map((c) => c.slice(4)).join('\n');
+  assert.match(said, /SCAM WARNING/);
+  assert.match(said, /Fake bank alert/);
+  assert.match(said, /Links:\n- chase-secure\.top: HIGH/);
+  assert.match(said, /Image: Fake bank alert screenshot/);
+});
+
+test('a picture that cannot be opened gets a plain answer, not silence or a crash', async () => {
+  const says = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith('/getFile')) return { json: async () => ({ ok: false }) };
+    says.push(JSON.parse(init.body).text);
+    return { json: async () => ({ ok: true, result: { message_id: 1 } }) };
+  };
+  const bot = createBot({ token: 'T', fetchImpl, infer: async () => null, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, photo: [{ file_id: 'x', file_size: 100 }] } });
+  assert.match(says.join(' '), /couldn't open that picture/);
+  await bot.handleUpdate({ update_id: 2, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, photo: [{ file_id: 'x', file_size: 9999999 }] } });
+  assert.equal(says.filter((s) => /couldn't open/.test(s)).length, 2, 'too large is refused politely too');
+});
+
+test('an alert sent on its own carries a one-tap Open Vouch button, but only for a real https address', () => {
+  const secure = createBot({ token: 'T', vouchUrl: 'https://vouch.example', fetchImpl: async () => ({ json: async () => ({}) }) });
+  assert.deepEqual(secure.openApp, { reply_markup: { inline_keyboard: [[{ text: 'Open Vouch', url: 'https://vouch.example' }]] } });
+  assert.deepEqual(createBot({ token: 'T', vouchUrl: 'http://192.168.1.5:3000', fetchImpl: async () => ({}) }).openApp, {});
+  assert.deepEqual(createBot({ token: 'T', fetchImpl: async () => ({}) }).openApp, {});
+});
+
+test('starting the bot sets its command menu', async () => {
+  const methods = [];
+  const fetchImpl = async (url) => { methods.push(String(url).split('/').pop()); const bot = null; void bot; return { json: async () => ({ ok: false, description: 'stop' }) }; };
+  const b = createBot({ token: 'T', fetchImpl });
+  const p = b.start(); await new Promise((r) => setTimeout(r, 30)); b.stop();
+  assert.ok(methods.includes('setMyCommands'));
+  void p;
 });
