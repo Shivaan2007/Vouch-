@@ -132,9 +132,38 @@ async function readScreenshot(file) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-// Get a person's attention without relying on sight alone: vibrate (Android) and speak aloud.
-function attention(text, pattern) {
-  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch { /* not supported */ }
+// ElevenLabs voice for the four FIXED alerts (stop, wait, ok, call). The server serves the audio from /tts/<phrase>; no text of ours is
+// sent anywhere. The clips are fetched once after sign-in, so the first alert is instant. If a clip is not ready or anything fails,
+// the built-in voice speaks the usual line at once, exactly as before. Alerts with a name or an amount always use the built-in voice.
+const VOICE_PHRASES = ['stop', 'wait', 'ok', 'call'];
+const voice = { clips: new Map(), warmed: false, el: null };
+// iPhones only let a page play sound that a tap started. Alerts arrive over the network with no tap, so on the person's first tap we
+// start one silent sound on a single audio element and reuse that element for every later alert (its source is swapped, not recreated).
+const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YQAAAAA=';
+function unlockVoice() {
+  if (voice.el) return;
+  try {
+    const el = new Audio(SILENT);
+    voice.el = el;
+    Promise.resolve(el.play()).catch(() => { voice.el = null; }); // blocked: try again on the next tap
+  } catch { voice.el = null; }
+}
+// Only where there is a real window (the team's Node smoke tests load this file without one).
+if (typeof addEventListener === 'function') for (const ev of ['pointerdown', 'touchend', 'keydown']) addEventListener(ev, unlockVoice, { capture: true, passive: true });
+
+async function warmVoice() {
+  if (voice.warmed) return;
+  voice.warmed = true;
+  try {
+    for (const id of VOICE_PHRASES) {
+      const r = await fetch(`/tts/${id}`);
+      if (!r.ok) return; // no key (503), cooling down, or an error: stay on the built-in voice this session
+      voice.clips.set(id, URL.createObjectURL(await r.blob()));
+    }
+  } catch { /* offline: the built-in voice still works */ }
+}
+
+function speakBuiltIn(text) {
   try {
     if ('speechSynthesis' in globalThis) {
       speechSynthesis.cancel();
@@ -143,6 +172,21 @@ function attention(text, pattern) {
       speechSynthesis.speak(u);
     }
   } catch { /* not supported */ }
+}
+
+// Get a person's attention without relying on sight alone: vibrate (Android) and speak aloud.
+// `phrase` (optional) names one of the fixed ElevenLabs clips; `text` is always the built-in fallback.
+function attention(text, pattern, phrase) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch { /* not supported */ }
+  const clip = phrase && voice.clips.get(phrase);
+  if (!clip) { speakBuiltIn(text); return; }
+  try {
+    if ('speechSynthesis' in globalThis) speechSynthesis.cancel();
+    const a = voice.el || new Audio(); // the unlocked element if there is one; a fresh one still works on most desktops and Androids
+    a.pause();
+    a.src = clip;
+    Promise.resolve(a.play()).catch(() => speakBuiltIn(text)); // blocked or a bad clip: fall back to the built-in voice
+  } catch { speakBuiltIn(text); }
 }
 
 // System notification when Vouch is in the background (needs permission; see "Alerts" under My people).
@@ -362,6 +406,7 @@ async function register(name) {
 async function afterAuth() {
   S.authed = true;
   paintStatus();
+  warmVoice(); // not awaited
   await syncFriends();
   loadWatch().then(async () => { // not awaited: a server without Watch just says nothing
     if (S.watch) await loadSenders();
@@ -744,18 +789,18 @@ function announce(u) {
     S.queue.push({ kind: 'alert', data: { u, soft: false } });
     raiseAlert(2, conf.answer === 'not_me' ? `${name} says this was NOT them.` : 'Something does not add up.', `req-${u.requestId}`);
     const line = `Stop. Do not send money. ${conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.'}`;
-    attention(line, [400, 150, 400, 150, 400]);
+    attention(line, [400, 150, 400, 150, 400], 'stop');
     notify('Vouch: do not send money', conf.answer === 'not_me' ? `${name} says this was not them.` : 'Something does not add up.', `res-${u.requestId}`);
   } else if (u.verdict === 'amber' && conf.answer === 'timeout') {
     S.queue.push({ kind: 'alert', data: { u, soft: true } });
     raiseAlert(1, `${name} has not answered. Do not send yet.`, `req-${u.requestId}`);
-    attention(`Wait. ${name} has not answered. Do not send money yet.`, [300, 150, 300]);
+    attention(`Wait. ${name} has not answered. Do not send money yet.`, [300, 150, 300], 'wait');
     notify('Vouch: wait', `${name} has not answered yet.`, `res-${u.requestId}`);
   } else if (u.verdict === 'amber') {
     raiseAlert(1, (u.reasons && u.reasons[0]) || 'Wait for confirmation before you send anything.', `req-${u.requestId}`);
   } else if (u.verdict === 'green') {
     clearAlert();
-    attention(`Verified. ${name} confirmed this on their own phone.`, 80);
+    attention(`Verified. ${name} confirmed this on their own phone.`, 80, 'ok');
     notify('Vouch: verified', `${name} confirmed this on their own phone.`, `res-${u.requestId}`);
   }
   renderOverlay();
@@ -1298,7 +1343,7 @@ function escalateCall(level, tags, institution, ai) {
   if (!onCallScreen) S.queue.push({ kind: 'callscam', data: { requestId: `callscam-${level}-${Date.now()}`, level, tags, institution, ai } });
   raiseAlert(level, level === 2 ? 'This call has scam warning signs.' : 'Someone on this call is asking for money.', 'call');
   attention(level === 2 ? 'Stop. This call has scam warning signs. Do not send anything.' : 'Someone on this call is asking for money. Make sure it is really them.',
-    level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300]);
+    level === 2 ? [400, 150, 400, 150, 400] : [300, 150, 300], level === 2 ? 'call' : undefined);
   notify(level === 2 ? 'Vouch: this call looks like a scam' : 'Vouch: this call asks for money', 'Open Vouch and ask for your code word.', 'callscam');
   // Also tell the alert bot, so the person is messaged on their linked apps (and their family if it is serious).
   if (S.watch) {
