@@ -96,3 +96,23 @@ Set ELEVENLABS_API_KEY (and optionally ELEVENLABS_VOICE_ID) in .env. Then:
 - **Hearing:** Telegram voice notes and the app's call listener are transcribed by ElevenLabs Scribe; Gemini judges the words (with the earlier words of the call). With no key, Gemini hears the call audio itself and voice notes get a polite no.
 - **Speaking:** a voice note to the bot is answered in writing and out loud; send /voice to have every answer read aloud. The spoken verdict is the headline plus the first step.
 - Nothing is stored or logged: not the audio, not the words.
+
+## How ElevenLabs is used (and why)
+
+Shivaan's fixed spoken alerts (`/tts/*`) speak the four standard phrases. This section is the rest.
+
+| Where | What | Why |
+| --- | --- | --- |
+| Telegram voice notes, the app's call listener | **Scribe** writes down what was said; Gemini judges the words | Hearing is where Gemini audio is weakest and the words are the evidence |
+| Telegram `/voice`, and any voice note you send | The verdict is read back as a voice note (headline + the first step) | People who would rather listen than read still get it |
+| **Call-screening agent** (`bot/agent.js`) | An ElevenLabs voice agent answers calls forwarded from unknown numbers, talks to the caller, and asks Vouch to judge the transcript as it goes | This is the real-world answer to "a web page cannot hear a phone call": the call comes to a number Vouch controls |
+
+**Setting up the screening agent (needs an ElevenLabs account and a Twilio number; not tested live).**
+1. In `.env` set `AGENT_SECRET=<long random string>` and `AGENT_OWNER_USER_ID=<the account to warn>` (or have the agent send `owner`). Restart.
+2. In ElevenLabs, create an agent with a server tool: `POST https://<your host>/watch/agent/judge`, header `x-vouch-agent-secret: <the secret>`, JSON body `{ "transcript": "<what the caller has said so far>" }`.
+3. Tell the agent: call the tool after every caller turn. Reply `level 0` / `action continue`: keep chatting politely. `action screen`: say the `say` text and take a name and callback number. `action end`: say the `say` text and end the call. Never say anything else about money, and never confirm any detail about the owner.
+4. Point the Twilio number at the agent, and have the person's phone forward unanswered or unknown calls to it (carrier "conditional call forwarding"; the code differs by carrier).
+
+What it guarantees: the words the agent is told to say are **fixed strings**, never AI output, so a caller cannot plant text for the agent to repeat. The person is messaged once per call, with no caller words in it. It only warns; it never approves anything. The transcript is judged and dropped.
+
+**Is this person real?** When a flagged message comes from a visible Telegram sender, the AI looks at their profile picture once a day (remembered in memory only, never saved) and says if it looks AI-generated. It is a hint: AI is not reliable at telling real photos from generated ones. That picture is sent to Gemini for the look, so it is a privacy trade-off; turn it off by removing the `profileHint` call in `bot/telegram-bot.js`.

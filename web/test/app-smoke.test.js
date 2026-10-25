@@ -121,6 +121,20 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
   assert.ok(text().includes('Sam says this was NOT them'), 'says who denied it');
 });
 
+test('the code word shows a ring that runs down with the minute, and a person can see whose word it is', async () => {
+  await go('On a call');
+  await wait(80);
+  assert.ok(btn('Sam') || text().includes('Add someone to get a code word'), 'people are name buttons');
+  const sam = btn('Sam');
+  if (sam) {
+    await sam.fire('click');
+    await wait(200);
+    const ring = find(appEl, (n) => n.className.startsWith('ring'));
+    assert.ok(ring, 'the countdown ring is drawn');
+    assert.match(text(), /\d+s/, 'with the seconds left inside it');
+    assert.ok(find(appEl, (n) => n.id === 'bigword' && n.textContent.length > 2), 'and the word beside it');
+  }
+});
 test('scanner with no camera falls back to typing the code; a mismatched safety code removes the link', async () => {
   const tia = await otherPhone('Tia');
   const { token } = await tia.call('pair:offer');

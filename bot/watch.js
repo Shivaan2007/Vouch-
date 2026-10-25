@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { analyzeSafe } from '../server/src/analyze.js';
 import { DEFAULT_MODELS, geminiConfig } from '../server/src/risk/gemini.js';
 import { createVoice } from './voice.js';
+import { createAgentTool } from './agent.js';
 import { createCore } from './core.js';
 import { createBot } from './telegram-bot.js';
 import { createTwilioHandler } from './twilio-webhook.js';
@@ -166,12 +167,21 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     ...(twilio && env.TWILIO_WHATSAPP_FROM ? [{ id: 'whatsapp', name: 'WhatsApp', handle: env.TWILIO_WHATSAPP_FROM.replace('whatsapp:', '') }] : []),
   ];
 
+  // The ElevenLabs call-screening agent's tool (see bot/agent.js): off unless AGENT_SECRET is set.
+  const agent = env.AGENT_SECRET ? createAgentTool({
+    secret: env.AGENT_SECRET, core: createCore({ analyze, infer, vouchUrl: '' }), log,
+    ownerOf: (id) => (typeof id === 'string' && q.userName.get(id) ? id : null), defaultOwner: env.AGENT_OWNER_USER_ID || '',
+    notify: (owner, text) => notifyLinked(owner, text),
+  }) : null;
+
   // The Twilio route lives on the same web address as the app, so one tunnel/host serves everything.
-  if (twilio) {
+  if (twilio || agent) {
     const original = httpServer.listeners('request');
     httpServer.removeAllListeners('request');
     httpServer.on('request', (req, res) => {
-      if (req.url.split('?')[0] === '/watch/twilio') { twilio.handleRequest(req, res).catch(() => { try { res.writeHead(500); res.end(); } catch { /* gone */ } }); return; }
+      const route = req.url.split('?')[0];
+      if (agent && route === '/watch/agent/judge') { agent.handleRequest(req, res).catch(() => { try { res.writeHead(500); res.end(); } catch { /* gone */ } }); return; }
+      if (twilio && route === '/watch/twilio') { twilio.handleRequest(req, res).catch(() => { try { res.writeHead(500); res.end(); } catch { /* gone */ } }); return; }
       for (const l of original) l.call(httpServer, req, res);
     });
   }
