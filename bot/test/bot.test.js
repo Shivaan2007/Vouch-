@@ -110,3 +110,42 @@ test('a real message in a private chat waits for the AI instead of saying someth
   assert.equal(says.length, 1, 'one answer, after the AI has read it');
   assert.match(says[0].body.text, /Someone is asking you for money/);
 });
+test('a photo sent to the bot is downloaded and read by the AI', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes('/file/bot')) return { ok: true, arrayBuffer: async () => Buffer.from('fake-jpeg-bytes') };
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (u.endsWith('/getFile')) return { json: async () => ({ ok: true, result: { file_path: 'photos/p1.jpg' } }) };
+    calls.push(`say:${body.text || ''}`);
+    return { json: async () => ({ ok: true, result: { message_id: 3 } }) };
+  };
+  let seen;
+  const infer = async (i) => { seen = i; return { moneyRequest: false, amountUSD: null, paymentMethod: 'unknown', risk: 'high', scamType: 'Fake bank alert', impersonating: 'Chase', signals: [], why: 'A fake bank alert.', steps: ['Delete it.'], tags: [], intent: 'message', reply: '', links: [{ url: 'chase-secure.top', risk: 'high', why: 'Not Chase.', lookalikeOf: 'Chase' }], image: { kind: 'Fake bank alert screenshot', aiGenerated: 'unlikely', risk: 'high', concerns: ['urgent threat'] } }; };
+  const bot = createBot({ token: 'T', fetchImpl, infer, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false },
+    photo: [{ file_id: 'small', file_size: 900 }, { file_id: 'big', file_size: 90000 }] } });
+  assert.ok(calls.some((c) => c.endsWith('/getFile')), 'asked Telegram where the picture is');
+  assert.ok(calls.some((c) => c.includes('/file/botT/photos/p1.jpg')), 'downloaded it');
+  assert.equal(seen.imageBase64, Buffer.from('fake-jpeg-bytes').toString('base64'), 'and gave the bytes to the AI');
+  const said = calls.filter((c) => c.startsWith('say:')).map((c) => c.slice(4)).join('\n');
+  assert.match(said, /SCAM WARNING/);
+  assert.match(said, /Fake bank alert/);
+  assert.match(said, /Links:\n- chase-secure\.top: HIGH/);
+  assert.match(said, /Image: Fake bank alert screenshot/);
+});
+
+test('a picture that cannot be opened gets a plain answer, not silence or a crash', async () => {
+  const says = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith('/getFile')) return { json: async () => ({ ok: false }) };
+    says.push(JSON.parse(init.body).text);
+    return { json: async () => ({ ok: true, result: { message_id: 1 } }) };
+  };
+  const bot = createBot({ token: 'T', fetchImpl, infer: async () => null, analyze: async () => ({ tags: [], paymentRisk: 'low', explanation: '' }) });
+  await bot.handleUpdate({ update_id: 1, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, photo: [{ file_id: 'x', file_size: 100 }] } });
+  assert.match(says.join(' '), /couldn't open that picture/);
+  await bot.handleUpdate({ update_id: 2, message: { chat: { id: 1, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, photo: [{ file_id: 'x', file_size: 9999999 }] } });
+  assert.equal(says.filter((s) => /couldn't open/.test(s)).length, 2, 'too large is refused politely too');
+});

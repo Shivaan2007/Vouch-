@@ -132,3 +132,79 @@ test('chat intent and the reply are carried through, and default to a message', 
   assert.equal(cleanInference({ risk: 'none' }).intent, 'message');
   assert.equal(cleanInference({ risk: 'none', intent: 'weird' }).intent, 'message');
 });
+// ---- links and pictures ----
+import { extractLinks as linksOf } from '../links.js';
+
+test('links are parsed by code and handed to the AI as facts to judge; the AI never opens them', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push(JSON.parse(init.body)); return reply({ ...GOOD, links: [{ url: 'amzn-redeliver.co/pay', risk: 'high', why: 'Lookalike of Amazon.', lookalikeOf: 'Amazon' }] }); };
+  const r = await inferScam({ text: 'Pay the fee at amzn-redeliver.co/pay' }, { fetchImpl, apiKey: 'k' });
+  const prompt = JSON.stringify(seen[0].contents);
+  assert.match(prompt, /LINKS FOUND IN THE MESSAGE \(parsed by code/);
+  assert.match(prompt, /host amzn-redeliver\.co/);
+  assert.match(prompt, /you cannot open them/);
+  assert.deepEqual(r.links, [{ url: 'amzn-redeliver.co/pay', risk: 'high', why: 'Lookalike of Amazon.', lookalikeOf: 'Amazon' }]);
+  assert.equal(linksOf('nothing here').length, 0);
+});
+
+test('a picture is sent with the right type, and its findings are validated', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push(JSON.parse(init.body)); return reply({ ...GOOD, image: { present: true, kind: 'Fake bank alert screenshot', aiGenerated: 'possible', risk: 'high', concerns: ['urgent threat', 'odd domain', 'a', 'extra'] } }); };
+  const png = 'iVBORw0KGgo=';
+  const r = await inferScam({ text: '', imageBase64: png }, { fetchImpl, apiKey: 'k' });
+  const inline = seen[0].contents[0].parts.find((p) => p.inline_data);
+  assert.equal(inline.inline_data.mime_type, 'image/png');
+  assert.match(JSON.stringify(seen[0].contents), /LINKS FOUND IN THE MESSAGE: none/);
+  assert.deepEqual({ kind: r.image.kind, aiGenerated: r.image.aiGenerated, risk: r.image.risk, n: r.image.concerns.length }, { kind: 'Fake bank alert screenshot', aiGenerated: 'possible', risk: 'high', n: 3 });
+  await inferScam({ text: '', imageBase64: 'UklGRg==' }, { fetchImpl, apiKey: 'k' });
+  assert.equal(seen[1].contents[0].parts.find((p) => p.inline_data).inline_data.mime_type, 'image/webp');
+  assert.equal(await inferScam({ text: '', imageBase64: 'not-an-image' }, { fetchImpl, apiKey: 'k' }), null, 'no text and no readable picture: nothing to read');
+});
+
+test('link and image findings are clamped, and no picture means no image block', () => {
+  const c = cleanInference({
+    risk: 'none', links: [{ url: 'u'.repeat(300), risk: 'high', why: 'w'.repeat(300), lookalikeOf: 'x'.repeat(100) }, { url: 'b', risk: 'bogus', why: '', lookalikeOf: '' }, null],
+    image: { present: false, kind: 'x', aiGenerated: 'likely', risk: 'high', concerns: ['a'] },
+  });
+  assert.equal(c.links.length, 1, 'a link with an invalid risk is dropped');
+  assert.ok(c.links[0].url.length <= 120 && c.links[0].why.length <= 110 && c.links[0].lookalikeOf.length <= 40);
+  assert.equal(c.image, null);
+  const bad = cleanInference({ risk: 'none', image: { present: true, kind: 'k', aiGenerated: 'definitely', risk: 'huge', concerns: 'nope' } });
+  assert.deepEqual(bad.image, { kind: 'k', aiGenerated: 'unclear', risk: 'none', concerns: [] });
+});
+
+test('a deceptive link or picture counts on its own, even when the words sound harmless', async () => {
+  const calm = { ...GOOD, moneyRequest: false, risk: 'none', scamType: 'Ordinary message', signals: [], steps: [], why: '', tags: [], links: [], image: null };
+  const linkCase = createCore({ analyze: rules, infer: async () => ({ ...calm, links: [{ url: 'bit.ly/x', risk: 'high', why: 'Hides the real destination.', lookalikeOf: '' }] }) });
+  const a = await linkCase.assess({ text: 'check this out bit.ly/x' });
+  assert.equal(a.level, 2);
+  assert.equal(a.guide.title, 'Suspicious link');
+  const imageCase = createCore({ analyze: rules, infer: async () => ({ ...calm, image: { kind: 'Profile photo', aiGenerated: 'likely', risk: 'medium', concerns: ['too perfect'] } }) });
+  const b = await imageCase.assess({ text: 'hi', imageBase64: 'iVBOR' });
+  assert.equal(b.level, 1);
+  assert.equal(b.guide.title, 'Suspicious image');
+  const lowCase = createCore({ analyze: rules, infer: async () => ({ ...calm, links: [{ url: 'github.com', risk: 'low', why: 'Official site.', lookalikeOf: 'GitHub' }] }) });
+  const c = await lowCase.assess({ text: 'see github.com' });
+  assert.equal(c.level, 0, 'a low-risk link does not raise anything');
+  assert.doesNotMatch(lowCase.reply(c), /imitates/, 'and a genuine site is never described as an imitation');
+});
+
+test('the reply lists each link with its risk, says it did not open them, and hedges about pictures', async () => {
+  const core = createCore({ analyze: rules, infer: async () => ({ ...GOOD, risk: 'high', links: [{ url: 'chase-secure-verify.top', risk: 'high', why: 'Not Chase.', lookalikeOf: 'Chase' }], image: { kind: 'Fake bank alert screenshot', aiGenerated: 'likely', risk: 'high', concerns: ['urgent threat'] } }) });
+  const a = await core.assess({ text: 'verify at chase-secure-verify.top', imageBase64: 'iVBOR' });
+  const text = core.reply(a, { rich: false });
+  assert.match(text, /Links:\n- chase-secure-verify\.top: HIGH risk \(imitates Chase\)\. Not Chase\./);
+  assert.match(text, /I did not open them/);
+  assert.match(text, /Image: Fake bank alert screenshot\. It looks AI-generated\. urgent threat\./);
+  assert.match(text, /AI can be wrong about images/);
+});
+
+test('with no AI, the most obvious link tricks still raise the level', async () => {
+  const core = createCore({ analyze: rules, infer: async () => null });
+  const a = await core.assess({ text: 'confirm your account http://203.0.113.9/login' });
+  assert.equal(a.ai, false);
+  assert.equal(a.level, 2);
+  assert.equal(a.guide.title, 'Suspicious link');
+  assert.equal((await core.assess({ text: 'see https://www.amazon.com/orders' })).level, 0);
+  assert.equal(core.quick('http://203.0.113.9/login').level, 2);
+});

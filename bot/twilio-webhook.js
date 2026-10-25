@@ -34,7 +34,7 @@ export function createTwilioHandler({
 
   // A screenshot sent to the number. Twilio media needs the account credentials; only small jpeg/png are read.
   async function fetchImage(url, type) {
-    if (!/^image\/(jpeg|png)$/.test(String(type))) return undefined;
+    if (!/^image\/(jpeg|png|webp)$/.test(String(type))) return undefined;
     try {
       const res = await fetchImpl(url, { headers: { Authorization: basic } });
       if (!res.ok) return undefined;

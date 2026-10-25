@@ -39,7 +39,28 @@ export function createBot({
   // The channel-neutral engine (shared with the SMS/WhatsApp door): assess text, then word the answer.
   const core = createCore({ analyze, infer, vouchUrl });
   const memory = createContext(); // the last few messages per chat and sender, in memory only, so the AI can follow a scam as it unfolds
-  const assess = (text, context) => core.assess({ text, context });
+  const assess = (text, context, imageBase64) => core.assess({ text, context, imageBase64 });
+
+  // A photo or image file sent to the bot: pick the biggest size, download it from Telegram, and hand the bytes to the AI.
+  const MAX_IMAGE = 3_000_000;
+  function imageRefOf(msg) {
+    if (Array.isArray(msg.photo) && msg.photo.length) { const big = msg.photo[msg.photo.length - 1]; return { file_id: big.file_id, size: big.file_size }; }
+    const d = msg.document;
+    if (d && /^image\/(jpeg|png|webp)$/.test(d.mime_type || '')) return { file_id: d.file_id, size: d.file_size };
+    return null;
+  }
+  async function fetchImage(ref) {
+    try {
+      if (ref.size && ref.size > MAX_IMAGE) return undefined;
+      const f = await api('getFile', { file_id: ref.file_id });
+      const path = f && f.result && f.result.file_path;
+      if (!path) return undefined;
+      const res = await fetchImpl(`https://api.telegram.org/file/bot${token}/${path}`);
+      if (!res || !res.ok) return undefined;
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length <= MAX_IMAGE ? buf.toString('base64') : undefined;
+    } catch { return undefined; }
+  }
 
   async function alertGuardians(fromChatId, name, tags) {
     const who = String(name || 'Someone you look after').slice(0, 30);
@@ -96,10 +117,13 @@ export function createBot({
       return;
     }
     if (/^\/stopguardian\b/.test(text)) { guardianChats.delete(String(chatId)); await say(chatId, 'Okay, this chat will no longer get heads-ups.'); return; }
-    if (!text.trim()) {
-      if (isPrivate) await say(chatId, 'Send or forward me the message text and I will check it.');
+    const imageRef = imageRefOf(msg);
+    if (!text.trim() && !imageRef) {
+      if (isPrivate) await say(chatId, 'Send or forward me a message or a screenshot and I will check it.');
       return;
     }
+    const imageBase64 = imageRef ? await fetchImage(imageRef) : undefined;
+    if (imageRef && !imageBase64 && !text.trim()) { if (isPrivate) await say(chatId, "I couldn't open that picture. Try sending it as a photo, under 3 MB."); return; }
     const sender = senderOf(msg, isPrivate);
     const users = link ? link.lookup('telegram', chatId) : [];
     const q = core.quick(text);
@@ -135,7 +159,7 @@ export function createBot({
     //    replace the generic ones in the same Telegram message and are filled into the warning already on the app; the app is
     //    alerted again only if the AI found it worse than the instant read did.
     const memKey = `${chatId}:${sender && !sender.hidden ? sender.id : 'me'}`;
-    const full = await assess(text, memory.get(memKey));
+    const full = await assess(text, memory.get(memKey), imageBase64);
     memory.add(memKey, text);
     if (info && info.repeatScam && full.level < 2) full.level = 2;
     if (deferQuiet && full.level === 0) { await say(chatId, core.reply(full, { sender: view })); return; } // the AI read it: say what it found

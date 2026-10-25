@@ -430,6 +430,27 @@ function setupView() {
 // ---------- check a message ----------
 
 // A plain-words read of what kind of scam this looks like and what to do, from the language of the message or call.
+// What the AI found in links and pictures. It never opens a link; it judges the address itself. For pictures it gives a hint,
+// not proof: AI is not reliable at telling real photos from generated ones.
+function evidenceNodes(g) {
+  const out = [];
+  if (g && g.links && g.links.length) {
+    out.push(h('div', { class: 'evidence' }, h('b', null, 'Links'),
+      ...g.links.map((l) => h('div', { class: `linkrow r-${l.risk}` },
+        h('span', { class: 'riskpill' }, l.risk.toUpperCase()), h('span', { class: 'linkurl' }, l.url),
+        h('span', { class: 'muted' }, `${l.lookalikeOf && l.risk !== 'low' ? `Imitates ${l.lookalikeOf}. ` : ''}${l.why}`))),
+      h('p', { class: 'muted' }, 'Vouch did not open these links.')));
+  }
+  if (g && g.image) {
+    const im = g.image;
+    out.push(h('div', { class: 'evidence' }, h('b', null, 'Picture'),
+      h('p', null, `${im.kind || 'A picture'}.${im.aiGenerated === 'likely' ? ' It looks AI-generated.' : (im.aiGenerated === 'possible' ? ' It might be AI-generated.' : '')}`),
+      ...(im.concerns || []).map((c) => h('p', { class: 'muted' }, c)),
+      h('p', { class: 'muted' }, 'AI can be wrong about pictures, so treat this as a hint.')));
+  }
+  return out;
+}
+
 function guideCard(g, ai = false) {
   return h('div', { class: 'guide' },
     ai ? h('div', { class: 'aitag' }, 'AI read') : null,
@@ -437,6 +458,7 @@ function guideCard(g, ai = false) {
     h('p', null, g.why),
     g.impersonating ? h('p', { class: 'claims' }, `It claims to be: ${g.impersonating}`) : null,
     g.signals && g.signals.length ? h('div', { class: 'flagbar' }, ...g.signals.map((s) => h('span', { class: 'chip' }, s))) : null,
+    ...evidenceNodes(g),
     h('ol', { class: 'steps' }, g.steps.map((s) => h('li', null, s))));
 }
 
@@ -486,7 +508,7 @@ function checkView() {
   const flags = h('div', { 'aria-live': 'polite' });
   const paintFlags = () => {
     const s = suggest(F.text);
-    const ai = F.aiRead && F.aiRead.text === F.text ? F.aiRead.read : null;
+    const ai = F.aiRead && F.aiRead.key === readKey() ? F.aiRead.read : null;
     const useAi = !!(ai && ai.title && ai.title !== 'Nothing stands out');
     const g = useAi ? ai : classify(F.text);
     const kids = [];
@@ -512,17 +534,18 @@ function checkView() {
   // The instant AI read: a moment after the text stops changing, ask the server's AI what it makes of it and show it right here.
   // The on-phone guide above has already answered; this adds the AI's view when there is one.
   const aiLine = h('div', { 'aria-live': 'polite' });
+  const readKey = () => `${F.text}|${F.image ? F.image.length : 0}`;
   let readTimer = null; let readSeq = 0;
   function scheduleRead() {
     clearTimeout(readTimer);
-    if (!S.watch || F.text.trim().length < 12) { readSeq += 1; aiLine.replaceChildren(); return; }
+    if (!S.watch || (F.text.trim().length < 12 && !F.image)) { readSeq += 1; aiLine.replaceChildren(); return; }
     readTimer = setTimeout(async () => {
       const mine = ++readSeq;
       aiLine.replaceChildren(h('p', { class: 'muted' }, 'AI is reading it…'));
       try {
-        const r = await call('watch:read', { text: F.text }, 9000);
+        const r = await call('watch:read', { text: F.text, imageDataUrl: F.image || undefined }, 15000);
         if (mine !== readSeq) return;
-        F.aiRead = r.ai && r.read ? { text: F.text, read: r.read } : null;
+        F.aiRead = r.ai && r.read ? { key: readKey(), read: r.read } : null;
         aiLine.replaceChildren();
         paintFlags();
       } catch { if (mine === readSeq) aiLine.replaceChildren(); }
@@ -545,6 +568,8 @@ function checkView() {
     if (!file) return;
     try { F.image = await readScreenshot(file); msg.replaceChildren(); } catch (e) { F.image = ''; msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
     paintShot();
+    paintFlags();
+    scheduleRead(); // the AI looks at the picture as soon as it is chosen
   } });
   paintShot();
   const paste = h('button', { class: 'ghost', onclick: async () => {
@@ -1512,6 +1537,7 @@ function scamBody(g, signals, impersonating, tags) {
     h('p', { class: 'big' }, g ? g.why : 'Do not send anything yet.'),
     impersonating ? h('p', { class: 'claims' }, `It claims to be: ${impersonating}`) : null,
     signals && signals.length ? h('div', { class: 'flagbar' }, ...signals.map((s) => h('span', { class: 'chip' }, s))) : null,
+    ...evidenceNodes(g),
     g ? h('ol', { class: 'steps big' }, (g.steps || []).map((s) => h('li', null, s)))
       : (tags && tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
   ];
@@ -1686,13 +1712,13 @@ function wireEvents() {
   on('scam:ai', (m) => {
     if (!m || !m.id || !m.ai) return;
     const item = S.queue.find((q) => q.data && q.data.aid === m.id);
-    if (item) { item.data.ai = m.ai; item.data.guide = { title: m.ai.title, why: m.ai.why, steps: m.ai.steps }; }
+    if (item) { item.data.ai = m.ai; item.data.guide = { title: m.ai.title, why: m.ai.why, steps: m.ai.steps, links: m.ai.links, image: m.ai.image }; }
     const title = document.getElementById(`t-${m.id}`);
     if (title) title.textContent = m.ai.title;
     const src = document.getElementById(`s-${m.id}`);
     if (src && item) src.textContent = `Sent to Vouch from ${SOURCE_NAMES[item.data.source] || 'a message'} · read by AI`;
     const body = document.getElementById(`g-${m.id}`);
-    if (body) body.replaceChildren(...scamBody({ title: m.ai.title, why: m.ai.why, steps: m.ai.steps }, m.ai.signals, m.ai.impersonating, []));
+    if (body) body.replaceChildren(...scamBody({ title: m.ai.title, why: m.ai.why, steps: m.ai.steps, links: m.ai.links, image: m.ai.image }, m.ai.signals, m.ai.impersonating, []));
   });
   // A friend (or anyone paired) is asking this account to confirm that it sent a request.
   on('verify:prompt', (p) => {
@@ -1721,7 +1747,7 @@ function wireEvents() {
   on('scam:alert', (a) => {
     if (!a) return;
     const id = `bot-${a.ts || Date.now()}`;
-    const guide = a.ai ? { title: a.ai.title, why: a.ai.why, steps: a.ai.steps } : { title: a.title, why: a.why, steps: a.steps || [] };
+    const guide = a.ai ? { title: a.ai.title, why: a.ai.why, steps: a.ai.steps, links: a.ai.links, image: a.ai.image } : { title: a.title, why: a.why, steps: a.steps || [] };
     S.queue.push({ kind: 'scam', data: { requestId: id, tags: a.tags || [], institution: false, guide, source: a.source, sender: a.sender, ai: a.ai, aid: a.id, repeat: a.repeat, soft: a.level !== 2, signals: a.signals, impersonating: a.impersonating } });
     if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends') renderMain(); });
     raiseAlert(a.level === 2 ? 2 : 1, `${a.title}. Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, id);

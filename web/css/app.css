@@ -208,3 +208,16 @@ mark { background: #fcd34d; color: #000; border-radius: 5px; padding: 0 0.2em; f
 .sender { font-weight: 700; margin: 0.4rem 0; }
 .airead { background: var(--surface); border-radius: var(--radius-sm); padding: 0.7rem 0.9rem; margin: 0.6rem 0 0; font-weight: 500; }
 .overlay.alert .airead { background: rgba(0, 0, 0, 0.08); }
+
+/* links and pictures the AI looked at */
+.evidence { margin: 0.7rem 0 0; }
+.evidence b { display: block; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.75; margin-bottom: 0.25rem; }
+.evidence p { margin: 0.2rem 0; }
+.linkrow { display: grid; grid-template-columns: auto 1fr; gap: 0.1rem 0.6rem; align-items: baseline; padding: 0.35rem 0; border-top: 1px solid var(--line); }
+.linkrow:first-of-type { border-top: 0; }
+.linkrow .linkurl { font-weight: 700; overflow-wrap: anywhere; }
+.linkrow .muted { grid-column: 2; font-size: 0.9rem; }
+.riskpill { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.05em; padding: 0.1rem 0.5rem; border-radius: 99px; background: var(--surface-2); color: var(--ink); }
+.linkrow.r-high .riskpill { background: var(--red); color: var(--red-bg); }
+.linkrow.r-medium .riskpill { background: var(--amber); color: var(--amber-bg); }
+.overlay.alert .riskpill { background: rgba(0, 0, 0, 0.18); color: inherit; }

@@ -76,7 +76,7 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
 
   // What the app is told about the AI's read. Never the message.
   const aiView = (a) => ({ title: a.guide ? a.guide.title : '', why: a.guide ? a.guide.why : '', steps: a.guide ? a.guide.steps : [],
-    signals: a.signals || [], impersonating: a.impersonating || '', level: a.level, risk: a.aiRisk || null, amount: a.amount || '' });
+    signals: a.signals || [], impersonating: a.impersonating || '', links: a.links || [], image: a.image || null, level: a.level, risk: a.aiRisk || null, amount: a.amount || '' });
 
   // A flagged message lights up the person's Vouch app. Never the message itself: what kind of scam it looks like, who sent it
   // (when the app they used says), and what the AI made of it.
@@ -243,10 +243,12 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
       const uid = who();
       if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
       const text = p && typeof p.text === 'string' ? p.text.slice(0, 2000) : '';
-      if (text.trim().length < 8) return reply(ack, { ok: false, error: 'BAD_INPUT' });
+      const m = p && typeof p.imageDataUrl === 'string' ? /^data:image\/(jpeg|png|webp);base64,/.exec(p.imageDataUrl) : null;
+      const imageBase64 = m ? p.imageDataUrl.slice(m[0].length) : undefined;
+      if ((imageBase64 && imageBase64.length > 4_000_000) || (text.trim().length < 8 && !imageBase64)) return reply(ack, { ok: false, error: 'BAD_INPUT' });
       if (!allow(`read:${uid}`, 12)) return reply(ack, { ok: false, error: 'RATE_LIMITED' });
       try {
-        const a = await core.assess({ text });
+        const a = await core.assess({ text, imageBase64 });
         return reply(ack, { ok: true, level: a.level, tags: a.tags, ai: a.ai, read: a.ai ? aiView(a) : null }); // never the text back
       } catch { return reply(ack, { ok: false, error: 'SERVER_ERROR' }); }
     });
