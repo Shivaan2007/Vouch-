@@ -135,3 +135,35 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
   assert.ok(text().includes('STOP. Do not send money.'), 'full-screen STOP');
   assert.ok(text().includes('Sam says this was NOT them'), 'says who denied it');
 });
+
+test('scanner with no camera falls back to typing the code; a mismatched safety code removes the link', async () => {
+  const tia = await otherPhone('Tia');
+  const { token } = await tia.call('pair:offer');
+  const stop = btn('I understand'); // the red STOP from the previous test is still up
+  if (stop) await stop.fire('click');
+  await btn('My people').fire('click');
+  await btn('Scan a code').fire('click');
+  await wait(100);
+  assert.ok(text().includes("can't open the camera"), 'says so plainly instead of crashing');
+  const typed = find(appEl, (n) => n.attrs && n.attrs['aria-label'] === 'Type the code instead');
+  assert.ok(typed, 'a typed-code box is right there');
+  typed.value = `${token.slice(0, 4)}-${token.slice(4)}`;
+  await btn('Join with this code').fire('click');
+  await wait(700);
+  assert.ok(text().includes('Linked with Tia'), 'linked by typing the code');
+  await btn("It doesn't match").fire('click');
+  await wait(200);
+  assert.ok(text().includes('Link removed'), 'tells the person what happened');
+  assert.ok(!text().includes('Tia'), 'and the friend is gone from this phone');
+});
+
+test('a bad code from the scanner is explained, not silent', async () => {
+  await btn('My people').fire('click');
+  await btn('Scan a code').fire('click');
+  await wait(50);
+  const typed = find(appEl, (n) => n.attrs && n.attrs['aria-label'] === 'Type the code instead');
+  typed.value = 'abc';
+  await btn('Join with this code').fire('click');
+  assert.ok(text().includes('8 letters or numbers'));
+  await btn('Cancel').fire('click');
+});

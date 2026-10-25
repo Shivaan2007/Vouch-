@@ -252,8 +252,18 @@ async function boot() {
   renderMain();
   wireEvents();
   connect({ onChallenge, onStatus });
-  setInterval(tickWord, 1000);
+  setInterval(() => { tickWord(); tickCode(); }, 1000);
   setInterval(repeatAlert, REPEAT_MS);
+  // A link opened while Vouch is already running (for example a scanned QR in the same tab).
+  globalThis.addEventListener?.('hashchange', () => {
+    const m = /pair=([A-Za-z0-9]+)/.exec(location.hash);
+    if (!m) return;
+    history.replaceState(null, '', location.pathname);
+    const token = m[1].toUpperCase();
+    if (S.authed) acceptToken(token); else S.pendingPair = token;
+  });
+  // Ask the browser to keep this site's saved keys and links (Safari can erase them from sites it thinks are unused).
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch { /* optional */ }
   flashIfRisky(); // a message shared into Vouch is warned about straight away
 }
 
@@ -346,15 +356,16 @@ function buildShell() {
   $toast = h('div', { role: 'status', 'aria-live': 'polite' });
   $content = h('main');
   $overlay = h('div');
-  const tabs = [['check', 'Check a message'], ['word', 'On a call'], ['friends', 'My people']];
-  const nav = h('nav', { id: 'nav', 'aria-label': 'Main' }, tabs.map(([key, text]) =>
-    h('button', { 'data-tab': key, onclick: () => setTab(key) }, text)));
+  const tabs = [['check', 'Check a message', 'message'], ['word', 'On a call', 'call'], ['friends', 'My people', 'people']];
+  const nav = h('nav', { id: 'nav', 'aria-label': 'Main' }, tabs.map(([key, text, icon]) =>
+    h('button', { 'data-tab': key, onclick: () => setTab(key) },
+      h('span', { class: 'ico', 'aria-hidden': 'true', style: `--src:url(img/ui/${icon}.svg)` }), h('span', null, text))));
   const size = h('button', { class: 'ghost size', 'aria-label': 'Change text size', onclick: () => {
     S.size = (S.size % 3) + 1;
     applySize(S.size);
     saveSize(S.size);
   } }, 'A+');
-  $app.replaceChildren(h('header', null, h('h1', null, 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $sticky, $banners, $toast, $content, nav, $overlay);
+  $app.replaceChildren(h('header', null, h('h1', { class: 'brand' }, h('img', { src: 'icon.svg', alt: '', width: '28', height: '28' }), 'Vouch'), h('div', { class: 'hgroup' }, $status, size)), $conn, $sticky, $banners, $toast, $content, nav, $overlay);
   paintStatus();
 }
 
@@ -403,6 +414,7 @@ function setupView() {
     h('h2', null, 'Welcome to Vouch'),
     h('p', null, 'Vouch checks that a message or call asking for money is really from someone you trust.'),
     h('p', { class: 'muted' }, 'Your phone makes a private key. It never leaves this phone.'),
+    installCard(),
     S.pendingPair ? h('p', { class: 'ok' }, "You'll be linked to your friend right after this.") : null,
     h('label', { for: 'name' }, 'Your name'), name, btn, msg);
 }
@@ -812,6 +824,15 @@ function callScamOverlay({ level, tags, institution }) {
 
 // ---------- my people + pairing ----------
 
+// iPhone Safari can erase the saved keys of a website it thinks is unused; an app on the Home Screen is kept.
+function installCard() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+  const standalone = navigator.standalone === true || (globalThis.matchMedia && globalThis.matchMedia('(display-mode: standalone)').matches);
+  if (!ios || standalone) return null;
+  return h('div', { class: 'card' }, h('b', null, 'Keep Vouch on this iPhone'),
+    h('p', null, 'Safari can erase the saved keys of a website you have not opened for a while. An app on your Home Screen is kept. Tap Share, then Add to Home Screen, and open Vouch from there.'));
+}
+
 function alertsCard() {
   if (!('Notification' in globalThis)) return h('p', { class: 'muted' }, 'This browser cannot show alerts. Keep Vouch open.');
   const p = Notification.permission;
@@ -862,7 +883,7 @@ function friendsView() {
         h('button', { class: 'no', onclick: async () => { try { await store.resetAll(); } catch { /* reload anyway */ } location.reload(); } }, 'Erase'),
         h('button', { class: 'ghost', onclick: () => { S.forgetAsk = false; renderMain(); } }, 'Keep')))
     : h('button', { class: 'ghost', onclick: () => { S.forgetAsk = true; renderMain(); } }, 'Erase everything on this phone');
-  return h('section', null, h('h2', null, `Hello, ${S.me.name}`),
+  return h('section', null, h('h2', null, `Hello, ${S.me.name}`), installCard(),
     h('h2', null, 'People I trust'), list,
     h('button', { onclick: showMyCode }, 'Add someone: show my code'),
     h('label', { for: 'code' }, 'Have a code from someone?'), input,
@@ -888,8 +909,8 @@ function extractToken(text) {
 
 async function showMyCode() {
   try {
-    const { token } = await call('pair:offer', {});
-    S.codeView = token;
+    const { token, expiresAt } = await call('pair:offer', {});
+    S.codeView = token; S.codeExpires = expiresAt || Date.now() + 5 * 60 * 1000; S.codeExpired = false;
     renderOverlay();
   } catch (e) { toast(friendly(e)); }
 }
@@ -939,9 +960,17 @@ function scanOverlay() {
   video.setAttribute('webkit-playsinline', '');
   const msg = h('p', { role: 'status' }, 'Starting the camera…');
   const frame = h('div', { class: 'frame' }, h('i'), h('i'), h('i'), h('i'));
-  const typeIt = h('button', { onclick: closeScanner }, 'Cancel');
+  const typed = h('input', { placeholder: 'Or type the code, like ABCD-2345', autocapitalize: 'characters', autocomplete: 'off', 'aria-label': 'Type the code instead' });
+  const join = h('button', { onclick: async () => {
+    const t = extractToken(typed.value);
+    if (!t) { msg.textContent = 'That code should be 8 letters or numbers.'; return; }
+    closeScanner();
+    await acceptToken(t);
+  } }, 'Join with this code');
+  const cancel = h('button', { class: 'ghost', onclick: closeScanner }, 'Cancel');
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let lastWarn = 0;
 
   const loop = async () => {
     if (!S.scanning || !S.stream) return;
@@ -953,29 +982,43 @@ function scanOverlay() {
       ctx.drawImage(video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, size, size);
       const img = ctx.getImageData(0, 0, size, size);
       const r = globalThis.jsQR(img.data, size, size, { inversionAttempts: 'attemptBoth' });
-      const token = r && r.data && extractToken(r.data);
-      if (token) { closeScanner(); await acceptToken(token); return; }
+      if (r && r.data) {
+        const token = extractToken(r.data);
+        if (token) { closeScanner(); await acceptToken(token); return; }
+        if (Date.now() - lastWarn > 1500) { lastWarn = Date.now(); msg.textContent = "That QR code isn't a Vouch code. Try the one on your friend's screen."; }
+      }
     }
     requestAnimationFrame(loop);
   };
 
-  navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } } })
-    .then((stream) => {
-      if (!S.scanning) { stream.getTracks().forEach((t) => t.stop()); return null; }
-      S.stream = stream;
-      video.srcObject = stream;
-      return video.play();
-    })
-    .then(() => { if (S.stream) { msg.textContent = 'Point the camera at the code'; loop(); } })
-    .catch((err) => {
-      msg.textContent = err && err.name === 'NotAllowedError'
-        ? 'The camera is blocked. Allow it in your browser settings, or close this and type the code.'
-        : "Couldn't start the camera. Close this and type the code instead.";
-      typeIt.textContent = 'Close';
-    });
+  const fail = (err) => {
+    const name = err && err.name;
+    msg.textContent = name === 'NotAllowedError' || name === 'SecurityError'
+      ? 'The camera is blocked. Allow it in your browser settings, or type the code below.'
+      : (name === 'NotFoundError' || name === 'DevicesNotFoundError' ? 'No camera found. Type the code below.'
+        : (name === 'NotReadableError' ? 'The camera is being used by another app. Close it, or type the code below.'
+          : "Couldn't start the camera. Type the code below."));
+  };
+
+  const md = navigator.mediaDevices;
+  if (!md || !md.getUserMedia) {
+    msg.textContent = "This browser can't open the camera here. Type the code below.";
+  } else {
+    // Prefer the back camera; if the phone refuses that, take whatever camera it has.
+    md.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } } })
+      .catch((err) => (err && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError') ? md.getUserMedia({ audio: false, video: true }) : Promise.reject(err)))
+      .then((stream) => {
+        if (!S.scanning) { stream.getTracks().forEach((t) => t.stop()); return null; }
+        S.stream = stream;
+        video.srcObject = stream;
+        return video.play();
+      })
+      .then(() => { if (S.stream) { msg.textContent = 'Point the camera at the code'; loop(); } })
+      .catch(fail);
+  }
 
   return h('div', { class: 'overlay scan', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Scan a code' },
-    video, frame, h('div', { class: 'scanbottom' }, msg, typeIt));
+    video, frame, h('div', { class: 'scanbottom' }, msg, typed, join, cancel));
 }
 
 // ---------- overlays: scanner, pairing code, incoming prompts ----------
@@ -987,7 +1030,7 @@ function renderOverlay() {
   if (item) {
     key = `${item.kind}:${(item.data && item.data.requestId) || (item.data && item.data.u && item.data.u.requestId) || (item.peer && item.peer.id)}`;
   } else if (S.scanning) key = 'scan';
-  else if (S.codeView) key = `code:${S.codeView}`;
+  else if (S.codeView) key = `code:${S.codeView}:${S.codeExpired ? 'x' : 'ok'}`;
   if ($overlay.dataset.key === key) return; // already showing it; don't wipe what the person is typing
   if ($overlay.dataset.key === 'scan' && key !== 'scan') stopStream();
   $overlay.dataset.key = key;
@@ -1059,7 +1102,23 @@ function alertOverlay({ u, soft }) {
       soft ? h('button', { onclick: dismiss }, 'I understand') : pauseButton('I understand', PAUSE_SECONDS, dismiss)));
 }
 
+// Counts the pairing code down, and when it runs out offers a fresh one in a tap.
+function tickCode() {
+  if (!S.codeView || S.codeExpired) return;
+  const left = Math.ceil((S.codeExpires - Date.now()) / 1000);
+  if (left <= 0) { S.codeExpired = true; renderOverlay(); return; }
+  const el = document.getElementById('codeleft');
+  if (el) el.textContent = `Waiting for your friend. This code works once and expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}.`;
+}
+
 function codeOverlay(token) {
+  if (S.codeExpired) {
+    return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
+      h('h2', null, 'That code expired'),
+      h('p', null, 'Codes only last 5 minutes so nobody else can use one. Get a new one.'),
+      h('button', { onclick: showMyCode }, 'Get a new code'),
+      h('button', { class: 'ghost', onclick: () => { S.codeView = null; S.codeExpired = false; renderOverlay(); } }, 'Cancel')));
+  }
   const url = `${location.origin}/#pair=${token}`;
   const canvas = h('canvas', { class: 'qr', 'aria-label': 'QR code to link with me' });
   drawQr(canvas, url);
@@ -1070,7 +1129,7 @@ function codeOverlay(token) {
     h('div', { class: 'qrbox' }, canvas),
     h('p', { class: 'muted', style: 'text-align:center' }, 'Or type this code:'),
     h('div', { class: 'code' }, shown),
-    h('p', { class: 'muted' }, 'Waiting for your friend. The code works once and expires in 5 minutes.'),
+    h('p', { class: 'muted', id: 'codeleft', role: 'status' }, 'Waiting for your friend. This code works once and expires in 5:00.'),
     h('button', { class: 'ghost', onclick: () => { S.codeView = null; renderOverlay(); } }, 'Cancel')));
 }
 
@@ -1093,7 +1152,15 @@ function pairedOverlay({ peer, code }) {
     h('h2', null, `Linked with ${peer.name}`),
     h('p', null, 'Read this code out loud to each other. If it matches on both phones, you are safely linked.'),
     h('div', { class: 'code' }, code),
-    h('button', { onclick: () => { dismiss(); if ('Notification' in globalThis && Notification.permission === 'default') requestAlerts(); } }, 'It matches')));
+    h('button', { onclick: () => { dismiss(); if ('Notification' in globalThis && Notification.permission === 'default') requestAlerts(); } }, 'It matches'),
+    h('button', { class: 'no', onclick: async () => {
+      // A different code means someone may have tampered with the link. Remove it here and start over in person.
+      await store.deleteFriend(peer.id);
+      S.friends = await store.listFriends();
+      dismiss();
+      renderMain();
+      toast('Link removed. Link up again in person and compare the codes.');
+    } }, "It doesn't match")));
 }
 
 function promptOverlay(p) {
