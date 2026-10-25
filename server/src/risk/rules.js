@@ -11,6 +11,9 @@ const normalize = (text) =>
 // Each detector matches normalized (lowercase, straight-apostrophe) text.
 const DETECTORS = {
   URGENCY: [
+    /\b(act now|call now|final notice|last chance|within (24|48) hours|before (midnight|tonight|the deadline))\b/,
+    /\b(account|card) (will be|has been|is|was) (locked|suspended|frozen|closed|blocked)\b/,
+    /\b(fraud alert|suspicious (charge|activity|transaction)|unauthorized (purchase|charge|transaction))\b/,
     /\b(urgent(ly)?|asap|immediately|hurry|emergency|time[- ]sensitive|right away|right now|quickly)\b/,
     /\brn\b/,
     /\bneed(s|ed)? (it|this|that|them|the money|money|cash)? ?(today|tonight|now)\b/,
@@ -18,6 +21,8 @@ const DETECTORS = {
     /\bin the next \d+ (min|mins|minutes|hour|hours)\b/,
   ],
   SECRECY: [
+    /\b(don'?t|do not) (call|contact|involve|text) (dad|mom|anyone|anybody|the police|police|the bank)\b/,
+    /\bdiscreet(ly)?\b/,
     /\b(don'?t|do not) (tell|mention|breathe a word|say (anything|a word)|let (anyone|anybody|mom|dad|him|her|them))/,
     /\bkeep (this|it|that) (a )?(secret|quiet|private|between us|to yourself)/,
     /\bbetween (us|you and me)\b/,
@@ -26,6 +31,7 @@ const DETECTORS = {
     /\bdelete (this|these|the) (message|messages|text|texts|chat)\b/,
   ],
   NEW_NUMBER: [
+    /\b(from|on|using) (my |a )?(friend|sister|brother|mom|dad|mother|father|cousin|aunt|uncle|someone|stranger)'?s? phone\b/,
     /\b(new|different) (phone )?number\b/,
     /\bnew phone\b/,
     /\bchanged my (phone )?number\b/,
@@ -57,6 +63,7 @@ const DETECTORS = {
     /\bwallet address\b/,
   ],
   PAYBACK_PROMISE: [
+    /\b(we|i)('ll| will) (reimburse|refund)\b/,
     /\b(pay|paying|paid|repay|send|give|get) (you|it|that|this|the money) back\b/,
     /\b(venmo|zelle|cash ?app|paypal) (you|it) back\b/,
     /\brepay(ing)? you\b/,
@@ -66,12 +73,17 @@ const DETECTORS = {
   ],
 };
 
+const EMERGENCY_STORY = /\b(arrested|in jail|bail|hospital|car accident|stranded|kidnapp?ed|ransom|warrant|lawyer)\b/;
+const ASKS_FOR_MONEY = /\$\s?\d|\b\d[\d,]*\s?(dollars?|bucks|usd)\b|\b(send|wire|venmo|zelle|cash ?app|paypal|transfer|pay|buy|need)\b[^.?!\n]{0,60}\b(money|cash|funds|bail|ransom|fine|fee|cards?|rent|payment)\b/;
+
 export function detectTags(text, { firstRequest = false } = {}) {
   const t = normalize(text);
   const found = new Set();
   for (const [tag, patterns] of Object.entries(DETECTORS)) {
     if (patterns.some((p) => p.test(t))) found.add(tag);
   }
+  // An emergency story only counts as pressure when it comes with a request for money ("my mom is in the hospital" alone is not).
+  if (!found.has('URGENCY') && EMERGENCY_STORY.test(t) && ASKS_FOR_MONEY.test(t)) found.add('URGENCY');
   if (firstRequest === true) found.add('FIRST_REQUEST');
   return TAG_LIST.filter((tag) => found.has(tag));
 }
