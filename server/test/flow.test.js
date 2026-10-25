@@ -402,3 +402,22 @@ test('demo reset: disabled without a key, guarded by it, soft keeps friends, har
     assert.equal((await checker.call('verify:request', { claimedId: claimed.userId, amountCents: 100, method: 'other', channel: 'text' })).error, 'NOT_PAIRED');
   } finally { await t.stop(); }
 });
+
+test('abuse limits: registration per address, pairing codes per user; security headers set', async () => {
+  const t = await startServer({ registerPerMin: 3 });
+  try {
+    const phones = [];
+    for (let i = 0; i < 3; i++) phones.push(await t.phone(`P${i}`));
+    const extra = await t.phone('Extra', { register: false });
+    await extra.ready();
+    assert.equal((await extra.register()).error, 'RATE_LIMITED');
+
+    let last;
+    for (let i = 0; i < 21; i++) last = await phones[0].call('pair:offer', {});
+    assert.equal(last.error, 'RATE_LIMITED');
+
+    const res = await fetch(`${t.url}/health`);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('x-powered-by'), null);
+  } finally { await t.stop(); }
+});
