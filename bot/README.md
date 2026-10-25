@@ -61,7 +61,7 @@ The files below also run standalone. Prefer `bot/serve.js` above, which is what 
 Make a Telegram group: the victim, the "scammer" teammate, the bot. Make a second group "Family" with the bot, and send `/guardian` there. When the scammer writes in the first group, the victim gets the warning and the family gets a heads-up, on their lock screens.
 
 ## Privacy
-Messages are checked and dropped: nothing is stored or logged. The bot never logs the token or message text. With a Gemini key set, the text is sent to Google's Gemini API for analysis (same as the server). Guardian alerts name the person and the warning signs, never the message.
+Messages are checked and dropped: nothing is stored or logged. The bot never logs the token or message text. With a Gemini key set, the text is sent to Google's Gemini API for analysis (same as the server). Guardian alerts name the person and the warning signs, never the message. A call alert from the app never goes to guardian chats; it goes only to the chats that account linked itself.
 
 ## Limits
 The Telegram bot only sees chats it is in; it sees a group only if privacy mode is off. A bot cannot read other apps such as iMessage by itself: forward those messages to it (Telegram) or text them to the Vouch number (SMS and WhatsApp, below).

@@ -204,10 +204,8 @@ function paintSticky() {
   $sticky.replaceChildren(h('div', { class: `banner${A.level === 2 ? '' : ' soft'}`, role: 'alert' },
     h('div', { class: 'bannerhead' }, A.level === 2 ? 'DO NOT SEND ANYTHING' : 'WAIT. CHECK FIRST.'),
     h('p', null, A.reason),
-    f ? h('button', { onclick: () => { S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
     f ? h('button', { onclick: () => { if (A.source === 'call') askAboutCall(); else setTab('check'); } }, `Check with ${f.name}'s phone`) : null,
-    pauseButton('I checked it. Clear this', PAUSE_SECONDS, clearAlert, 'ghost'),
-    h('button', { class: 'ghost', onclick: () => { A.mutedUntil = Date.now() + 120000; toast('Quiet for 2 minutes. The banner stays.', 'ok'); } }, 'Quiet for 2 minutes')));
+    pauseButton('I checked it. Clear this', PAUSE_SECONDS, clearAlert, 'ghost')));
 }
 
 function repeatAlert() {
@@ -255,7 +253,7 @@ async function boot() {
   renderMain();
   wireEvents();
   connect({ onChallenge, onStatus });
-  setInterval(() => { tickWord(); tickCode(); tickCall(); }, 1000);
+  setInterval(() => { tickWord(); tickCode(); tickCall(); tickWait(); }, 1000);
   setInterval(repeatAlert, REPEAT_MS);
   // A link opened while Vouch is already running (for example a scanned QR in the same tab).
   globalThis.addEventListener?.('hashchange', () => {
@@ -492,18 +490,29 @@ async function submitCheck() {
   const { requestId } = await call('verify:request', body);
   if (sent) S.texts.set(requestId, sent); // kept in this tab's memory only
   S.current = requestId;
+  S.waitSince = Date.now();
   Object.assign(F, { text: '', amount: '', image: '', amountTouched: false, methodTouched: false });
   return requestId;
 }
 
+// While the friend's phone has not answered, say how long is left (the server gives up after 2 minutes).
+const WAIT_MS = 120000;
+function tickWait() {
+  const el = document.getElementById('waitleft');
+  const u = S.results.get(S.current);
+  const waiting = !u || (u.stages && u.stages.confidence && u.stages.confidence.answer === 'none');
+  if (!el || !waiting || !S.waitSince) return;
+  const left = Math.max(0, Math.ceil((S.waitSince + WAIT_MS - Date.now()) / 1000));
+  const name = u && u.stages ? u.stages.information.claimedName : 'their phone';
+  el.textContent = left > 0 ? `Waiting for ${name === 'their phone' ? name : `${name}'s phone`}… ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left` : 'Still waiting. Do not send anything yet.';
+}
+
+// The Check screen has one job: paste what you got, see what Vouch makes of it, and ask their phone. It works with nobody linked
+// too (the warning and the AI read need no friend), so anyone can try it alone; asking a phone needs someone linked.
 function checkView() {
-  if (!S.friends.length) {
-    return h('section', null, h('h2', null, 'Check a message'),
-      h('p', null, 'First, link up with someone you trust. Then Vouch can ask their phone.'),
-      h('button', { onclick: () => setTab('friends') }, 'Add someone'));
-  }
   const F = S.form;
-  if (!F.friendId || !friendById(F.friendId)) F.friendId = S.friends[0].id;
+  const hasFriends = S.friends.length > 0;
+  if (hasFriends && (!F.friendId || !friendById(F.friendId))) F.friendId = S.friends[0].id;
 
   const flags = h('div', { 'aria-live': 'polite' });
   const paintFlags = () => {
@@ -516,10 +525,10 @@ function checkView() {
     if (!useAi && s.tags.length) kids.push(h('div', { class: 'flagbar' }, ...s.tags.map((t) => h('span', { class: 'chip' }, TAGS[t]))));
     flags.replaceChildren(...kids);
   };
-  const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', oninput: () => onText() });
-  const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; } });
-  const methodChoice = choice('3. How do they want it?', METHODS.map(([k, t]) => [k, t, METHOD_LOGOS[k]]), F.method,
-    (v) => { F.method = v; F.methodTouched = true; }, 'two');
+  const text = h('textarea', { id: 'text', maxlength: '2000', placeholder: 'Paste the message you received', 'aria-label': 'The message you received', oninput: () => onText() });
+  const amount = h('input', { id: 'amount', inputmode: 'decimal', placeholder: 'For example 60', oninput: () => { F.amount = amount.value; F.amountTouched = true; paintSummary(); } });
+  const methodChoice = choice('How do they want it?', METHODS.map(([k, t]) => [k, t, METHOD_LOGOS[k]]), F.method,
+    (v) => { F.method = v; F.methodTouched = true; paintSummary(); }, 'two');
   text.value = F.text; amount.value = F.amount;
   function onText() {
     F.text = text.value;
@@ -527,6 +536,7 @@ function checkView() {
     if (s.amount && !F.amountTouched) { F.amount = s.amount; amount.value = s.amount; }
     if (s.method && !F.methodTouched) { F.method = s.method; methodChoice.setValue(s.method); }
     paintFlags();
+    paintSummary();
     scheduleRead();
   }
   paintFlags();
@@ -553,17 +563,13 @@ function checkView() {
   }
   scheduleRead();
 
-  const who = S.friends.length > 1
-    ? choice('Who does it say it is?', S.friends.map((f) => [f.id, f.name]), F.friendId, (v) => { F.friendId = v; })
-    : h('p', { class: 'big' }, `It says it's ${S.friends[0].name}.`);
-  const channel = choice('How did they reach you?', CHANNELS.map(([k, t]) => [k, t, CHANNEL_LOGOS[k]]), F.channel, (v) => { F.channel = v; }, 'two');
   const msg = h('div', { role: 'alert' });
   // Optional screenshot (a fake invoice, a payment page, a chat). Shrunk on this phone; analysed, never saved.
   const preview = h('div');
   const paintShot = () => preview.replaceChildren(...(F.image ? [
     h('img', { class: 'thumb', src: F.image, alt: 'The screenshot you added' }),
-    h('button', { class: 'ghost', onclick: () => { F.image = ''; shot.value = ''; paintShot(); } }, 'Remove the screenshot')] : []));
-  const shot = h('input', { id: 'shot', type: 'file', accept: 'image/*', onchange: async () => {
+    h('button', { class: 'ghost', onclick: () => { F.image = ''; shot.value = ''; paintShot(); paintFlags(); scheduleRead(); } }, 'Remove the screenshot')] : []));
+  const shot = h('input', { id: 'shot', type: 'file', accept: 'image/*', class: 'hidefile', 'aria-label': 'Attach a screenshot', onchange: async () => {
     const file = shot.files && shot.files[0];
     if (!file) return;
     try { F.image = await readScreenshot(file); msg.replaceChildren(); } catch (e) { F.image = ''; msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
@@ -572,24 +578,41 @@ function checkView() {
     scheduleRead(); // the AI looks at the picture as soon as it is chosen
   } });
   paintShot();
+  const attach = h('button', { class: 'ghost', onclick: () => shot.click() }, 'Attach a screenshot');
   const paste = h('button', { class: 'ghost', onclick: async () => {
     try {
       const clip = (await navigator.clipboard.readText()).slice(0, 2000);
       if (!clip.trim()) { msg.replaceChildren(h('p', { class: 'err' }, 'Nothing copied yet. Copy the message first, then tap Paste.')); return; }
       text.value = clip; onText(); msg.replaceChildren(); flashIfRisky();
     } catch { msg.replaceChildren(h('p', { class: 'err' }, 'Your phone blocked that. Press and hold in the box, then tap Paste.')); }
-  } }, 'Paste the message');
+  } }, 'Paste');
   const example = h('button', { class: 'ghost', onclick: () => {
     Object.assign(F, { channel: 'text', amountTouched: false, methodTouched: false, amount: '', method: 'venmo_cashapp_zelle',
       text: "hey it's me, new number! I'm stuck at the store and my card got declined. Can you buy $200 in Apple gift cards right now? Please don't tell mom, I'll pay you back tonight." });
-    onTextAfterExample();
-  } }, 'Try an example scam');
-  function onTextAfterExample() {
     const s = suggest(F.text);
     F.amount = s.amount; if (s.method) F.method = s.method;
     renderMain();
     flashIfRisky();
+  } }, 'Try an example');
+
+  // What Vouch understood, in one line. The three details behind it (who, how they got in touch, amount, how to pay) are only
+  // opened when something is missing, so the normal path is: paste, then tap one button.
+  const summary = h('p', { class: 'big', id: 'checksummary' });
+  const friend = () => friendById(F.friendId);
+  function paintSummary() {
+    const cents = parseCents(F.amount);
+    summary.textContent = hasFriends
+      ? (cents ? `${friend() ? friend().name : 'They'} wants ${fmt(cents)} by ${label(METHODS, F.method).toLowerCase()}.` : 'How much do they want? Add it below.')
+      : '';
   }
+  paintSummary();
+  const who = S.friends.length > 1
+    ? choice('Who does it say it is?', S.friends.map((f) => [f.id, f.name]), F.friendId, (v) => { F.friendId = v; paintSummary(); })
+    : (hasFriends ? h('p', null, `It says it's ${S.friends[0].name}.`) : null);
+  const channel = choice('How did they reach you?', CHANNELS.map(([k, t]) => [k, t, CHANNEL_LOGOS[k]]), F.channel, (v) => { F.channel = v; }, 'two');
+  const details = h('details', { class: 'more', ...(parseCents(F.amount) ? {} : { open: true }) }, h('summary', null, 'Change the details'),
+    who, channel, h('label', { for: 'amount' }, 'How much do they want? ($)'), amount, methodChoice);
+
   const btn = h('button', { onclick: async () => {
     btn.disabled = true;
     msg.replaceChildren();
@@ -597,18 +620,20 @@ function checkView() {
       await submitCheck();
       renderMain();
       document.getElementById('result')?.scrollIntoView({ block: 'start' });
-    } catch (e) { msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
+    } catch (e) { details.open = true; msg.replaceChildren(h('p', { class: 'err' }, friendly(e))); }
     btn.disabled = false;
-  } }, 'Check now');
+  } }, hasFriends && friend() ? `Ask ${friend().name}'s phone` : 'Check now');
 
-  return h('section', null, h('h2', null, 'Is this request real?'),
-    h('p', { class: 'muted' }, "We'll ask their real phone. Your message is checked and not saved."),
-    h('label', { for: 'text' }, '1. The message'), text, flags, aiLine, h('div', { class: 'row' }, paste, example),
-    h('label', { for: 'shot' }, 'Or add a screenshot (optional)'), shot, preview,
-    h('div', null, who), h('div', null, channel),
-    h('label', { for: 'amount' }, '2. How much do they want? ($)'), amount,
-    methodChoice,
-    btn, msg,
+  const ask = hasFriends
+    ? [summary, details, btn, msg]
+    : [h('div', { class: 'card' }, h('b', null, 'Want their phone to confirm it?'),
+      h('p', null, 'First, link up with someone you trust. Then Vouch can ask their phone.'),
+      h('button', { onclick: () => setTab('friends') }, 'Add someone'))];
+
+  return h('section', null, h('h2', null, hasFriends ? 'Is this request real?' : 'Check a message'),
+    h('p', { class: 'muted' }, S.watch && S.watch.listen ? "Not saved by Vouch. If AI is on, the message is sent to Google's Gemini to be read." : 'Not saved by Vouch.'),
+    text, h('div', { class: 'row' }, paste, attach, example), shot, preview, flags, aiLine,
+    ...ask,
     h('div', { id: 'result', 'aria-live': 'polite' }));
 }
 
@@ -657,7 +682,7 @@ function renderResult() {
   const box = document.getElementById('result');
   if (!box) return;
   const u = S.results.get(S.current);
-  if (!u) { box.replaceChildren(h('p', { class: 'muted' }, 'Asking their phone…')); return; }
+  if (!u) { box.replaceChildren(h('p', { class: 'muted', id: 'waitleft', role: 'status' }, 'Asking their phone…')); tickWait(); return; }
   const info = u.stages.information;
   const und = u.stages.understanding || {};
   const conf = u.stages.confidence || {};
@@ -682,8 +707,9 @@ function renderResult() {
       und.firstRequest ? h('p', null, `This is the first time ${name} has asked you for money.`) : null,
       h('p', { class: 'muted' }, `AI can warn. Only ${name}'s own phone can clear a request.`)),
     h('div', { class: 'stage' }, h('b', null, '3 · Did they confirm?'),
-      h('p', null, answerText),
-      u.needs && u.needs.word ? h('p', null, conf.wordOk ? 'Shared word matched.' : 'Shared word still needed.') : null,
+      h('p', { id: conf.answer === 'none' ? 'waitleft' : undefined }, answerText),
+      // Once they have said it was not them, no word can change that, so don't ask for one.
+      u.needs && u.needs.word && conf.answer !== 'not_me' ? h('p', null, conf.wordOk ? 'Shared word matched.' : 'Shared word still needed.') : null,
       conf.approvals && conf.approvals.needed ? h('p', null, `Second person: ${conf.approvals.received} of ${conf.approvals.needed}`) : null));
   const parts = [thread, h('div', { class: `verdict ${u.verdict}` }, h('h3', null, title), reasons), card];
   if (u.verdict === 'amber' && conf.answer === 'yes' && u.needs && u.needs.word && !conf.wordOk) parts.push(wordBox(u, name));
@@ -806,15 +832,21 @@ function wordView() {
       h('p', { class: 'muted' }, 'Put the call on speaker. Vouch warns you the moment it hears someone asking for money or a scam. It does not record or save the call.'),
       L.status ? h('p', { class: 'err', role: 'alert' }, L.status) : null);
 
-  return h('section', null, h('h2', null, 'On a call'), main,
-    f ? h('div', null, h('div', { id: 'wordarea' }), h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money")) : null,
+  // The code word is the step that works on any call, so it comes first. Listening for scam signs is the second, optional step.
+  return h('section', null, h('h2', null, 'On a call'),
+    hasFriends && S.friends.length > 1 ? choice('Who is calling?', [...S.friends.map((x) => [x.id, x.name]), ['other', 'Someone else']], S.callWith,
+      (v) => { S.callWith = v; S.wordShown = false; S.wordExpired = false; renderMain(); }) : null,
+    f
+      ? h('div', { class: 'card' }, h('b', null, `Is it really ${f.name}?`), h('div', { id: 'wordarea' }),
+        h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money"))
+      : h('div', { class: 'card' }, h('b', null, 'Is it really them?'),
+        h('p', null, hasFriends ? 'Pick who is calling to get your code word.' : 'Link up with someone first. Then you share a secret word that only the two of you can get.'),
+        hasFriends ? null : h('button', { onclick: () => setTab('friends') }, 'Add someone')),
+    h('div', { class: 'card' }, h('b', null, 'Is the call a scam?'), main),
     h('details', { class: 'more' }, h('summary', null, 'More ways'),
-      hasFriends ? choice('Who is calling?', [...S.friends.map((x) => [x.id, x.name]), ['other', 'Someone else']], S.callWith,
-        (v) => { S.callWith = v; S.wordShown = false; S.wordExpired = false; renderMain(); }) : null,
       rec ? h('div', null, h('label', { for: 'recfile' }, 'Analyze a recording (a voicemail or an audio clip)'), rec) : null,
       h('label', { for: 'callsays' }, 'Or type what you hear'), typed, h('div', { id: 'listenguide' }),
-      h('p', { class: 'muted' }, "Your browser's speech service, or the Vouch server, may process the audio. Tell the other person you're using it. Some phones block the microphone during a call; then use a second phone next to the call, or type what you hear.")),
-    !hasFriends ? h('button', { class: 'ghost', onclick: () => setTab('friends') }, 'Add someone to get a code word') : null);
+      h('p', { class: 'muted' }, "Your browser's speech service, or the Vouch server, may process the audio. Tell the other person you're using it. Some phones block the microphone during a call; then use a second phone next to the call, or type what you hear.")));
 }
 
 async function tickWord() {
@@ -884,8 +916,6 @@ function liveCallOverlay() {
   const f = callFriend();
   const level = S.callLevel || 0;
   const rec = S.listen && S.listen.mode === 'recording';
-  const circle = (icon, text, onclick, cls) => h('button', { class: `cbtn${cls ? ` ${cls}` : ''}`, onclick, 'aria-label': text },
-    h('span', { class: 'circle' }, h('span', { class: 'ico', 'aria-hidden': 'true', style: `--src:url(img/ui/${icon}.svg)` })), h('span', null, text));
   const el = h('div', { id: 'livecall', class: `overlay live lv${level}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Listening to your call' },
     h('div', { class: 'inner' },
       h('div', { class: 'livetop' }, h('span', null, rec ? 'Analyzing a recording' : (f ? `Listening to your call with ${f.name}` : 'Listening to your call')),
@@ -896,7 +926,8 @@ function liveCallOverlay() {
       f ? h('div', { id: 'livewordarea' }) : null,
       h('p', { class: 'livestatus', id: 'lv-status', role: 'status', 'aria-live': 'polite' }, (S.listen && S.listen.status) || ''),
       S.listen && S.listen.mode === 'server' ? h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'lv-mic' })) : null,
-      h('div', { class: 'callbtns' }, circle('endcall', 'End', stopListening, 'end'))));
+      actions(h('button', { class: 'no', onclick: stopListening }, 'Stop listening'),
+        quiet('Hide this screen (keeps listening)', () => { S.callMin = true; renderOverlay(); tickCall(); }))));
   queueMicrotask(() => { paintListen(); if (f) paintWordArea(); });
   return el;
 }
@@ -1198,9 +1229,10 @@ function callScamOverlay({ level, tags, institution, ai }) {
       h('div', { class: 'stop' }, hard ? 'STOP. This call looks like a scam.' : 'Someone is asking for money.'),
       ai ? h('p', { class: 'sender' }, ai.title) : null,
       ...scamBody(guide, ai && ai.signals, ai && ai.impersonating, tags),
-      f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, 'Get our code word') : null,
-      f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
-      h('button', { class: 'ghost', onclick: dismiss }, 'Keep listening')));
+      // One main thing to do: make sure it is really them. The code word comes first, because it works on a live call.
+      actions(f ? h('button', { onclick: () => { dismiss(); S.wordFriendId = f.id; revealWord(); setTab('word'); } }, `Ask ${f.name} for our code word`) : null,
+        f ? h('button', { class: 'ghost', onclick: () => { dismiss(); askAboutCall(); } }, `Check with ${f.name}'s phone`) : null,
+        quiet(S.listening ? 'Keep listening' : 'Close', dismiss))));
 }
 
 // ---------- my people + pairing ----------
@@ -1233,7 +1265,7 @@ function sendersCard() {
         h('span', { class: s.maxLevel === 2 ? 'err' : 'muted' }, s.maxLevel === 2 ? 'Scam signs' : 'Asked for money')),
       h('button', { class: 'ghost', onclick: async () => { try { await call('watch:forget', { id: s.id }); await loadSenders(); renderMain(); } catch (e) { toast(friendly(e)); } } }, 'Forget this sender'))))
       : h('p', { class: 'muted' }, 'No one has been flagged yet.'),
-    h('p', { class: 'muted' }, "Vouch keeps only a name or username, a count and the kind of scam, never the message. Telegram hides the sender when someone turns off forwarding, and then Vouch can't track them."));
+    h('p', { class: 'muted' }, "Flagged by software, so it may be wrong. Vouch keeps only a name or username, a count and the kind of scam for 30 days, never the message. Telegram hides the sender when someone turns off forwarding, and then Vouch can't track them."));
 }
 const APP_LOGOS = { telegram: ['telegram'], sms: ['imessage', 'googlemessages'], whatsapp: ['whatsapp'] };
 
@@ -1330,22 +1362,25 @@ function friendsView() {
         h('button', { class: 'no', onclick: async () => { try { await store.resetAll(); } catch { /* reload anyway */ } location.reload(); } }, 'Erase'),
         h('button', { class: 'ghost', onclick: () => { S.forgetAsk = false; renderMain(); } }, 'Keep')))
     : h('button', { class: 'ghost', onclick: () => { S.forgetAsk = true; renderMain(); } }, 'Erase everything on this phone');
+  // The first thing here is always the same: the people, and the two ways to add one. Everything else is tucked underneath.
   return h('section', null, h('h2', null, `Hello, ${S.me.name}`), installCard(),
     h('h2', null, 'People I trust'), list,
-    h('button', { onclick: showMyCode }, 'Add someone: show my code'),
-    h('label', { for: 'code' }, 'Have a code from someone?'), input,
     h('div', { class: 'row' },
-      h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join'),
+      h('button', { onclick: showMyCode }, 'Add someone'),
       h('button', { class: 'ghost', onclick: openScanner }, 'Scan a code')),
+    h('details', { class: 'more' }, h('summary', null, 'Type a code instead'),
+      h('label', { for: 'code' }, 'The code from the other phone'), input,
+      h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join')),
     h('h2', null, 'Connected apps'), appsCard(),
-    S.watch ? h('details', { class: 'more' }, h('summary', null, `Flagged senders${S.senders && S.senders.length ? ` (${S.senders.length})` : ''}`), sendersCard()) : null,
-    h('details', { class: 'more' }, h('summary', null, 'Share a message from any app'), shareCard()),
-    h('details', { class: 'more' }, h('summary', null, 'Notifications'), alertsCard()),
-    h('details', { class: 'more' }, h('summary', null, 'Privacy'),
-      h('p', null, 'Your private key stays on this phone. It cannot be copied out.'),
-      h('p', null, 'Messages you check are never saved. Only the answer is.'),
-      h('p', null, 'Only people you linked with can ever be asked.')),
-    forget);
+    h('details', { class: 'more' }, h('summary', null, 'More'),
+      S.watch ? h('details', { class: 'more' }, h('summary', null, `Flagged senders${S.senders && S.senders.length ? ` (${S.senders.length})` : ''}`), sendersCard()) : null,
+      h('details', { class: 'more' }, h('summary', null, 'Share a message from any app'), shareCard()),
+      h('details', { class: 'more' }, h('summary', null, 'Notifications'), alertsCard()),
+      h('details', { class: 'more' }, h('summary', null, 'Privacy'),
+        h('p', null, 'Your private key stays on this phone. It cannot be copied out.'),
+        h('p', null, 'Vouch does not save messages you check. If AI is on, the message is sent to Google\'s Gemini to be read.'),
+        h('p', null, 'Only people you linked with can ever be asked.')),
+      forget));
 }
 
 function extractToken(text) {
@@ -1497,6 +1532,11 @@ function renderOverlay() {
 
 function dismiss() { S.queue.shift(); renderOverlay(); }
 
+// Every full-screen message ends the same way: the buttons are pinned to the bottom of the screen, the main one first and big,
+// the way out last and quiet, so nobody has to scroll or hunt to find where to tap. Details above can be as long as they like.
+const actions = (...kids) => h('div', { class: 'actions' }, ...kids.filter(Boolean));
+const quiet = (text, onclick) => h('button', { class: 'ghost quiet', onclick }, text);
+
 function overlayFor(item) {
   if (item.kind === 'prompt') return promptOverlay(item.data);
   if (item.kind === 'confirm') return confirmOverlay(item.data);
@@ -1519,13 +1559,17 @@ function senderLine(s, repeat) {
 // The warning body: what it is, who it claims to be, what stood out, what to do. From the AI when it has read the message,
 // otherwise from the instant on-phone rules.
 function scamBody(g, signals, impersonating, tags) {
-  return [
-    h('p', { class: 'big' }, g ? g.why : 'Do not send anything yet.'),
+  // What matters first: what it is, and what to do. The proof (who it claims to be, what stood out, links, pictures) is one tap away.
+  const proof = [
     impersonating ? h('p', { class: 'claims' }, `It claims to be: ${impersonating}`) : null,
     signals && signals.length ? h('div', { class: 'flagbar' }, ...signals.map((s) => h('span', { class: 'chip' }, s))) : null,
     ...evidenceNodes(g),
-    g ? h('ol', { class: 'steps big' }, (g.steps || []).map((s) => h('li', null, s)))
+  ].filter(Boolean);
+  return [
+    h('p', { class: 'big' }, g ? g.why : 'Do not send anything yet.'),
+    g ? h('ol', { class: 'steps big' }, (g.steps || []).slice(0, 3).map((s) => h('li', null, s)))
       : (tags && tags.length ? h('ul', null, tags.map((t) => h('li', null, TAGS[t] || t))) : null),
+    proof.length ? h('details', { class: 'whybox' }, h('summary', null, 'Why Vouch thinks so'), ...proof) : null,
   ];
 }
 
@@ -1547,7 +1591,7 @@ function scamOverlay({ tags, institution, guide: given, source, sender, ai, aid,
       h('div', { class: 'stop', id: aid ? `t-${aid}` : undefined }, guide ? guide.title : 'This looks like a scam.'),
       sender ? h('p', { class: 'sender' }, senderLine(sender, repeat)) : null,
       h('div', { id: aid ? `g-${aid}` : undefined }, ...scamBody(guide, (ai && ai.signals) || signals, (ai && ai.impersonating) || impersonating, tags)),
-      go, h('button', { class: 'ghost', onclick: dismiss }, 'Not now')));
+      actions(go, quiet(go ? 'Close' : "OK, I won't send anything", dismiss))));
 }
 // Full-screen result of the live-call word check.
 function callOverlay({ ok, name }) {
@@ -1557,7 +1601,7 @@ function callOverlay({ ok, name }) {
       h('div', { class: 'stop' }, headline),
       ok ? h('p', { class: 'big' }, 'The shared word matched. Still never send gift cards.')
         : [h('p', { class: 'big' }, 'Hang up.'), h('p', null, `Call ${name} back on a number you already know.`)],
-      h('button', { onclick: dismiss }, 'OK')));
+      actions(h('button', { onclick: dismiss }, 'OK'))));
 }
 
 function alertOverlay({ u, soft }) {
@@ -1571,7 +1615,7 @@ function alertOverlay({ u, soft }) {
     h('div', { class: 'inner' },
       h('div', { class: 'stop' }, headline), h('p', { class: 'big' }, why), reasons,
       h('p', null, 'Call them on a number you already know, or ask a family member.'),
-      soft ? h('button', { onclick: dismiss }, 'I understand') : pauseButton('I understand', PAUSE_SECONDS, dismiss)));
+      actions(soft ? h('button', { onclick: dismiss }, 'I understand') : pauseButton('I understand', PAUSE_SECONDS, dismiss))));
 }
 
 // Counts the pairing code down, and when it runs out offers a fresh one in a tap.
@@ -1588,8 +1632,8 @@ function codeOverlay(token) {
     return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
       h('h2', null, 'That code expired'),
       h('p', null, 'Codes only last 5 minutes so nobody else can use one. Get a new one.'),
-      h('button', { onclick: showMyCode }, 'Get a new code'),
-      h('button', { class: 'ghost', onclick: () => { S.codeView = null; S.codeExpired = false; renderOverlay(); } }, 'Cancel')));
+      actions(h('button', { onclick: showMyCode }, 'Get a new code'),
+        quiet('Cancel', () => { S.codeView = null; S.codeExpired = false; renderOverlay(); }))));
   }
   const url = `${location.origin}/#pair=${token}`;
   const canvas = h('canvas', { class: 'qr', 'aria-label': 'QR code to link with me' });
@@ -1602,7 +1646,7 @@ function codeOverlay(token) {
     h('p', { class: 'muted', style: 'text-align:center' }, 'Or type this code:'),
     h('div', { class: 'code' }, shown),
     h('p', { class: 'muted', id: 'codeleft', role: 'status' }, 'Waiting for your friend. This code works once and expires in 5:00.'),
-    h('button', { class: 'ghost', onclick: () => { S.codeView = null; renderOverlay(); } }, 'Cancel')));
+    actions(quiet('Cancel', () => { S.codeView = null; renderOverlay(); }))));
 }
 
 function drawQr(canvas, text) {
@@ -1624,15 +1668,15 @@ function pairedOverlay({ peer, code }) {
     h('h2', null, `Linked with ${peer.name}`),
     h('p', null, 'Read this code out loud to each other. If it matches on both phones, you are safely linked.'),
     h('div', { class: 'code' }, code),
-    h('button', { onclick: () => { dismiss(); if ('Notification' in globalThis && Notification.permission === 'default') requestAlerts(); } }, 'It matches'),
-    h('button', { class: 'no', onclick: async () => {
-      // A different code means someone may have tampered with the link. Remove it here and start over in person.
-      await store.deleteFriend(peer.id);
-      S.friends = await store.listFriends();
-      dismiss();
-      renderMain();
-      toast('Link removed. Link up again in person and compare the codes.');
-    } }, "It doesn't match")));
+    actions(h('button', { onclick: () => { dismiss(); if ('Notification' in globalThis && Notification.permission === 'default') requestAlerts(); } }, 'It matches'),
+      h('button', { class: 'no', onclick: async () => {
+        // A different code means someone may have tampered with the link. Remove it here and start over in person.
+        await store.deleteFriend(peer.id);
+        S.friends = await store.listFriends();
+        dismiss();
+        renderMain();
+        toast('Link removed. Link up again in person and compare the codes.');
+      } }, "It doesn't match"))));
 }
 
 function promptOverlay(p) {
@@ -1665,7 +1709,7 @@ function promptOverlay(p) {
     h('p', { class: 'muted' }, 'Vouch check'),
     h('div', { class: 'big' }, `Did you just ask ${p.checker.name} for ${fmt(p.amountCents)} via ${label(METHODS, p.method)}?`),
     logos(METHOD_LOGOS[p.method], 'lg'),
-    retype ? [h('label', null, 'Confirm the amount'), retype] : null, yes, no, msg));
+    retype ? [h('label', null, 'Confirm the amount'), retype] : null, msg, actions(yes, no)));
 }
 
 function confirmOverlay(p) {
@@ -1687,7 +1731,7 @@ function confirmOverlay(p) {
   return h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'inner' },
     h('p', { class: 'muted' }, 'Second opinion needed'),
     h('div', { class: 'big' }, `${p.checkerName} says ${p.claimedName} asked for ${fmt(p.amountCents)} via ${label(METHODS, p.method)}. Does that sound right?`),
-    yes, no, msg));
+    msg, actions(yes, no)));
 }
 
 // ---------- server events ----------

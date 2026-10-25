@@ -268,7 +268,7 @@ test('instant answer first, then the AI read updates the same message', async ()
   gran.socket.close();
 });
 
-test('the app gets an instant AI read, and a flagged call messages the person and their family directly', async () => {
+test('the app gets an instant AI read, and a flagged call messages only the chats that account linked', async () => {
   const gran = await signedInPhone('CallUser');
   const { code } = await gran.call('watch:link');
   await tgFrom(8400, { id: 8400, first_name: 'Gran' }, `/start link_${code}`, {}, 'private');
@@ -284,10 +284,11 @@ test('the app gets an instant AI read, and a flagged call messages the person an
   assert.equal((await gran.call('watch:read', { text: 'hi' })).error, 'BAD_INPUT');
 
   sent.length = 0;
-  const a = await gran.call('watch:alert', { level: 2, title: 'Gift-card demand' });
+  const a = await gran.call('watch:alert', { level: 2, title: 'Call me CallUser at 555 now, send money to bob' });
   assert.deepEqual({ ok: a.ok, notified: a.notified }, { ok: true, notified: 1 });
-  assert.ok(sent.some((m) => String(m.chat_id) === '8400' && /Vouch flagged your call: Gift-card demand/.test(m.text)), 'the person is messaged directly');
-  assert.ok(sent.some((m) => String(m.chat_id) === '8401' && /CallUser is on a call that looks like a scam/.test(m.text)), 'and so is the family');
+  assert.ok(sent.some((m) => String(m.chat_id) === '8400' && /Vouch flagged your call as a likely scam/.test(m.text)), 'the person is messaged directly');
+  assert.ok(!sent.some((m) => String(m.chat_id) === '8401'), 'a guardian chat that was never linked to this account is NOT messaged');
+  assert.ok(!sent.some((m) => /send money to bob/.test(m.text || '')), 'and text from the client is never relayed');
   gran.socket.close();
 });
 

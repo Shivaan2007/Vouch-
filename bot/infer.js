@@ -83,6 +83,11 @@ const clean = (s, n) => {
   return (sp > n * 0.6 ? cut.slice(0, sp) : cut).replace(/[,;:\-\s]+$/, '');
 };
 
+// The AI's own sentences reach people in Vouch's voice, so no address may ride along inside them (a link there could be clicked
+// as if Vouch vouched for it). Links appear only in the links list, as text with a risk, never as something to open.
+const ADDRESS = /\b(?:https?:\/\/|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|top|xyz|info|biz|app|dev|me|ly|gl|us|ru|cn|tk|ml|click|link|shop|site|online|support)\b\S*/gi;
+const prose = (s, n) => clean(String(s ?? '').replace(ADDRESS, '[link]'), n);
+
 function imageMime(b64) {
   if (typeof b64 !== 'string') return null;
   if (b64.startsWith('/9j/')) return 'image/jpeg';
@@ -94,10 +99,10 @@ function imageMime(b64) {
 function cleanImage(img) {
   if (!img || typeof img !== 'object' || img.present !== true) return null;
   return {
-    kind: clean(img.kind, 60),
+    kind: prose(img.kind, 60),
     aiGenerated: ['unlikely', 'possible', 'likely', 'unclear'].includes(img.aiGenerated) ? img.aiGenerated : 'unclear',
     risk: RISKS.includes(img.risk) ? img.risk : 'none',
-    concerns: (Array.isArray(img.concerns) ? img.concerns : []).map((c) => clean(c, 100)).filter(Boolean).slice(0, 3),
+    concerns: (Array.isArray(img.concerns) ? img.concerns : []).map((c) => prose(c, 100)).filter(Boolean).slice(0, 3),
   };
 }
 
@@ -112,16 +117,16 @@ export function cleanInference(raw) {
     amountUSD: amount,
     paymentMethod: METHODS.includes(raw.paymentMethod) ? raw.paymentMethod : 'unknown',
     risk,
-    scamType: clean(raw.scamType, 48) || 'Unclear',
-    impersonating: clean(raw.impersonating, 60),
-    signals: (Array.isArray(raw.signals) ? raw.signals : []).map((s) => clean(s, 80)).filter(Boolean).slice(0, 4),
-    why: clean(raw.why, 160),
-    steps: (Array.isArray(raw.steps) ? raw.steps : []).map((s) => clean(s, 150)).filter(Boolean).slice(0, 3),
+    scamType: prose(raw.scamType, 48) || 'Unclear',
+    impersonating: prose(raw.impersonating, 60),
+    signals: (Array.isArray(raw.signals) ? raw.signals : []).map((s) => prose(s, 80)).filter(Boolean).slice(0, 4),
+    why: prose(raw.why, 160),
+    steps: (Array.isArray(raw.steps) ? raw.steps : []).map((s) => prose(s, 150)).filter(Boolean).slice(0, 3),
     tags: (Array.isArray(raw.tags) ? raw.tags : []).filter((t) => TAG_LIST.includes(t) && t !== 'FIRST_REQUEST'),
     intent: raw.intent === 'chat' ? 'chat' : 'message',
-    reply: clean(raw.reply, 400),
+    reply: prose(raw.reply, 400),
     links: (Array.isArray(raw.links) ? raw.links : []).filter((l) => l && typeof l === 'object' && ['low', 'medium', 'high'].includes(l.risk)).slice(0, 5)
-      .map((l) => ({ url: clean(l.url, 120), risk: l.risk, why: clean(l.why, 110), lookalikeOf: clean(l.lookalikeOf, 40) })).filter((l) => l.url),
+      .map((l) => ({ url: clean(l.url, 120), risk: l.risk, why: prose(l.why, 110), lookalikeOf: clean(l.lookalikeOf, 40) })).filter((l) => l.url),
     image: cleanImage(raw.image),
     heard: clean(raw.heard, 1500),
   };
@@ -132,7 +137,7 @@ export function cleanInference(raw) {
  * @param {{fetchImpl?: typeof fetch, apiKey?: string, timeoutMs?: number}} [opts]
  * @returns {Promise<ReturnType<typeof cleanInference>>} null when there is no key, no input, or anything goes wrong
  */
-export async function inferScam({ text = '', imageBase64, context = [], audioBase64 } = {}, { fetchImpl = globalThis.fetch, apiKey = geminiConfig().apiKey, timeoutMs = 3500 } = {}) {
+export async function inferScam({ text = '', imageBase64, context = [], audioBase64 } = {}, { fetchImpl = globalThis.fetch, apiKey = geminiConfig().apiKey, timeoutMs = 3500, hedgeMs = 1200 } = {}) {
   const mime = imageMime(imageBase64);
   const hasText = typeof text === 'string' && text.trim().length > 0;
   const hasAudio = typeof audioBase64 === 'string' && audioBase64.startsWith('UklGR'); // a WAV file
@@ -149,26 +154,44 @@ export async function inferScam({ text = '', imageBase64, context = [], audioBas
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), hasAudio ? Math.max(timeoutMs, 9000) : timeoutMs); // listening to a clip takes longer than reading text
+  // One model's try. A model that is rate-limited or retired fails fast; a model that merely stalls is not waited for (see below).
+  const attempt = async (model) => {
+    try {
+      const res = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.name)}:generateContent`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, signal: ctrl.signal,
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts }],
+          generationConfig: { temperature: 0, maxOutputTokens: 1000, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: model.thinking },
+        }),
+      });
+      if (!res || !res.ok) return null;
+      const body = await res.json();
+      const out = body && body.candidates && body.candidates[0] && body.candidates[0].content && body.candidates[0].content.parts;
+      const json = Array.isArray(out) ? out.map((p) => (p && p.text) || '').join('') : '';
+      return cleanInference(JSON.parse(json));
+    } catch { return null; }
+  };
+  // Hedged: the next model starts as soon as the last one fails, or when it has been quiet for a moment, and the first good
+  // answer wins. A stalled first model no longer eats the whole budget.
+  let hedge = null;
   try {
-    for (const model of DEFAULT_MODELS) { // a model that is rate-limited or retired fails fast; the next one is tried inside the same budget
-      try {
-        const res = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.name)}:generateContent`, {
-          method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, signal: ctrl.signal,
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts }],
-            generationConfig: { temperature: 0, maxOutputTokens: 1000, responseMimeType: 'application/json', responseSchema: SCHEMA, thinkingConfig: model.thinking },
-          }),
+    return await new Promise((resolve) => {
+      let next = 0; let active = 0; let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      ctrl.signal.addEventListener('abort', () => done(null));
+      const launch = () => {
+        if (settled || next >= DEFAULT_MODELS.length) return false;
+        const model = DEFAULT_MODELS[next++];
+        active += 1;
+        attempt(model).then((v) => {
+          active -= 1;
+          if (v) done(v);
+          else if (!settled && !launch() && active === 0) done(null);
         });
-        if (!res || !res.ok) continue;
-        const body = await res.json();
-        const out = body && body.candidates && body.candidates[0] && body.candidates[0].content && body.candidates[0].content.parts;
-        const json = Array.isArray(out) ? out.map((p) => (p && p.text) || '').join('') : '';
-        const cleaned = cleanInference(JSON.parse(json));
-        if (cleaned) return cleaned;
-      } catch (e) {
-        if (ctrl.signal.aborted) return null; // out of time: fall back to the rules
-      }
-    }
-    return null;
-  } finally { clearTimeout(timer); }
+        return true;
+      };
+      launch();
+      hedge = setInterval(() => { if (settled || !launch()) clearInterval(hedge); }, hedgeMs);
+    });
+  } finally { clearTimeout(timer); clearInterval(hedge); }
 }

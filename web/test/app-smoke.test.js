@@ -35,10 +35,25 @@ test('sign-up shows the main app, and a shared scam message triggers the warning
   assert.ok(text().includes('Possible family-emergency scam'), 'full-screen warning names the scam type');
   assert.ok(text().includes('Call your family member on the number you already have'), 'and says what to do');
   assert.ok(text().includes('DO NOT SEND ANYTHING'), 'sticky banner');
+  const bar = find(appEl, (n) => n.className === 'actions');
+  assert.ok(bar && bar.children.some((c) => c.tag === 'button'), 'the way out is in a pinned button bar, not buried in the text');
+  assert.ok(!btn('Quiet for 2 minutes') && !btn('Get our code word'), 'the banner has just the two things to do');
   const clear = btn('I checked it');
   assert.ok(clear && clear.attrs.disabled !== undefined, 'clear is locked by the pause');
-  await btn('Not now').fire('click');
+  await (btn('Close') || btn("OK, I won't send")).fire('click');
   assert.ok(text().includes('DO NOT SEND ANYTHING'), 'banner outlives the overlay');
+});
+
+test('with nobody linked, Check a message still works: paste, see the read, and a clear way to add someone', async () => {
+  await btn('Check a message').fire('click');
+  await wait(80);
+  assert.ok(find(appEl, (n) => n.id === 'text'), 'there is a place to paste');
+  assert.ok(find(appEl, (n) => n.id === 'shot') && btn('Attach a screenshot'), 'with a real Attach button');
+  assert.ok(text().includes('Not saved by Vouch'), 'and an honest privacy line');
+  assert.ok(btn('Add someone'), 'and one obvious next step');
+  await btn('On a call').fire('click');
+  await wait(80);
+  assert.ok(text().indexOf('Is it really them?') < text().indexOf('Listen to this call'), 'the code word comes before listening');
 });
 
 test('every tab renders and the pairing code appears', async () => {
@@ -85,7 +100,7 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
 
   find(appEl, (n) => n.id === 'amount').value = '60';
   await find(appEl, (n) => n.id === 'amount').fire('input');
-  await btn('Check now').fire('click');
+  await btn("Ask Sam's phone").fire('click');
   const p = await prompt;
   assert.equal(p.amountCents, 6000);
   const fields = { requestId: p.requestId, checkerId: p.checker.id, claimedId: sam.id, amountCents: p.amountCents, method: p.method, answer: 'not_me' };

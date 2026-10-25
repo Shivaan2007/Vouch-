@@ -14,6 +14,7 @@ import { createTwilioHandler } from './twilio-webhook.js';
 
 const room = (id) => `user:${id}`;
 const CODE_TTL_MS = 10 * 60 * 1000;
+const SENDER_TTL_MS = 30 * 86400000; // a flagged sender is forgotten after 30 days of quiet
 const MAX_WAV_B64 = 1_800_000;   // about 40 s of 16 kHz mono audio
 const LISTEN_PER_MIN = 14;       // Gemini's free tier allows about 5 requests a minute per model, and we try 3 models
 
@@ -50,14 +51,16 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     sGet: db.prepare('SELECT * FROM watch_senders WHERE user_id = ? AND channel = ? AND sender_ref = ?'),
     sPut: db.prepare('INSERT OR REPLACE INTO watch_senders (user_id, channel, sender_ref, handle, display, first_seen, last_seen, flags, max_level, last_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     sRaise: db.prepare('UPDATE watch_senders SET max_level = MAX(max_level, ?), last_title = ? WHERE user_id = ? AND channel = ? AND sender_ref = ?'),
-    sList: db.prepare('SELECT * FROM watch_senders WHERE user_id = ? ORDER BY last_seen DESC LIMIT 30'),
+    sList: db.prepare('SELECT * FROM watch_senders WHERE user_id = ? AND last_seen > ? ORDER BY last_seen DESC LIMIT 30'),
+    sExpire: db.prepare('DELETE FROM watch_senders WHERE last_seen < ?'),
     sForget: db.prepare('DELETE FROM watch_senders WHERE user_id = ? AND sender_ref = ?'),
-    lookup: db.prepare('SELECT user_id FROM watch_chats WHERE channel = ? AND ref = ? ORDER BY created_at'),
+    lookup: db.prepare('SELECT user_id FROM watch_chats WHERE channel = ? AND ref = ? ORDER BY created_at, rowid'),
     linkedFor: db.prepare('SELECT DISTINCT channel FROM watch_chats WHERE user_id = ?'),
     unlink: db.prepare('DELETE FROM watch_chats WHERE user_id = ? AND channel = ?'),
     unlinkChat: db.prepare('DELETE FROM watch_chats WHERE channel = ? AND ref = ?'),
     userName: db.prepare('SELECT name FROM users WHERE user_id = ?'),
   };
+  q.sExpire.run(Date.now() - SENDER_TTL_MS);
   const nameOf = (userId) => { const u = q.userName.get(userId); return (u && u.name) || 'someone'; };
 
   // Used by the doors: find who a chat warns (every account linked to it), link it with a one-time code, or unlink it.
@@ -261,21 +264,17 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
       const uid = who();
       if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
       const level = p && p.level === 2 ? 2 : 1;
-      const title = p && typeof p.title === 'string' ? p.title.slice(0, 80) : 'a call';
       if (!allow(`alert:${uid}`, 6)) return reply(ack, { ok: false, error: 'RATE_LIMITED' });
-      const line = level === 2 ? `Vouch flagged your call: ${title}. Do not send anything.` : `Vouch heard someone on your call asking for money. Make sure it is really them.`;
-      const n = await notifyLinked(uid, line);
-      if (level === 2 && telegram) {
-        const name = (q.userName.get(uid) || {}).name || 'Someone you look after';
-        for (const g of telegram.guardianChats) { try { await telegram.say(g, `Heads-up: ${name} is on a call that looks like a scam (${title}). It's worth checking in with them.`); } catch { /* fine */ } }
-      }
-      return reply(ack, { ok: true, notified: n });
+      // Fixed wording only (the client's text is never relayed), and only to the chats this account itself linked.
+      // There is no family broadcast from here: guardian chats are not tied to any one account.
+      const line = level === 2 ? 'Vouch flagged your call as a likely scam. Do not send anything.' : 'Vouch heard someone on your call asking for money. Make sure it is really them.';
+      return reply(ack, { ok: true, notified: await notifyLinked(uid, line) });
     });
     // Who has been flagged for sending this account scam messages.
     socket.on('watch:senders', (_p, ack) => {
       const uid = who();
       if (!uid) return reply(ack, { ok: false, error: 'UNAUTHENTICATED' });
-      return reply(ack, { ok: true, senders: q.sList.all(uid).map((r) => ({
+      return reply(ack, { ok: true, senders: q.sList.all(uid, Date.now() - SENDER_TTL_MS).map((r) => ({
         id: r.sender_ref, channel: r.channel, handle: r.handle, name: r.display, flags: r.flags, maxLevel: r.max_level,
         lastTitle: r.last_title, firstSeen: r.first_seen, lastSeen: r.last_seen })) });
     });

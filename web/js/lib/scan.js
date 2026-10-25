@@ -10,14 +10,17 @@ export const TAG_LABELS = {
 
 const norm = (text) => String(text ?? '').slice(0, 5000).toLowerCase().replace(/[‘’ʼ]/g, "'").replace(/\s+/g, ' ').trim();
 
+const EMERGENCY_STORY = /\b(arrested|in jail|bail|hospital|car accident|stranded|kidnapp?ed|ransom|warrant|lawyer)\b/;
+const ASKS_FOR_MONEY = /\$\s?\d|\b\d[\d,]*\s?(dollars?|bucks|usd)\b|\b(send|wire|venmo|zelle|cash ?app|paypal|transfer|pay|buy|need)\b[^.?!\n]{0,60}\b(money|cash|funds|bail|ransom|fine|fee|cards?|rent|payment)\b/;
+
 const RULES = [
   ['GIFT_CARD', [/gift ?cards?/, /\b(itunes|google play|steam|amazon|target|apple|walmart|ebay) (gift )?(cards?|codes?)\b/, /\bitunes\b/]],
   ['WIRE', [/\b(by|via|through|over) (a )?wire\b/, /\bwire (me|it|us|him|her|them|the|a|some|my|your|money|funds|transfer|\$)/, /\bwire transfer\b/, /\bwestern union\b/, /\bmoney ?gram\b/, /\b(bank|international) transfer\b/]],
   ['CRYPTO', [/\b(bitcoin|btc|ethereum|usdt|tether|crypto(currency)?|coinbase|binance|dogecoin)\b/, /\bwallet address\b/]],
-  ['URGENCY', [/\brn\b/, /\b(urgent(ly)?|asap|immediately|hurry|emergency|right away|right now|quickly)\b/, /\bneed(s|ed)? (it|this|that|the money|money|cash)? ?(today|tonight|now)\b/, /\bin the next \d+ (min|mins|minutes|hour|hours)\b/]],
-  ['SECRECY', [/\bdelete (this|these|the) (message|messages|text|texts|chat)\b/, /\b(don'?t|do not) (tell|mention|say (anything|a word)|let (anyone|anybody|mom|dad|him|her|them))/, /\bkeep (this|it|that) (a )?(secret|quiet|private|between us)/, /\bbetween (us|you and me)\b/, /\bno ?one (can|needs to|should) know\b/]],
-  ['NEW_NUMBER', [/\b(new|different) (phone )?number\b/, /\bnew phone\b/, /\bchanged my (phone )?number\b/, /\blost my phone\b/, /\b(my )?phone (broke|died|is broken)\b/, /\b(friend'?s|borrowed) phone\b/]],
-  ['PAYBACK_PROMISE', [/\b(pay|paying|paid|repay|send|give|get) (you|it|that|this|the money) back\b/, /\b(venmo|zelle|cash ?app|paypal) (you|it) back\b/, /\brepay(ing)? you\b/, /\b(double|triple) (it|your money)\b/]],
+  ['URGENCY', [/\b(act now|call now|final notice|last chance|within (24|48) hours|before (midnight|tonight|the deadline))\b/, /\b(account|card) (will be|has been|is|was) (locked|suspended|frozen|closed|blocked)\b/, /\b(fraud alert|suspicious (charge|activity|transaction)|unauthorized (purchase|charge|transaction))\b/, /\btime[- ]sensitive\b/, /\brn\b/, /\b(urgent(ly)?|asap|immediately|hurry|emergency|right away|right now|quickly)\b/, /\bneed(s|ed)? (it|this|that|the money|money|cash)? ?(today|tonight|now)\b/, /\bin the next \d+ (min|mins|minutes|hour|hours)\b/]],
+  ['SECRECY', [/\b(don'?t|do not) (call|contact|involve|text) (dad|mom|anyone|anybody|the police|police|the bank)\b/, /\bdiscreet(ly)?\b/, /\bdelete (this|these|the) (message|messages|text|texts|chat)\b/, /\b(don'?t|do not) (tell|mention|say (anything|a word)|let (anyone|anybody|mom|dad|him|her|them))/, /\bkeep (this|it|that) (a )?(secret|quiet|private|between us)/, /\bbetween (us|you and me)\b/, /\bno ?one (can|needs to|should) know\b/]],
+  ['NEW_NUMBER', [/\b(from|on|using) (my |a )?(friend|sister|brother|mom|dad|mother|father|cousin|aunt|uncle|someone|stranger)'?s? phone\b/, /\b(new|different) (phone )?number\b/, /\bnew phone\b/, /\bchanged my (phone )?number\b/, /\blost my phone\b/, /\b(my )?phone (broke|died|is broken)\b/, /\b(friend'?s|borrowed) phone\b/]],
+  ['PAYBACK_PROMISE', [/\b(we|i)('ll| will) (reimburse|refund)\b/, /\b(pay|paying|paid|repay|send|give|get) (you|it|that|this|the money) back\b/, /\b(venmo|zelle|cash ?app|paypal) (you|it) back\b/, /\brepay(ing)? you\b/, /\b(double|triple) (it|your money)\b/]],
 ];
 
 // Impostors of an institution (bank, tax office, tech support, police) can't be paired like a friend, so the defence is
@@ -105,6 +108,8 @@ function amountFrom(t) {
 export function suggest(text) {
   const t = norm(text);
   const tags = RULES.filter(([, res]) => res.some((re) => re.test(t))).map(([tag]) => tag);
+  // An emergency story only counts as pressure when it comes with a request for money (the same rule the server uses).
+  if (!tags.includes('URGENCY') && EMERGENCY_STORY.test(t) && ASKS_FOR_MONEY.test(t)) tags.push('URGENCY');
   const amount = amountFrom(t);
   let method = null;
   if (tags.includes('GIFT_CARD')) method = 'gift_card';

@@ -227,3 +227,31 @@ test('the core reads the new words together with the earlier ones, so a scam bui
   assert.equal(a.heard, 'go and buy apple gift cards now');
   assert.ok(a.level >= 1, 'the rules read what the AI heard');
 });
+
+test('no web address can ride along inside the AI sentences that reach people', () => {
+  const c = cleanInference({ risk: 'high', scamType: 'Fake bank', why: 'Go to chase-verify.top/login now or visit https://evil.example/x', steps: ['Do not open www.evil.com', 'Call your bank'], signals: ['pushes login.paypa1.com'], reply: 'see bit.ly/abc',
+    links: [{ url: 'chase-verify.top/login', risk: 'high', why: 'Not chase.com', lookalikeOf: 'Chase' }] });
+  assert.doesNotMatch(JSON.stringify([c.why, c.steps, c.signals, c.reply, c.links[0].why]), /chase-verify|evil|paypa1|bit\.ly|chase\.com/);
+  assert.equal(c.links[0].url, 'chase-verify.top/login', 'the links list itself still shows the address, as text with a risk');
+  assert.match(c.why, /\[link\]/);
+});
+
+test('a first model that stalls does not eat the whole budget: the next one is started and the first good answer wins', async () => {
+  const order = [];
+  const fetchImpl = (url, init) => {
+    const name = /models\/([^:]+):/.exec(String(url))[1];
+    order.push(name);
+    if (order.length === 1) return new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))); // stalls forever
+    return Promise.resolve(reply({ ...GOOD }));
+  };
+  const t0 = Date.now();
+  const r = await inferScam({ text: 'please send $100 in gift cards' }, { fetchImpl, apiKey: 'k', hedgeMs: 40, timeoutMs: 2000 });
+  assert.ok(r, 'got an answer from the second model');
+  assert.ok(Date.now() - t0 < 1000, 'without waiting for the stalled one');
+  assert.equal(order.length, 2);
+});
+
+test('when every model fails, the read is null and nothing is left running', async () => {
+  const r = await inferScam({ text: 'please send $100 in gift cards' }, { fetchImpl: async () => ({ ok: false }), apiKey: 'k', hedgeMs: 20, timeoutMs: 500 });
+  assert.equal(r, null);
+});

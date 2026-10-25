@@ -43,7 +43,7 @@ before(async () => {
 after(async () => { process.env.GEMINI_API_KEY = ''; clients.forEach((s) => s.close()); await server.close(); });
 
 const tg = (chat, t) => watch.telegram.handleUpdate({ update_id: 1, message: { chat: { id: chat, type: 'private' }, from: { first_name: 'Gran', is_bot: false }, text: t } });
-const dismissAll = async () => { for (let i = 0; i < 5; i++) { const b = btn('I understand') || btn('Not now') || btn('Keep listening'); if (!b) break; await b.fire('click'); } };
+const dismissAll = async () => { for (let i = 0; i < 5; i++) { const b = btn('I understand') || btn('Close') || btn("OK, I won't send") || btn('Keep listening'); if (!b) break; await b.fire('click'); } };
 
 test('sign up, then the message-bot card shows Telegram and a one-time link code', async () => {
   find(appEl, (n) => n.id === 'name').value = 'Gran';
@@ -120,7 +120,7 @@ test('listening through the Vouch server: audio goes up, words come back, the ca
   await wait(800);
   assert.ok(text().includes('STOP. Scam signs'), 'the call screen turns to the warning from what the server heard');
   assert.ok(text().includes('Watching call'), 'the header shows it is watching');
-  await btn('End').fire('click');
+  await btn('Stop listening').fire('click');
   await wait(100);
   assert.ok(!text().includes('Watching call'));
 });
@@ -154,7 +154,7 @@ test('the call screen: caller, clock, captions with the risky words marked, risk
   assert.ok(text().includes('STOP. Scam signs'), 'the call is flagged as the words come in, on the call screen itself');
   assert.ok(text().includes('gift cards'), 'the captions show what was heard');
   assert.ok(dom.findAll(appEl, (n) => n.tag === 'mark').length >= 1, 'with the risky words marked');
-  await btn('End').fire('click');
+  await btn('Stop listening').fire('click');
   await wait(100);
   assert.ok(!text().includes('Analyzing a recording'));
 });
@@ -184,6 +184,7 @@ test('a forwarded scam shows who sent it, what the AI made of it, and the sender
   assert.ok(text().includes('It claims to be: the tax office'), 'said who it claims to be');
   assert.ok(text().includes('claims you owe back taxes'), 'and quoted what stood out');
   assert.ok(text().includes('read by AI'), 'and says the AI read it');
+  assert.ok(find(appEl, (n) => n.tag === 'details' && n.className === 'whybox'), 'the proof sits behind one tap: Why Vouch thinks so');
   await dismissAll();
   await btn('My people').fire('click');
   await wait(300);
