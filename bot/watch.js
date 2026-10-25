@@ -65,13 +65,14 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
   // ---- doors ----
   let telegramUser = '';
   let telegram = null;
+  let ready = Promise.resolve(); // resolves once Telegram has answered, so a startup message can be honest
   if (env.BOT_TOKEN) {
     telegram = createBot({
       token: env.BOT_TOKEN, fetchImpl, analyze, vouchUrl: env.VOUCH_URL || '', link, onFlag: pushAlert, log,
       guardians: (env.GUARDIAN_CHAT_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
     });
     // Only start listening once Telegram accepts the token, so a wrong or revoked token is one clear log line, not a retry loop.
-    Promise.resolve(fetchImpl(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`)).then((r) => r.json())
+    ready = Promise.resolve(fetchImpl(`https://api.telegram.org/bot${env.BOT_TOKEN}/getMe`)).then((r) => r.json())
       .then((j) => {
         if (j && j.ok && j.result) {
           telegramUser = j.result.username || '';
@@ -174,5 +175,5 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     });
   });
 
-  return { link, pushAlert, transcribe, telegram, channels, stop: () => { if (telegram) telegram.stop(); } };
+  return { link, pushAlert, transcribe, telegram, channels, ready, stop: () => { if (telegram) telegram.stop(); } };
 }
