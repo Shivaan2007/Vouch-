@@ -750,6 +750,22 @@ function alertsCard() {
     h('p', { class: 'muted' }, 'On iPhone: tap Share, then Add to Home Screen, and open Vouch from there first.'),
     h('button', { onclick: requestAlerts }, 'Turn on alerts'));
 }
+// How a real message gets into Vouch. A web app can't read your Messages app, so you hand it the message.
+function shareCard() {
+  return h('div', null,
+    h('p', null, 'Got a message asking for money? Hand it to Vouch and it warns you right away.'),
+    h('p', null, h('b', null, 'Any phone: '), 'copy the message, open Vouch, tap Check a message, then Paste the message.'),
+    h('p', null, h('b', null, 'Android: '), 'install Vouch (browser menu, Install app). Then press and hold a message, tap Share, and choose Vouch.'),
+    h('details', null, h('summary', null, 'iPhone: add Vouch to the Share sheet (1 minute, once)'),
+      h('ol', { class: 'steps' },
+        h('li', null, 'Open the Shortcuts app, tap +, and name it "Check with Vouch".'),
+        h('li', null, 'Tap the info button and turn on Show in Share Sheet. Allow Text only.'),
+        h('li', null, 'Add the action URL Encode and set it to the Shortcut Input.'),
+        h('li', null, `Add the action Text. Type ${location.origin}/?text= and then insert the URL Encoded Text.`),
+        h('li', null, 'Add the action Open URLs and give it that Text.'),
+        h('li', null, 'Now select text in any app, tap Share, and choose Check with Vouch.'))));
+}
+
 function requestAlerts() {
   try { Notification.requestPermission().then(() => renderMain()); } catch { /* not supported */ }
 }
@@ -780,6 +796,7 @@ function friendsView() {
     h('div', { class: 'row' },
       h('button', { onclick: async () => { const t = extractToken(input.value); if (t) await acceptToken(t); else toast('That code should be 8 letters or numbers.'); } }, 'Join'),
       h('button', { class: 'ghost', onclick: openScanner }, 'Scan a code')),
+    h('h2', null, 'Send messages to Vouch'), h('div', { class: 'card' }, shareCard()),
     h('h2', null, 'Alerts'), h('div', { class: 'card' }, alertsCard()),
     h('h2', null, 'Your privacy'),
     h('div', { class: 'card' },
