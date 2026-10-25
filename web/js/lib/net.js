@@ -1,17 +1,21 @@
-// Socket client helper. Owned by A, imported by B.
-// Needs <script src="/socket.io/socket.io.js"></script> on the page (served by the server, defines global `io`).
+// Socket client helper (PROTOCOL v2). Owned by A. Needs <script src="/socket.io/socket.io.js"></script> on the page,
+// which defines the global `io`.
 //
 //   import { connect, call, on, setIdentity } from './lib/net.js';
 //   setIdentity({
-//     userId,
-//     register: async () => ({ userId, name, signPub, ecdhPub }),   // used on first run, or if the server forgot us
-//     sign: async (message) => base64RawSignature,                  // signs with the non-extractable signing key
+//     userId,                                        // saved after the first register, or null on a new device
+//     sign: async (message) => base64RawSignature,   // signs with the non-extractable signing key
+//     register: async (nonce) => ({ name, signPub, exchPub, sig }),  // sig = sign(authString(nonce)); returns the user:register body
+//     onUserId: (id) => save(id),                    // called when the server issues a userId
 //   });
 //   await connect();
-//   const { token } = await call('pair:start', { userId });
+//   const { token } = await call('pair:offer', {});
+
+import { authString } from './canonical.js';
 
 let socket = null;
 let identity = null;
+let nonce = null;
 const listeners = new Map(); // event -> Set<fn>, kept across reconnects
 
 export function setIdentity(id) { identity = id; }
@@ -23,39 +27,44 @@ export function on(event, fn) {
   return () => { listeners.get(event)?.delete(fn); socket?.off(event, fn); };
 }
 
-// Resolves with the server's ack payload (without `ok`); rejects with Error(code) on { ok: false }.
+// Resolves with the server's ack payload (without `ok`); rejects with Error(CODE) on { ok:false }.
 export function call(event, payload = {}, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
-    if (!socket) return reject(new Error('not_connected'));
-    const timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+    if (!socket) return reject(new Error('NOT_CONNECTED'));
+    const timer = setTimeout(() => reject(new Error('TIMEOUT')), timeoutMs);
     socket.emit(event, payload, (res) => {
       clearTimeout(timer);
-      if (res && res.ok) { const { ok, ...rest } = res; resolve(rest); } else reject(new Error(res?.error || 'server_error'));
+      if (res && res.ok) { const { ok, ...rest } = res; resolve(rest); } else reject(new Error(res?.error || 'SERVER_ERROR'));
     });
   });
 }
 
-async function login() {
+// Runs on every (re)connect once the server's auth:challenge arrives: login, or register if the server does not know us
+// (first run, or its database was wiped).
+async function authenticate() {
   if (!identity) return;
   try {
-    const { challenge } = await call('auth:challenge', { userId: identity.userId });
-    const sig = await identity.sign(`login|${identity.userId}|${challenge}`);
-    await call('auth:login', { userId: identity.userId, challenge, sig });
+    if (!identity.userId) throw new Error('UNKNOWN_USER');
+    await call('auth:login', { userId: identity.userId, sig: await identity.sign(authString(nonce)) });
   } catch (e) {
-    // Server does not know us (first run, or its database was wiped): register from scratch.
-    if (e.message === 'unknown_user' && identity.register) await call('user:register', await identity.register());
-    else throw e;
+    if (e.message !== 'UNKNOWN_USER' || !identity.register) throw e;
+    const { userId } = await call('user:register', await identity.register(nonce));
+    identity.userId = userId;
+    identity.onUserId?.(userId);
   }
 }
 
-// Connects and logs in. Re-logs in automatically after every reconnect; the server then resends pending prompts.
 export function connect(url = undefined) {
   if (socket) return Promise.resolve(socket);
   socket = globalThis.io(url, { transports: ['websocket', 'polling'] });
   for (const [event, fns] of listeners) fns.forEach((fn) => socket.on(event, fn));
-  socket.on('connect', () => { login().catch((e) => console.warn('login failed', e.message)); });
+  let first = true;
   return new Promise((resolve) => {
-    socket.once('connect', async () => { try { await login(); } catch { /* reported above */ } resolve(socket); });
+    socket.on('auth:challenge', async (msg) => {
+      nonce = msg.nonce;
+      try { await authenticate(); } catch (e) { console.warn('auth failed', e.message); }
+      if (first) { first = false; resolve(socket); }
+    });
   });
 }
 
