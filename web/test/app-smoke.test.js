@@ -53,11 +53,11 @@ test('with nobody linked, Check a message still works: paste, see the read, and 
   assert.ok(btn('Add someone'), 'and one obvious next step');
   await btn('On a call').fire('click');
   await wait(80);
-  assert.ok(text().indexOf('Is it really them?') < text().indexOf('Listen to this call'), 'the code word comes before listening');
+  assert.ok(text().includes('Add someone to get a code word') && text().includes('Is the call a scam?'), 'both halves of the call tab are there');
 });
 
 test('every tab renders and the pairing code appears', async () => {
-  for (const [tab, expect] of [['On a call', 'Listen to this call'], ['My people', 'Share a message from any app'], ['Check a message', 'First, link up']]) {
+  for (const [tab, expect] of [['On a call', 'Is the call a scam?'], ['My people', 'Share a message from any app'], ['Check a message', 'Add someone to ask their phone']]) {
     await btn(tab).fire('click');
     await wait(80);
     assert.ok(text().includes(expect), `${tab} -> ${expect}`);
@@ -92,7 +92,7 @@ test('linking a friend: the Check form shows brand logos and the screenshot cont
 
   await btn('Check a message').fire('click');
   await wait(100);
-  assert.ok(text().includes('Is this request real?'));
+  assert.ok(btn("Ask Sam's phone") && btn('Paste'), 'a message box with one button to ask their phone');
   assert.ok(text().includes('Venmo / Cash App / Zelle') && text().includes('Gift cards'), 'method cards');
   assert.ok(findAll(appEl, (n) => n.className === 'logo').length >= 8, 'brand logos are drawn');
   assert.ok(find(appEl, (n) => n.id === 'shot'), 'screenshot control');

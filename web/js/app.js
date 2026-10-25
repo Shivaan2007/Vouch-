@@ -24,6 +24,12 @@ function h(tag, props, ...kids) {
   return el;
 }
 
+// The browser's own replaceChildren writes the word "null" onto the screen if it is handed a null; never let that happen.
+if (globalThis.Element && Element.prototype.replaceChildren) {
+  const nativeReplace = Element.prototype.replaceChildren;
+  Element.prototype.replaceChildren = function replaceChildren(...kids) { return nativeReplace.apply(this, kids.flat().filter((k) => k != null && k !== false)); };
+}
+
 const fmt = (cents) => (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 
 function parseCents(text) {
@@ -364,7 +370,7 @@ function buildShell() {
   $overlay = h('div');
   const tabs = [['check', 'Check a message', 'message'], ['word', 'On a call', 'call'], ['friends', 'My people', 'people']];
   const nav = h('nav', { id: 'nav', 'aria-label': 'Main' }, tabs.map(([key, text, icon]) =>
-    h('button', { 'data-tab': key, onclick: () => setTab(key) },
+    h('button', { 'data-tab': key, class: key === 'friends' ? 'minor' : 'major', onclick: () => setTab(key) },
       h('span', { class: 'ico', 'aria-hidden': 'true', style: `--src:url(img/ui/${icon}.svg)` }), h('span', null, text))));
   const size = h('button', { class: 'ghost size', 'aria-label': 'Change text size', onclick: () => {
     S.size = (S.size % 3) + 1;
@@ -626,15 +632,14 @@ function checkView() {
 
   const ask = hasFriends
     ? [summary, details, btn, msg]
-    : [h('div', { class: 'card' }, h('b', null, 'Want their phone to confirm it?'),
-      h('p', null, 'First, link up with someone you trust. Then Vouch can ask their phone.'),
-      h('button', { onclick: () => setTab('friends') }, 'Add someone'))];
+    : [h('button', { onclick: () => setTab('friends') }, 'Add someone to ask their phone')];
 
-  return h('section', null, h('h2', null, hasFriends ? 'Is this request real?' : 'Check a message'),
-    h('p', { class: 'muted' }, S.watch && S.watch.listen ? "Not saved by Vouch. If AI is on, the message is sent to Google's Gemini to be read." : 'Not saved by Vouch.'),
-    text, h('div', { class: 'row' }, paste, attach, example), shot, preview, flags, aiLine,
+  return h('section', null,
+    text, h('div', { class: 'row' }, paste, attach), shot, preview, flags, aiLine,
     ...ask,
-    h('div', { id: 'result', 'aria-live': 'polite' }));
+    h('div', { id: 'result', 'aria-live': 'polite' }),
+    h('p', { class: 'muted' }, S.watch && S.watch.listen ? "Not saved by Vouch. If AI is on, the message is read by Google's Gemini." : 'Not saved by Vouch.'),
+    example);
 }
 
 async function effective(u) {
@@ -778,18 +783,19 @@ function paintWordInto(box) {
   const f = friendById(S.wordFriendId);
   if (!box || !f) return;
   if (!S.wordShown) {
-    box.replaceChildren(
-      S.wordExpired ? h('p', { class: 'err' }, 'That word expired. Get a new one.') : null,
-      h('button', { class: S.listening ? 'ghost' : '', onclick: revealWord }, 'Get our code word'));
+    box.replaceChildren(...[
+      S.wordExpired ? h('p', { class: 'err' }, 'That word expired. Tap to get a new one.') : null,
+      h('button', { class: S.listening ? 'ghost' : '', onclick: revealWord }, `Is it really ${f.name}?`),
+    ].filter(Boolean));
     return;
   }
   const said = h('input', { placeholder: 'The two words they said', autocapitalize: 'none', autocomplete: 'off', 'aria-label': 'The two words they said' });
   const typedMsg = h('div', { role: 'alert' });
   box.replaceChildren(
+    h('p', { class: 'muted', style: 'text-align:center' }, `Ask ${f.name}: "What's our word?" Don't say it first.`),
     h('div', { class: 'bigword', id: 'bigword' }, '…'),
     h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'wordbar' })),
     h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
-    h('p', null, 'Ask them: "What\'s our word?" Let them say it first. Never read it out first.'),
     h('div', { class: 'row' },
       h('button', { class: 'yes', onclick: () => callResult(true) }, 'It matches'),
       h('button', { class: 'no', onclick: () => callResult(false) }, "It doesn't match")),
@@ -797,10 +803,10 @@ function paintWordInto(box) {
       h('button', { class: 'ghost', onclick: async () => {
         if (!said.value.trim()) { typedMsg.replaceChildren(h('p', { class: 'err' }, 'Type the two words they said.')); return; }
         callResult(await checkWord(f.wordKey, said.value));
-      } }, 'Check it'), typedMsg),
-    h('button', { class: 'ghost', onclick: () => { S.wordShown = false; paintWordArea(); } }, 'Hide the word'));
+      } }, 'Check it'), typedMsg));
 }
 
+// The call tab is two things, both big: is it really them (the code word), and is it a scam (listen).
 function wordView() {
   const hasFriends = S.friends.length > 0;
   if (!S.callWith || (S.callWith !== 'other' && !friendById(S.callWith))) S.callWith = hasFriends ? S.friends[0].id : 'other';
@@ -822,31 +828,23 @@ function wordView() {
     onchange: () => { const file = rec.files && rec.files[0]; if (file) analyzeRecording(file); } }) : null;
 
   queueMicrotask(() => { paintWordArea(); tickWord(); paintListen(); });
-  const main = S.listening
-    ? h('div', null,
-      h('p', { id: 'listenstatus', role: 'status', 'aria-live': 'polite' }, L.status),
+  const listen = S.listening
+    ? [h('p', { id: 'listenstatus', role: 'status', 'aria-live': 'polite' }, L.status),
       h('button', { class: 'bigbtn', onclick: () => { S.callMin = false; renderOverlay(); } }, 'Open the call screen'),
-      h('button', { class: 'ghost', onclick: stopListening }, 'Stop listening'))
-    : h('div', null,
-      h('button', { class: 'bigbtn', onclick: startListening }, 'Listen to this call'),
-      h('p', { class: 'muted' }, 'Put the call on speaker. Vouch warns you the moment it hears someone asking for money or a scam. It does not record or save the call.'),
-      L.status ? h('p', { class: 'err', role: 'alert' }, L.status) : null);
+      h('button', { class: 'ghost', onclick: stopListening }, 'Stop listening')]
+    : [h('button', { class: 'bigbtn', onclick: startListening }, 'Is the call a scam? Listen'),
+      L.status ? h('p', { class: 'err', role: 'alert' }, L.status) : null];
 
-  // The code word is the step that works on any call, so it comes first. Listening for scam signs is the second, optional step.
-  return h('section', null, h('h2', null, 'On a call'),
+  return h('section', null,
     hasFriends && S.friends.length > 1 ? choice('Who is calling?', [...S.friends.map((x) => [x.id, x.name]), ['other', 'Someone else']], S.callWith,
       (v) => { S.callWith = v; S.wordShown = false; S.wordExpired = false; renderMain(); }) : null,
-    f
-      ? h('div', { class: 'card' }, h('b', null, `Is it really ${f.name}?`), h('div', { id: 'wordarea' }),
-        h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money"))
-      : h('div', { class: 'card' }, h('b', null, 'Is it really them?'),
-        h('p', null, hasFriends ? 'Pick who is calling to get your code word.' : 'Link up with someone first. Then you share a secret word that only the two of you can get.'),
-        hasFriends ? null : h('button', { onclick: () => setTab('friends') }, 'Add someone')),
-    h('div', { class: 'card' }, h('b', null, 'Is the call a scam?'), main),
-    h('details', { class: 'more' }, h('summary', null, 'More ways'),
-      rec ? h('div', null, h('label', { for: 'recfile' }, 'Analyze a recording (a voicemail or an audio clip)'), rec) : null,
+    f ? h('div', { id: 'wordarea' }) : h('button', { onclick: () => setTab('friends') }, 'Add someone to get a code word'),
+    ...listen,
+    f ? h('button', { class: 'ghost', onclick: askAboutCall }, "They're asking me for money") : null,
+    h('details', { class: 'more' }, h('summary', null, 'More'),
+      rec ? h('div', null, h('label', { for: 'recfile' }, 'Analyze a recording'), rec) : null,
       h('label', { for: 'callsays' }, 'Or type what you hear'), typed, h('div', { id: 'listenguide' }),
-      h('p', { class: 'muted' }, "Your browser's speech service, or the Vouch server, may process the audio. Tell the other person you're using it. Some phones block the microphone during a call; then use a second phone next to the call, or type what you hear.")));
+      h('p', { class: 'muted' }, "Put the call on speaker. The browser's speech service or the Vouch server may process the audio; nothing is saved. Tell the other person you're using it.")));
 }
 
 async function tickWord() {

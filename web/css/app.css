@@ -107,6 +107,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 4; display: flex; background: var(--bg); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom, 0px); }
 nav button { margin: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 0.55rem 0.2rem 0.6rem; min-height: 3.6rem; font-size: 0.78rem; font-weight: 600; line-height: 1.15; display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
 nav button.on { color: var(--ink); }
+nav button.major { flex: 1.5; font-size: 0.95rem; font-weight: 800; min-height: 4.2rem; }
+nav button.major.on { background: var(--ink); color: var(--bg); }
+nav button.minor { font-weight: 500; }
 .ico { display: block; width: 1.5rem; height: 1.5rem; background: currentColor; -webkit-mask-image: var(--src); mask-image: var(--src); -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-size: contain; mask-size: contain; }
 
 /* sticky danger banner */

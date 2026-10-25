@@ -82,7 +82,7 @@ test('a message forwarded to the linked bot chat flashes a warning in the app', 
 test('On a call works with no friends: typed words are flagged live, with the scam type and steps', async () => {
   await btn('On a call').fire('click');
   await wait(100);
-  assert.ok(text().includes('Listen to this call'), 'the call listener is there even with no friends');
+  assert.ok(text().includes('Is the call a scam?'), 'the call listener is there even with no friends');
   const box = find(appEl, (n) => n.id === 'callsays');
   box.value = 'please go and buy some apple gift cards and read me the numbers';
   await box.fire('input');
@@ -111,7 +111,7 @@ test('listening through the Vouch server: audio goes up, words come back, the ca
   const box = find(appEl, (n) => n.id === 'callsays');
   box.value = '';
   await box.fire('input');
-  await btn('Listen to this call').fire('click');
+  await btn('Is the call a scam?').fire('click');
   await wait(300);
   assert.ok(text().includes('Put the call on speaker'), 'tells the person what to do');
   assert.ok(proc && typeof proc.onaudioprocess === 'function', 'the microphone is wired up');
