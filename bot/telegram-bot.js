@@ -99,6 +99,33 @@ export function createBot({
   const tipped = new Set(); // chats already told how to connect, so the tip is said once
   const voiceChats = new Set(); // chats that asked to hear every answer, kept in memory only
 
+  // Is the sender's profile picture a real person? When a flagged message comes from a visible sender, the AI looks at their
+  // profile picture once (remembered for a day, in memory only; the picture itself is never kept). It is a HINT: AI is not reliable
+  // at telling real photos from generated ones, and the words say so.
+  const faces = new Map();
+  async function profileHint(userId) {
+    const id = String(userId || '');
+    if (!/^\d+$/.test(id)) return null;
+    const hit = faces.get(id);
+    if (hit && Date.now() - hit.at < 86400000) return hit.hint;
+    let hint = null;
+    try {
+      const r = await api('getUserProfilePhotos', { user_id: Number(id), limit: 1 });
+      const sizes = r && r.result && r.result.photos && r.result.photos[0];
+      if (Array.isArray(sizes) && sizes.length) {
+        const biggest = sizes[sizes.length - 1];
+        const img = await fetchImage({ file_id: biggest.file_id, size: biggest.file_size });
+        if (img) {
+          const seen = await core.assess({ text: '', imageBase64: img });
+          const g = seen && seen.image && seen.image.aiGenerated;
+          if (g === 'likely' || g === 'possible') hint = g;
+        }
+      }
+    } catch { /* no picture, or Telegram will not share it: nothing to say */ }
+    faces.set(id, { at: Date.now(), hint });
+    return hint;
+  }
+
   async function alertGuardians(fromChatId, name, tags) {
     const who = String(name || 'Someone you look after').slice(0, 30);
     for (const id of guardianChats) {
@@ -244,6 +271,10 @@ export function createBot({
       if (messageId) await api('editMessageText', { chat_id: chatId, message_id: messageId, text: final, disable_web_page_preview: true });
       else if (full.level >= 1 && (isPrivate || full.level === 2 || full.ask)) await say(chatId, final);
     } catch (e) { log('edit failed:', e.message); }
+    if (full.level >= 1 && sender && !sender.hidden && sender.id) {
+      const hint = await profileHint(sender.id);
+      if (hint) await say(chatId, `Their profile picture ${hint === 'likely' ? 'looks AI-generated' : 'might be AI-generated'}. Scammers often use fake faces. This is only a hint, and AI can be wrong.`);
+    }
     await aloud();
     if (raised) {
       for (const uid of users) onFlag(uid, full, 'telegram', view);

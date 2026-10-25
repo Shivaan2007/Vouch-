@@ -923,9 +923,9 @@ function paintWordInto(box) {
   const typedMsg = h('div', { role: 'alert' });
   box.replaceChildren(
     h('p', { class: 'muted', style: 'text-align:center' }, `Ask ${f.name}: "What's our word?" Don't say it first.`),
-    h('div', { class: 'bigword', id: 'bigword' }, '…'),
-    h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'wordbar' })),
-    h('p', { class: 'muted', id: 'wordleft', style: 'text-align:center' }),
+    h('div', { class: 'wordcard' },
+      h('div', { class: 'ring', role: 'timer', 'aria-label': 'Time left for this word' }, h('span', { class: 'ringsec' }, '')),
+      h('div', { class: 'bigword', id: 'bigword' }, '…')),
     h('div', { class: 'row' },
       h('button', { class: 'yes', onclick: () => callResult(true) }, 'It matches'),
       h('button', { class: 'no', onclick: () => callResult(false) }, "It doesn't match")),
@@ -990,6 +990,8 @@ function wordView() {
       h('p', { class: 'muted' }, "The browser's speech service or the Vouch server may process the audio; nothing is saved. Tell the other person you're using it.")));
 }
 
+const setVar = (el, name, value) => { if (el.style.setProperty) el.style.setProperty(name, String(value)); else el.style[name] = value; };
+
 async function tickWord() {
   if (!S.wordShown) return;
   const f = friendById(S.wordFriendId);
@@ -998,10 +1000,15 @@ async function tickWord() {
   try { cw = await currentWord(f.wordKey); } catch { S.wordShown = false; S.wordProblem = true; paintWordArea(); return; } // a missing or damaged key
   const { word, minute, secondsLeft } = cw;
   if (minute !== S.wordMinute) { S.wordShown = false; S.wordExpired = true; paintWordArea(); return; }
-  for (const el of document.querySelectorAll('.bigword')) el.textContent = word;
-  for (const el of document.querySelectorAll('.meterfill')) if (el.id === 'wordbar') el.style.width = `${(secondsLeft / 60) * 100}%`;
-  const left = document.getElementById('wordleft');
-  if (left) left.textContent = `expires in ${secondsLeft}s`;
+  for (const el of document.querySelectorAll('.bigword')) {
+    if (el.textContent !== word) { el.textContent = word; el.classList.add('fresh'); }
+  }
+  // The ring runs down with the minute and turns amber, then red, so the person sees the word is about to change.
+  for (const el of document.querySelectorAll('.ring')) {
+    setVar(el, '--p', secondsLeft / 60);
+    el.className = `ring${secondsLeft <= 8 ? ' late' : secondsLeft <= 20 ? ' warn' : ''}`;
+  }
+  for (const el of document.querySelectorAll('.ringsec')) el.textContent = `${secondsLeft}s`;
 }
 
 // ---------- watch a call ----------
@@ -1021,7 +1028,7 @@ function paintListen() {
   const heard = `${S.heard || ''} ${S.cur || ''}`.trim();
   const level = S.callLevel || 0;
   set('listenstatus', L.status || ''); set('lv-status', L.status || '');
-  for (const id of ['micbar', 'lv-mic']) { const bar = document.getElementById(id); if (bar) bar.style.width = `${Math.round((L.level || 0) * 100)}%`; }
+  setWave(L.level || 0);
   const c = S.callAi || classify(heard);
   for (const id of ['listenguide', 'lv-guide']) {
     const g = document.getElementById(id);
@@ -1036,6 +1043,17 @@ function paintListen() {
   const root = document.getElementById('livecall');
   if (root) root.className = `overlay live lv${level}`;
   tickCall();
+}
+
+// The bars on the call screen follow the microphone when the Vouch server is listening; with the browser's own engine there is no
+// level to show, so they simply breathe to say that it is listening.
+function setWave(level) {
+  const w = document.getElementById('lv-wave');
+  if (!w) return;
+  const live = !!(S.listen && S.listen.mode === 'server');
+  w.classList.toggle('idle', !live);
+  const shape = [0.6, 0.9, 1, 0.85, 0.65];
+  [...w.children].forEach((bar, i) => setVar(bar, '--lv', Math.min(1, 0.18 + level * shape[i] * 0.95)));
 }
 
 // The clock on the call screen and the "back to call" bar.
@@ -1068,7 +1086,7 @@ function liveCallOverlay() {
       h('div', { id: 'lv-guide' }),
       f ? h('div', { id: 'livewordarea' }) : null,
       h('p', { class: 'livestatus', id: 'lv-status', role: 'status', 'aria-live': 'polite' }, (S.listen && S.listen.status) || ''),
-      S.listen && S.listen.mode === 'server' ? h('div', { class: 'meter', 'aria-hidden': 'true' }, h('div', { class: 'meterfill', id: 'lv-mic' })) : null,
+      h('div', { class: 'wave idle', id: 'lv-wave', 'aria-hidden': 'true' }, [0, 1, 2, 3, 4].map(() => h('i'))),
       actions(h('button', { class: 'no', onclick: stopListening }, 'Stop listening'),
         quiet('Hide this screen (keeps listening)', () => { S.callMin = true; renderOverlay(); tickCall(); }))));
   queueMicrotask(() => { paintListen(); if (f) paintWordArea(); });
@@ -1230,7 +1248,7 @@ async function startServerListening() {
     let sum = 0;
     for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
     S.listen.level = Math.min(1, Math.sqrt(sum / d.length) * 8);
-    for (const id of ['micbar', 'lv-mic']) { const bar = document.getElementById(id); if (bar) bar.style.width = `${Math.round(S.listen.level * 100)}%`; }
+    setWave(S.listen.level);
     if (samples >= ctx.sampleRate * 5) flush();
   };
   src.connect(proc);
