@@ -748,6 +748,8 @@ function promptOverlay(p) {
     if (needRetype && answer === 'yes') {
       retypedCents = parseCents(retype.value);
       if (retypedCents !== p.amountCents) { msg.replaceChildren(h('p', { class: 'err' }, 'Type the exact amount to confirm.')); return; }
+    } else if (needRetype) {
+      retypedCents = p.amountCents; // "Not me" never makes anyone type anything; the server just wants the field at tier 2+
     }
     btns.forEach((b) => { b.disabled = true; });
     try {
