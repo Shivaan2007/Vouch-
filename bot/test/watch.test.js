@@ -151,3 +151,36 @@ test('the call listener: needs sign-in, validates input, reports a missing key, 
     assert.match(g.init.body, /audio\/wav/);
   } finally { process.env.GEMINI_API_KEY = ''; }
 });
+
+test('one chat can warn several accounts; /who and /unlink work; linking a second account does not replace the first', async () => {
+  const sam = await signedInPhone('Sam');
+  const gran = phone;
+  const chat = 8100;
+  for (const p of [gran, sam]) {
+    const { code } = await p.call('watch:link');
+    await tg(chat, `/start link_${code}`);
+  }
+  assert.match(lastTg().text, /This chat now warns: Gran, Sam/, 'the second link names both');
+  await tg(chat, '/who');
+  assert.match(lastTg().text, /This chat warns: Gran, Sam/);
+
+  gran.alerts.length = 0; sam.alerts.length = 0;
+  await tg(chat, SCAM);
+  await wait(250);
+  assert.equal(gran.alerts.length, 1, 'the first account is still warned');
+  assert.equal(sam.alerts.length, 1, 'and so is the second');
+
+  // disconnecting one account in the app leaves the other
+  await sam.call('watch:unlink', { channel: 'telegram' });
+  gran.alerts.length = 0; sam.alerts.length = 0;
+  await tg(chat, SCAM);
+  await wait(250);
+  assert.equal(gran.alerts.length, 1);
+  assert.equal(sam.alerts.length, 0);
+
+  await tg(chat, '/unlink');
+  assert.match(lastTg().text, /no longer warns anyone/);
+  await tg(chat, '/who');
+  assert.match(lastTg().text, /not linked/);
+  sam.socket.close();
+});

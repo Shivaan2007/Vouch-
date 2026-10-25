@@ -82,3 +82,16 @@ test('classify names the scam in plain words and gives steps', () => {
   assert.ok(c.title && c.why && c.steps.length >= 2);
   for (const ordinary of ['dinner is at six', 'happy birthday!', 'can you send me the photos', '']) assert.equal(classify(ordinary), null, ordinary);
 });
+
+import { highlight } from '../js/lib/scan.js';
+
+test('highlight marks the words that raised the alarm and keeps the text intact', () => {
+  const text = "Grandma it's me, I got a new number. Please buy $200 in Apple gift cards right now, don't tell mom";
+  const parts = highlight(text);
+  assert.equal(parts.map((p) => p.text).join(''), text, 'nothing lost or reordered');
+  const hits = parts.filter((p) => p.hit).map((p) => p.text.toLowerCase());
+  for (const w of ['new number', '$200', 'gift cards', 'right now']) assert.ok(hits.some((h) => h.includes(w)), `marks "${w}"`);
+  assert.deepEqual(highlight('dinner is at six'), [{ text: 'dinner is at six', hit: false }]);
+  assert.deepEqual(highlight(''), []);
+  assert.doesNotThrow(() => highlight(undefined));
+});

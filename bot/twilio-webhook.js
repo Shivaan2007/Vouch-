@@ -67,13 +67,18 @@ export function createTwilioHandler({
     if (lm) {
       if (!link) return twiml('Linking is not set up on this server yet.');
       const who = link.bind(whatsapp ? 'whatsapp' : 'sms', from, lm[1]);
-      return twiml(who ? `Linked to ${who.name}'s Vouch. I'll warn you here, and a warning will flash in the Vouch app.`
+      return twiml(who ? `Linked to ${who.name}'s Vouch.${who.all && who.all.length > 1 ? ` This number now warns: ${who.all.join(', ')}.` : ''} I'll warn you here, and a warning will flash in the Vouch app. Text WHO to see who this number warns, or UNLINK to stop.`
         : 'That code is wrong or has expired. In Vouch, open My people and get a new code.');
+    }
+    if (link && /^\s*\/?(who|unlink)\s*$/i.test(text)) {
+      const ch = whatsapp ? 'whatsapp' : 'sms';
+      if (/unlink/i.test(text)) { link.unbindChat(ch, from); return twiml('Done. This number no longer warns anyone in Vouch.'); }
+      const names = link.who(ch, from);
+      return twiml(names.length ? `This number warns: ${names.join(', ')}.` : 'This number is not linked to a Vouch account yet. In Vouch, tap Connect next to this app.');
     }
     const a = await core.assess({ text, imageBase64 });
     if (link && a.level >= 1) {
-      const uid = link.lookup(whatsapp ? 'whatsapp' : 'sms', from);
-      if (uid) onFlag(uid, a, whatsapp ? 'whatsapp' : 'sms');
+      for (const uid of link.lookup(whatsapp ? 'whatsapp' : 'sms', from)) onFlag(uid, a, whatsapp ? 'whatsapp' : 'sms');
     }
     if (a.level === 2) {
       const who = from.replace(/^whatsapp:/, '').replace(/\d(?=\d{2})/g, '*'); // masked: the heads-up names a number, never the message

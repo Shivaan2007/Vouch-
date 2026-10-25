@@ -62,10 +62,16 @@ export function createBot({
       if (!link) { await say(chatId, 'Linking is not set up on this server yet.'); return; }
       const who = link.bind('telegram', chatId, lm[1]);
       await say(chatId, who
-        ? `Linked to ${who.name}'s Vouch. I'll warn you here, and a warning will flash in the Vouch app.`
+        ? `Linked to ${who.name}'s Vouch.${who.all && who.all.length > 1 ? ` This chat now warns: ${who.all.join(', ')}.` : ''} I'll warn you here, and a warning will flash in the Vouch app. Send /who to see who this chat warns, or /unlink to stop.`
         : 'That code is wrong or has expired. In Vouch, open My people and get a new code.');
       return;
     }
+    if (link && /^\/who\b/.test(text)) {
+      const names = link.who('telegram', chatId);
+      await say(chatId, names.length ? `This chat warns: ${names.join(', ')}.` : 'This chat is not linked to a Vouch account yet. In Vouch, tap Connect next to Telegram.');
+      return;
+    }
+    if (link && /^\/unlink\b/.test(text)) { link.unbindChat('telegram', chatId); await say(chatId, 'Done. This chat no longer warns anyone in Vouch.'); return; }
     if (/^\/(start|help)\b/.test(text)) { await say(chatId, INTRO); return; }
     if (/^\/guardian\b/.test(text)) {
       guardianChats.add(String(chatId));
@@ -79,8 +85,7 @@ export function createBot({
     }
     const a = await assess(text);
     if (link && a.level >= 1) { // a linked chat: flash it in that person's Vouch app too (never the message itself)
-      const uid = link.lookup('telegram', chatId);
-      if (uid) onFlag(uid, a, 'telegram');
+      for (const uid of link.lookup('telegram', chatId)) onFlag(uid, a, 'telegram');
     }
     if (isPrivate || a.level === 2 || (a.level === 1 && a.ask)) await say(chatId, warning(a));
     if (a.level === 2) await alertGuardians(chatId, msg.from.first_name, a.tags);

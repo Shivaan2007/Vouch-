@@ -42,7 +42,7 @@ test('sign-up shows the main app, and a shared scam message triggers the warning
 });
 
 test('every tab renders and the pairing code appears', async () => {
-  for (const [tab, expect] of [['On a call', 'Link up with someone first'], ['My people', 'Share a message from any app'], ['Check a message', 'First, link up']]) {
+  for (const [tab, expect] of [['On a call', 'Watch this call for scams'], ['My people', 'Share a message from any app'], ['Check a message', 'First, link up']]) {
     await btn(tab).fire('click');
     await wait(80);
     assert.ok(text().includes(expect), `${tab} -> ${expect}`);

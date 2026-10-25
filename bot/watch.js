@@ -20,8 +20,13 @@ const LISTEN_PER_MIN = 14;       // Gemini's free tier allows about 5 requests a
  *          analyze?: Function, log?: Function, startTelegram?: boolean}} opts
  */
 export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl = globalThis.fetch, analyze = analyzeSafe, log = () => {}, startTelegram = true }) {
+  // One chat can warn several Vouch accounts (a couple sharing a Telegram chat, a family group). The first version of this
+  // table was keyed by chat alone, so a second account replaced the first; watch_chats is keyed by chat AND account, and the
+  // old rows are carried over.
   db.exec(`
     CREATE TABLE IF NOT EXISTS watch_links (channel TEXT NOT NULL, ref TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (channel, ref));
+    CREATE TABLE IF NOT EXISTS watch_chats (channel TEXT NOT NULL, ref TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (channel, ref, user_id));
+    INSERT OR IGNORE INTO watch_chats SELECT channel, ref, user_id, created_at FROM watch_links;
     CREATE TABLE IF NOT EXISTS watch_codes (code TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
   `);
   const salt = env.WATCH_SALT || 'vouch-watch-v1';
@@ -31,25 +36,28 @@ export function attachWatch({ httpServer, io, db, env = process.env, fetchImpl =
     delUserCodes: db.prepare('DELETE FROM watch_codes WHERE user_id = ?'),
     getCode: db.prepare('SELECT code, user_id, expires_at FROM watch_codes WHERE code = ?'),
     delCode: db.prepare('DELETE FROM watch_codes WHERE code = ?'),
-    bind: db.prepare('INSERT OR REPLACE INTO watch_links (channel, ref, user_id, created_at) VALUES (?, ?, ?, ?)'),
-    lookup: db.prepare('SELECT user_id FROM watch_links WHERE channel = ? AND ref = ?'),
-    linkedFor: db.prepare('SELECT DISTINCT channel FROM watch_links WHERE user_id = ?'),
-    unlink: db.prepare('DELETE FROM watch_links WHERE user_id = ? AND channel = ?'),
+    bind: db.prepare('INSERT OR REPLACE INTO watch_chats (channel, ref, user_id, created_at) VALUES (?, ?, ?, ?)'),
+    lookup: db.prepare('SELECT user_id FROM watch_chats WHERE channel = ? AND ref = ? ORDER BY created_at'),
+    linkedFor: db.prepare('SELECT DISTINCT channel FROM watch_chats WHERE user_id = ?'),
+    unlink: db.prepare('DELETE FROM watch_chats WHERE user_id = ? AND channel = ?'),
+    unlinkChat: db.prepare('DELETE FROM watch_chats WHERE channel = ? AND ref = ?'),
     userName: db.prepare('SELECT name FROM users WHERE user_id = ?'),
   };
+  const nameOf = (userId) => { const u = q.userName.get(userId); return (u && u.name) || 'someone'; };
 
-  // Used by the doors: find who a chat belongs to, or bind it with a one-time code.
+  // Used by the doors: find who a chat warns (every account linked to it), link it with a one-time code, or unlink it.
   const link = {
-    lookup: (channel, id) => { const r = q.lookup.get(channel, hashRef(channel, id)); return r ? r.user_id : null; },
+    lookup: (channel, id) => q.lookup.all(channel, hashRef(channel, id)).map((r) => r.user_id),
+    who: (channel, id) => q.lookup.all(channel, hashRef(channel, id)).map((r) => nameOf(r.user_id)),
     bind: (channel, id, code) => {
       const row = q.getCode.get(String(code).trim());
       if (!row || row.expires_at < Date.now()) return null;
       q.bind.run(channel, hashRef(channel, id), row.user_id, Date.now());
       q.delCode.run(row.code);
       io.to(room(row.user_id)).emit('watch:linked', { channel }); // so the app flips to "Connected" by itself
-      const u = q.userName.get(row.user_id);
-      return { userId: row.user_id, name: (u && u.name) || 'you' };
+      return { userId: row.user_id, name: nameOf(row.user_id), all: link.who(channel, id) };
     },
+    unbindChat: (channel, id) => { q.unlinkChat.run(channel, hashRef(channel, id)); },
   };
 
   // A flagged message lights up the person's Vouch app. Never the message itself, only what kind of scam it looks like.

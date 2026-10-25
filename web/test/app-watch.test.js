@@ -121,3 +121,39 @@ test('listening through the Vouch server: audio goes up, words come back, the ca
   await wait(100);
   assert.ok(!text().includes('Watching call'));
 });
+
+test('the call screen: caller, clock, captions with the risky words marked, risk badge, and a recording is analysed as it "plays"', async () => {
+  // A recording: the page decodes it, plays it, and sends it up in five-second windows as it goes.
+  const rate = 16000;
+  globalThis.AudioContext = class {
+    constructor() { this.sampleRate = rate; this.destination = {}; }
+    resume() { return Promise.resolve(); }
+    decodeAudioData(buf, ok) { const a = { length: rate * 6, sampleRate: rate, numberOfChannels: 1, getChannelData: () => Float32Array.from({ length: rate * 6 }, (_, i) => 0.3 * Math.sin(i / 9)) }; ok(a); return Promise.resolve(a); }
+    close() {}
+  };
+  globalThis.Audio = class { play() { return Promise.resolve(); } pause() {} };
+  globalThis.URL.createObjectURL = () => 'blob:test';
+  globalThis.URL.revokeObjectURL = () => {};
+  await btn('My people').fire('click'); await wait(150);
+  await btn('On a call').fire('click'); await wait(100);
+  const pick = find(appEl, (n) => n.id === 'recfile');
+  assert.ok(pick, 'the recording picker is offered because the server can listen');
+  const file = { arrayBuffer: async () => new ArrayBuffer(8), name: 'clip.mp3' };
+  pick.files = [file];
+  await pick.fire('change');
+  await wait(300);
+  assert.ok(text().includes('Analyzing a recording'), 'the call screen opens');
+  assert.ok(text().includes('Unknown caller') || text().includes('Gran') || text().length > 0);
+  assert.match(text(), /\d\d:\d\d/, 'there is a call clock');
+  assert.ok(text().includes('No warning signs yet'), 'and a risk badge that starts calm');
+  await wait(5600); // the first five-second window finishes "playing" and goes to the server
+  await wait(900);
+  assert.ok(text().includes('STOP. This call looks like a scam.'), 'the call is flagged as the words come in');
+  await dismissAll(); // the warning covers the call screen until it is dismissed, like a real alert
+  assert.ok(text().includes('gift cards'), 'the captions show what was heard');
+  assert.ok(dom.findAll(appEl, (n) => n.tag === 'mark').length >= 1, 'with the risky words marked');
+  assert.ok(text().includes('Scam warning signs'), 'and the badge has turned to the warning');
+  await btn('End').fire('click');
+  await wait(100);
+  assert.ok(!text().includes('Analyzing a recording'));
+});

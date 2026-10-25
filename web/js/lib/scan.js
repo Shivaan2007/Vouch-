@@ -155,3 +155,34 @@ export function classify(text) {
   const g = GUIDE.find((x) => x.when(s, t));
   return g ? { id: g.id, title: g.title, why: g.why, steps: g.steps } : null;
 }
+
+/**
+ * Splits text into plain and risky pieces, so a live caption can mark the words that raised the alarm
+ * (gift cards, "don't tell", amounts, a new number, a bank claiming something...). Display only.
+ * @param {string} text
+ * @returns {Array<{text: string, hit: boolean}>}
+ */
+export function highlight(text) {
+  const t = String(text ?? '').slice(0, 5000);
+  const lower = t.toLowerCase().replace(/[‘’ʼ]/g, "'"); // same length as t, so positions line up
+  const ranges = [];
+  const add = (re) => { const g = new RegExp(re.source, 'g'); let m; while ((m = g.exec(lower)) && m[0]) { ranges.push([m.index, m.index + m[0].length]); if (g.lastIndex === m.index) g.lastIndex++; } };
+  for (const [, res] of RULES) res.forEach(add);
+  INSTITUTION.forEach(add);
+  add(/\$\s?\d[\d,]*(\.\d{1,2})?/); add(/\b\d[\d,]*\s?(dollars?|bucks|usd)\b/);
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const r of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]); else merged.push([...r]);
+  }
+  const out = [];
+  let at = 0;
+  for (const [a, b] of merged) {
+    if (a > at) out.push({ text: t.slice(at, a), hit: false });
+    out.push({ text: t.slice(a, b), hit: true });
+    at = b;
+  }
+  if (at < t.length) out.push({ text: t.slice(at), hit: false });
+  return out;
+}

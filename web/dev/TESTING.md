@@ -68,3 +68,9 @@ Failure modes to rehearse: tap Paste with an empty clipboard (it says what to do
 - **On a call -> Start watching**: it says which engine it is using, shows a live transcript and (in server mode) a microphone level bar, and tells you in words if it can't hear anything. If the browser can't listen, it switches to listening through the Vouch server (needs `GEMINI_API_KEY`).
 - **Typed fallback**: type or paste what the caller says into the box under it: the same live guide and full-screen warning, with no microphone at all. Try: "please buy some apple gift cards and read me the numbers".
 - Some phones block the microphone during a real call. Put Vouch on a second phone or tablet next to the call, or use the typed box.
+
+## 11. The live call screen, recordings, and several accounts on one bot chat
+- **On a call**: pick **Who is calling?** (a friend, or Someone else). **Start watching** opens a full call screen: caller, clock, live captions with the risky words marked, a risk badge (calm / asking for money / scam signs), and round buttons for the code word, asking their phone, quiet and end. It turns amber, then red, as the call gets worse.
+- **Analyze a recording** (needs the server's Gemini key): pick an mp3 or voicemail (for example an ElevenLabs clip). It plays and is analysed in real time on the same call screen, so the demo does not depend on the microphone hearing the speaker.
+- **Microphone note**: the live listener turns echo cancelling off, so a clip playing near the phone is not erased.
+- **Bot chats**: one Telegram chat or number can warn several Vouch accounts. Each account taps Connect and Start; `/who` lists who a chat warns and `/unlink` clears it. Disconnecting in the app removes only that account.
