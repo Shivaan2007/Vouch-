@@ -234,12 +234,10 @@ function toast(msg, kind) {
 }
 
 // ---------- danger state: stays in your face until it is resolved ----------
-// Scams work by rushing people. While something risky is unresolved Vouch keeps a red banner on screen, repeats the
-// warning aloud and as a notification, and makes you wait before you can wave it away.
+// Scams work by rushing people. While something risky is unresolved Vouch keeps a red banner on screen and makes you wait
+// before you can wave it away. It speaks the warning once; it does not keep repeating it aloud (that was only annoying).
 
 const PAUSE_SECONDS = 10; // the same cooling-off pause the server config documents
-const REPEAT_MS = 25000;
-const MAX_REPEATS = 8;
 const A = { active: false, level: 0, reason: '', source: '', repeats: 0, mutedUntil: 0 };
 let $sticky;
 
@@ -288,14 +286,6 @@ function paintSticky() {
     pauseButton('I checked it. Clear this', PAUSE_SECONDS, clearAlert, 'ghost')));
 }
 
-function repeatAlert() {
-  if (!A.active || Date.now() < A.mutedUntil || A.repeats >= MAX_REPEATS) return;
-  A.repeats += 1;
-  const line = A.level === 2 ? 'Still no confirmation. Do not send money.' : 'Reminder. Make sure it is really them before you send anything.';
-  attention(line, A.level === 2 ? [400, 150, 400] : [250, 120, 250]);
-  notify(A.level === 2 ? 'Vouch: do NOT send money' : 'Vouch: check first', A.reason, 'repeat');
-}
-
 // ---------- boot + auth ----------
 
 async function boot() {
@@ -342,7 +332,6 @@ async function boot() {
   wireEvents();
   connect({ onChallenge, onStatus });
   setInterval(() => { tickWord(); tickCode(); tickCall(); tickWait(); }, 1000);
-  setInterval(repeatAlert, REPEAT_MS);
   // A link opened while Vouch is already running (for example a scanned QR in the same tab).
   globalThis.addEventListener?.('hashchange', () => {
     const m = /pair=([A-Za-z0-9]+)/.exec(location.hash);
