@@ -136,7 +136,19 @@ async function readScreenshot(file) {
 // sent anywhere. The clips are fetched once after sign-in, so the first alert is instant. If a clip is not ready or anything fails,
 // the built-in voice speaks the usual line at once, exactly as before. Alerts with a name or an amount always use the built-in voice.
 const VOICE_PHRASES = ['stop', 'wait', 'ok', 'call'];
-const voice = { clips: new Map(), warmed: false, current: null };
+const voice = { clips: new Map(), warmed: false, el: null };
+// iPhones only let a page play sound that a tap started. Alerts arrive over the network with no tap, so on the person's first tap we
+// start one silent sound on a single audio element and reuse that element for every later alert (its source is swapped, not recreated).
+const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAIlYAAESsAAACABAAZGF0YQAAAAA=';
+function unlockVoice() {
+  if (voice.el) return;
+  try {
+    const el = new Audio(SILENT);
+    voice.el = el;
+    Promise.resolve(el.play()).catch(() => { voice.el = null; }); // blocked: try again on the next tap
+  } catch { voice.el = null; }
+}
+for (const ev of ['pointerdown', 'touchend', 'keydown']) addEventListener(ev, unlockVoice, { capture: true, passive: true });
 
 async function warmVoice() {
   if (voice.warmed) return;
@@ -169,10 +181,10 @@ function attention(text, pattern, phrase) {
   if (!clip) { speakBuiltIn(text); return; }
   try {
     if ('speechSynthesis' in globalThis) speechSynthesis.cancel();
-    if (voice.current) voice.current.pause();
-    const a = new Audio(clip);
-    voice.current = a;
-    Promise.resolve(a.play()).catch(() => speakBuiltIn(text)); // autoplay blocked or a bad clip: fall back
+    const a = voice.el || new Audio(); // the unlocked element if there is one; a fresh one still works on most desktops and Androids
+    a.pause();
+    a.src = clip;
+    Promise.resolve(a.play()).catch(() => speakBuiltIn(text)); // blocked or a bad clip: fall back to the built-in voice
   } catch { speakBuiltIn(text); }
 }
 
