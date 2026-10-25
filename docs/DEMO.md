@@ -32,7 +32,7 @@ Why it works as a demo: the call beat shows the word that a scammer cannot know.
 
 - The call is a real phone call. The phones, keys, pairing, signed answers and verdicts are real.
 - The Not me or Yes comes from Alex's own phone, signed with a key that never leaves it. Both the server and the Victim's phone check the signature before showing green.
-- The tags and the sentence under "AI check" come from rules, plus Gemini if a key is set. The verdict is the same with Gemini off. AI never clears a request.
+- The tags and the sentence under "AI check" come from rules, plus Gemini if a key is set. With Gemini off the verdict is the same, except that Gemini can make one more cautious (for example by spotting a gift card in a screenshot). AI never clears a request.
 - A gift-card request never goes green on a Yes alone. That is why the contrast beat uses Venmo.
 
 ## Cut list
@@ -73,7 +73,7 @@ One card per person: `demo/cue-cards.md`.
 | Victim phone stuck on "Asking their phone" | Wait up to 2 minutes for amber, or reload and use the next judge as the retry |
 | Clip will not play | Tejasv says the line live |
 | Pairing lost | Re-pair on the spot (about 2 minutes). Keep a second paired pair of phones ready if you have them |
-| Gemini slow or rate-limited | Nothing to do. The verdict is unchanged; only the AI sentence may be plainer |
+| Gemini slow or rate-limited | Nothing to do. The verdict is unchanged for text requests; only the AI sentence may be plainer |
 | Camera will not scan | Type the 8-character code instead |
 
 ## If a judge asks
