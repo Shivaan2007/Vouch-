@@ -56,7 +56,8 @@ export function createBot({
     const isPrivate = msg.chat.type === 'private';
     const text = String(msg.text || msg.caption || '');
     // "/link 123456": tie this chat to a Vouch account, so a flagged message also flashes a warning in the Vouch app.
-    const lm = /^\/link(?:@\w+)?\s+(\d{4,8})\b/.exec(text) || (isPrivate && /^link\s+(\d{4,8})\b/i.exec(text));
+    // Also "/start link_123456", which is what the one-tap "Open Telegram" button in Vouch sends.
+    const lm = /^\/(?:link|start)(?:@\w+)?\s+(?:link_)?(\d{4,8})\b/.exec(text) || (isPrivate && /^link\s+(\d{4,8})\b/i.exec(text));
     if (lm) {
       if (!link) { await say(chatId, 'Linking is not set up on this server yet.'); return; }
       const who = link.bind('telegram', chatId, lm[1]);
