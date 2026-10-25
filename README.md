@@ -13,6 +13,8 @@ Built at HackPSU Fall 2026 by Shivaan (backend and decision engine), Sayan (phon
 
 More money asks for more proof: under $25 a signed Yes, up to $200 also the retyped amount and the rotating word, above $200 also a second circle member. Gift cards, wires and crypto never go green on a Yes alone.
 
+**Scams that are not about money.** Some scams ask for a code, a password, remote access to your device, a photo of your ID or a click on a link. A friend cannot answer those, so Vouch warns instead: it spots the dangerous request (on the phone, with no AI needed), shows a plain-words guide ("Asking for a code", "Suspicious link") with three steps to take, and, if Gemini is on, adds a short explanation. It works on a pasted message, a screenshot and a live call.
+
 **AI can warn, only a person can clear.** Rules and Gemini add plain-language warning tags (pressure to hurry, secrecy, new number, gift cards, and so on). They never produce a verdict. Everything works with no AI at all.
 
 ## Run it

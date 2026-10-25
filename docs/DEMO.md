@@ -2,7 +2,7 @@
 
 **The rule:** everything on the phones is real (keys, pairing, signatures, verdicts). The only scripted thing is the scammer's voice. The two defences, the shared code word and the friend's signed Not me, are exactly what a real user would do.
 
-Updated for `main` after PR #37 (Home screen, code word ring, spoken alerts). Lines marked **CONFIRM** are assumptions to settle at the first rehearsal.
+Updated for `main` after PR #45 (spoken alerts, non-money warnings, the optional "not only money" coda). Lines marked **CONFIRM** are assumptions to settle at the first rehearsal.
 
 ## Cast and phones
 
