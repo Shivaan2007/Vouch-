@@ -250,8 +250,9 @@ const CALL_ORDER = ['OTP', 'SAFE_ACCOUNT', 'REMOTE_ACCESS', 'CASH_PICKUP', 'PIN'
 // A negative word just before the phrase ("we will NEVER ask you to read out a code") turns it from a threat into reassurance.
 // Only the same sentence counts: "Don't tell mom. A courier will collect the cash." must not cancel the second sentence.
 function negated(t, index) {
-  const sentence = t.slice(Math.max(0, index - 40), index).split(/[.?!]/).pop();
-  return /\b(never|don'?t|do not|won'?t|will not|not)\b(?:\W+\w+){0,3}\W*$/.test(sentence);
+  // Reach back far enough for a list ("we will never ask for your PIN or your password"), but not across a "but" or a comma-and-ask.
+  const sentence = t.slice(Math.max(0, index - 70), index).split(/[.?!;]|\b(?:but|however|except)\b/).pop();
+  return /\b(never|don'?t|do not|won'?t|will not|not)\b(?:\W+\w+){0,7}\W*$/.test(sentence);
 }
 
 /** A fresh state for one call. */

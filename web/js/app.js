@@ -565,7 +565,7 @@ const hueOf = (name) => [...String(name || '?')].reduce((a, c) => a + c.charCode
 function feedRow(e) {
   return h('div', { class: `feedrow l${e.level} k${e.kind || 'telegram'}` },
     h('span', { class: 'feedmark', 'aria-hidden': 'true' }),
-    h('div', null, h('b', null, e.title), h('span', { class: 'muted' }, `${e.kind === 'call' ? 'Call' : 'Telegram'}${e.who ? ` · ${e.who}` : ''} · ${ago(e.at)}`)));
+    h('div', null, h('b', null, e.title), h('span', { class: 'muted' }, `${e.kind === 'call' ? 'Call' : 'Telegram'}${e.who ? ` · ${e.who}` : ''}${e.ms ? ` · ${fmtClock(e.ms)}` : ''} · ${ago(e.at)}`)));
 }
 
 function homeView() {
@@ -576,7 +576,7 @@ function homeView() {
     h('span', { class: 'tile', 'aria-hidden': 'true' }, h('span', { class: 'ico', style: `--src:url(/img/ui/${icon}.svg)` })),
     h('span', { class: 'hc-title' }, title), h('span', { class: 'hc-sub' }, sub));
   const avatars = S.friends.slice(0, 5).map((f) => h('span', { class: `avatar a${hueOf(f.name)}`, 'aria-hidden': 'true' }, (f.name || '?').trim().charAt(0).toUpperCase()));
-  const feed = (S.tgFeed || []).slice(0, 4);
+  const feed = (S.tgFeed || []).slice(0, S.feedAll ? 100 : 5);
   return h('section', null,
     h('div', { class: 'hero' }, h('img', { src: '/icon.svg', alt: '', width: '52', height: '52' }), h('div', null, h('b', null, `Hi ${S.me.name}`), h('span', null, line))),
     n ? null : h('div', { class: 'card setupcard' }, h('p', { class: 'big' }, 'First, add someone you trust.'),
@@ -588,7 +588,8 @@ function homeView() {
     h('button', { class: 'peoplerow', onclick: () => setTab('friends') },
       h('span', { class: 'ptext' }, h('b', null, 'My people'), h('span', { class: 'muted' }, n ? `${n} trusted${tg ? ' · Telegram connected' : ''}` : 'Add family and friends')),
       h('span', { class: 'avatars', 'aria-hidden': 'true' }, ...avatars), h('span', { class: 'chev', 'aria-hidden': 'true' })),
-    feed.length ? h('div', { class: 'feed' }, h('p', { class: 'sectionlabel' }, 'Recent'), ...feed.map(feedRow)) : null);
+    feed.length ? h('div', { class: 'feed' }, h('p', { class: 'sectionlabel' }, 'Recent calls and warnings'), ...feed.map(feedRow),
+      (S.tgFeed || []).length > 5 ? h('button', { class: 'ghost small', onclick: () => { S.feedAll = !S.feedAll; renderMain(); } }, S.feedAll ? 'Show fewer' : `Show all ${S.tgFeed.length}`) : null) : null);
 }
 
 // A screen that fails to draw must never leave a blank page. The keys and people are untouched; reloading brings it back.
@@ -896,12 +897,12 @@ function telegramCard() {
 }
 
 // What Telegram has warned about, kept on this phone only so it survives a reload: the kind of scam, who sent it, the level and when.
-// Never the message. A week at most, twenty at most.
+// Never the message or the words of a call. A month at most, a hundred at most.
 const FEED_KEY = 'vouch-tgfeed';
 function loadFeed() {
-  try { return JSON.parse(localStorage.getItem(FEED_KEY) || '[]').filter((e) => e && e.title && Date.now() - e.at < 7 * 86400000).slice(0, 20); } catch { return []; }
+  try { return JSON.parse(localStorage.getItem(FEED_KEY) || '[]').filter((e) => e && e.title && Date.now() - e.at < 30 * 86400000).slice(0, 100); } catch { return []; }
 }
-function saveFeed(list) { try { localStorage.setItem(FEED_KEY, JSON.stringify(list.slice(0, 20))); } catch { /* private mode */ } }
+function saveFeed(list) { try { localStorage.setItem(FEED_KEY, JSON.stringify(list.slice(0, 100))); } catch { /* private mode */ } }
 
 async function effective(u) {
   if (u.verdict !== 'green') return u;
@@ -1622,10 +1623,17 @@ async function stopListening() {
   const heard = `${S.heard || ''} ${S.cur || ''}`.trim();
   const snap = { heard, level: S.callLevel || 0, state: S.callState, aiRead: S.callAi, startedAt: (S.call && S.call.startedAt) || Date.now() };
   // A call that raised a warning is remembered in Recent (what kind of call and how sure Vouch was; never the words).
-  if (S.callLevel >= 1) {
-    const g = S.callAi || classify(`${S.heard || ''} ${S.cur || ''}`);
-    S.tgFeed = [{ kind: 'call', title: (g && g.title) || 'A suspicious call', who: '', level: S.callLevel >= 2 ? 2 : 1, at: Date.now() }, ...(S.tgFeed || [])].slice(0, 20);
-    saveFeed(S.tgFeed);
+  {
+    const ms = Date.now() - snap.startedAt;
+    if (S.callLevel >= 1 || ms >= 8000) { // every real call is logged, short taps are not
+      const g = S.callAi || classify(`${S.heard || ''} ${S.cur || ''}`);
+      const f = callFriend();
+      const lvl = S.callLevel >= 2 ? 2 : S.callLevel >= 1 ? 1 : 0;
+      const title = lvl >= 1 ? ((g && g.title) || 'A suspicious call') : 'Call checked, nothing suspicious';
+      const who = f ? f.name : (S.callClaims || '');
+      S.tgFeed = [{ kind: 'call', title: S.wordHeard && lvl === 0 ? 'Call checked, code word matched' : title, who, level: lvl, ms, at: Date.now() }, ...(S.tgFeed || [])].slice(0, 100);
+      saveFeed(S.tgFeed);
+    }
   }
   const rec = await stopRecorder(); // let the last seconds of audio land before anything is torn down
   stopEngine();
@@ -2455,7 +2463,7 @@ function wireEvents() {
     else notice({ kind: 'check', title: a.title || 'Check this message', text: `Sent to Vouch from ${SOURCE_NAMES[a.source] || 'a message'}.`, actions: [['Review', () => { S.queue.push(item); renderOverlay(); }]] });
     if (a.source === 'telegram') {
       S.lastTg = { title: a.title, who: a.sender && !a.sender.hidden ? (a.sender.handle || a.sender.name || '') : '', at: Date.now() };
-      S.tgFeed = [{ ...S.lastTg, level: a.level === 2 ? 2 : 1 }, ...(S.tgFeed || [])].slice(0, 20);
+      S.tgFeed = [{ ...S.lastTg, level: a.level === 2 ? 2 : 1 }, ...(S.tgFeed || [])].slice(0, 100);
       saveFeed(S.tgFeed);
     }
     if (a.sender && !a.sender.hidden) loadSenders().then(() => { if (S.tab === 'friends' || S.tab === 'check') renderMain(); });

@@ -290,6 +290,7 @@ export function createBot({
     }
     if (link && /^\/unlink\b/.test(cmd)) { link.unbindChat('telegram', chatId); await say(chatId, 'Done. This chat no longer warns anyone in Vouch.'); return; }
     if (/^\/(start|help)\b/.test(cmd)) { await say(chatId, INTRO); return; }
+    if (/^\/(?:log|today)\b/.test(cmd)) { await say(chatId, digestFor(chatId)); return; }
     if (/^\/guardian\b/.test(cmd)) {
       guardianChats.add(String(chatId));
       await say(chatId, 'Done. This chat will get a heads-up (never the message itself) when someone I watch gets a likely scam.');
@@ -338,7 +339,7 @@ export function createBot({
     const sender = senderOf(msg, isPrivate);
     // "It's fine" taught me this sender is okay: stay quiet about them for a while. (Still counted as scanned.)
     if (business && sender && (muted.get(`${chatId}:${sender.id}`) || 0) > Date.now()) { log_(chatId).scanned += 1; return; }
-    if (business) log_(chatId).scanned += 1;
+    if (!(isPrivate && !sender && DIGEST.test(text) && text.length < 80)) log_(chatId).scanned += 1; // asking what was caught is not itself a message that was checked
     const users = link ? link.lookup('telegram', chatId) : [];
     const q = core.quick(text);
     const kb = business && q.level >= 1 ? actionKeyboard(chatId, sender) : {};
@@ -385,7 +386,7 @@ export function createBot({
     const full = await assess(text, memory.get(memKey), imageBase64, videoBase64 ? { videoBase64, videoMime: videoRef.mime } : undefined);
     memory.add(memKey, text);
     if (info && info.repeatScam && full.level < 2) full.level = 2;
-    if (business && full.level >= 1) { // for "what did you catch today?": the level, the kind of scam and who, never the text
+    if (full.level >= 1) { // for "what did you catch today?": the level, the kind of scam and who, never the text
       const d = log_(chatId);
       d.events = fresh(d.events).slice(-49);
       d.events.push({ at: Date.now(), level: full.level, title: (full.guide && full.guide.title) || 'A message asking for money', who: view ? (view.handle || view.name || '') : '' });
@@ -420,7 +421,7 @@ export function createBot({
     // The menu next to the message box lists what the bot can do, so nobody has to remember a command.
     api('setMyCommands', { commands: [
       { command: 'start', description: 'What I do' }, { command: 'flag', description: 'Reply to a message to flag its sender' },
-      { command: 'voice', description: 'Read my answers out loud' }, { command: 'who', description: 'Who this chat warns' },
+      { command: 'voice', description: 'Read my answers out loud' }, { command: 'who', description: 'Who this chat warns' }, { command: 'log', description: 'What I caught today' },
       { command: 'unlink', description: 'Stop warning the Vouch app' }, { command: 'guardian', description: 'Family chat: get heads-ups' },
     ] }).catch(() => {});
     // Telegram-native: the bot introduces itself, and its menu button opens Vouch INSIDE Telegram (a mini app), so checking a message,

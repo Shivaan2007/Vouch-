@@ -117,3 +117,12 @@ test('the coach says nothing on a quiet call, and celebrates only a real code-wo
   assert.equal(good.kind, 'good');
   assert.match(good.text, /Tap "It matches" if you are sure/);
 });
+
+test('a genuine call that says it will never ask for your PIN or password stays quiet, while a real ask still stops', () => {
+  const calm = callInit(); const t0 = Date.now();
+  callStep(calm, 'Hello, this is First Harbor Bank confirming your appointment tomorrow at three. This is an appointment reminder. We will never ask for your PIN or your password. Press 1 to confirm or press 2 to cancel.', t0);
+  assert.equal(calm.level, 0, 'a reassurance is not an ask');
+  const bad = callInit();
+  callStep(bad, 'This is the fraud team. We will never bother you again but please tell me your PIN and your password right now.', t0);
+  assert.ok(bad.level >= 1, 'a "but" ends the reassurance, so the ask still counts');
+});
