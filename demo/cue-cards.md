@@ -20,6 +20,7 @@ Names are suggestions: Victim = "Grandma", Family = "Alex". Confirm at the first
 4. **After the red STOP** step back to the narration: "The scammer never knew the word, and the real Alex said it was not them."
 5. **70 s** Close: "Detecting fakes is a losing arms race. Vouch makes real people prove they're real."
 6. Invite the judge to play the soundboard against the Victim.
+7. **Optional coda (15 s):** "Scams are not only about money." Tell the Victim to paste the code-request text from `docs/DEMO.md` into **Check a message**. The red **DO NOT ACT ON THIS** screen appears. Do not offer the friend check for it; it is for money requests.
 
 If a clip fails: say the line yourself.
 
@@ -45,6 +46,7 @@ If the phone does not speak, read the question off the screen aloud and tap anyw
 
 ## If it goes wrong
 
+- **Warning repeats or sounds odd:** it speaks once. If it stays silent, the screen still shows it; carry on.
 - **Pairing lost:** re-pair (2 minutes) and restart from the top.
 - **Stuck on "Asking their phone":** the Victim waits; amber comes within 2 minutes. Move on to the next beat verbally.
 - **Never say** anything the app does not do: no 10-second pause, no study numbers.
