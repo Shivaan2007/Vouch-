@@ -2,7 +2,7 @@
 
 **The rule:** everything on the phones is real (keys, pairing, signatures, verdicts). The only scripted thing is the scammer's voice. The two defences, the shared code word and the friend's signed Not me, are exactly what a real user would do.
 
-Updated for `main` after PR #45 (spoken alerts, non-money warnings, the optional "not only money" coda). Lines marked **CONFIRM** are assumptions to settle at the first rehearsal.
+Updated for `main` after PR #53 (non-money warnings, the call engine, the new look). Spoken alerts are off by default: turn on Display, "Speak warnings aloud" on both phones. Lines marked **CONFIRM** are assumptions to settle at the first rehearsal.
 
 ## Cast and phones
 
@@ -20,7 +20,7 @@ Grandma and Alex are paired with each other. The scammer's phone is an ordinary 
 | --- | --- | --- |
 | 0-10 s | **Hook.** "AI can clone a voice, so a voice proves nothing. Vouch proves the person." | Spoken |
 | 10-35 s | **The call.** Tejasv phones the Victim's phone on speaker and says (or plays clips 1 and 2): "Grandma, it's me, new number, I need $200 in gift cards, don't tell Mom." The Victim opens **On a call**, taps **Show the word for Alex** (a ring counts the minute down), and asks "What's our word?". The caller dodges (clip 3). | Call is real; only the voice is scripted |
-| 35-55 s | **The check.** The Victim taps **They're asking me for money**. The form opens set to Phone call. The Victim types `200`, picks **Gift cards**, taps **Ask Alex's phone**. Alex's phone speaks "Did you just ask Grandma for $200.00 via Gift cards?" Sayan taps **Not me**. The Victim's phone goes full-screen red, **STOP. Do not send money.**, and an ElevenLabs voice says it aloud. The Victim taps **I understand** (it unlocks after a few seconds). | All real |
+| 35-55 s | **The check.** The Victim taps **They're asking me for money**. The form opens set to Phone call. The Victim types `200`, picks **Gift cards**, taps **Ask Alex's phone**. Alex's phone asks "Did you just ask Grandma for $200.00 via Gift cards?" (aloud, with Speak warnings aloud on). Sayan taps **Not me**. The Victim's phone goes full-screen red, **STOP. Do not send money.**, and, with Speak warnings aloud on, an ElevenLabs voice says it aloud. The Victim taps **I understand** (it unlocks after a few seconds). | All real |
 | 55-70 s | **The contrast.** A real $20 Venmo request: the Victim opens **Check a message**, enters `20`, picks Venmo, taps **Ask Alex's phone**. Sayan taps **Yes, that was me**. The Victim's phone shows green **Verified. Safe to send.** and says it aloud. | All real |
 | 70-80 s | **Close.** "Detecting fakes is a losing arms race. Vouch makes real people prove they're real." | Spoken |
 
@@ -42,7 +42,7 @@ Why it works as a demo: the call beat shows the word that a scammer cannot know.
 - The Not me or Yes comes from Alex's own phone, signed with a key that never leaves it. Both the server and the Victim's phone check the signature before showing green.
 - The tags and the sentence under "AI check" come from rules, plus Gemini if a key is set. With Gemini off the verdict is the same, except that Gemini can make one more cautious (for example by spotting a gift card in a screenshot). AI never clears a request.
 - A gift-card request never goes green on a Yes alone. That is why the contrast beat uses Venmo.
-- ElevenLabs does three real jobs: it speaks the four fixed alerts (stop, wait, ok, call; only those phrases are ever sent, never a name or amount), it turns call audio and voice notes into words (Scribe), and it made the scammer voice. These were checked against the live service: the four alerts, a spoken verdict transcribed back word for word, and a scammer clip sent through the call listener to a STOP-level read. Not yet tried on a real phone.
+- ElevenLabs does three real jobs: it speaks the four fixed alerts (stop, wait, ok, call; only those phrases are ever sent, never a name or amount), it turns call audio and voice notes into words (Scribe), and it made the scammer voice for earlier rehearsals (the live demo uses live voices, not recorded clips). These were checked against the live service: the four alerts, a spoken verdict transcribed back word for word, and a scammer clip sent through the call listener to a STOP-level read. Not yet tried on a real phone.
 
 ## Cut list
 

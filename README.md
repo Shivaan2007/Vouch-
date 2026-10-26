@@ -17,12 +17,12 @@ with an answer signed by a key that never leaves that phone.
 [![ElevenLabs](https://img.shields.io/badge/voice-ElevenLabs-111)](#how-it-works)
 [![License: ISC](https://img.shields.io/badge/license-ISC-lightgrey)](LICENSE)
 
-**[Try the live app](https://vouch-co1l.onrender.com)** · **[Watch the demo video](docs/media/vouch-demo.mp4)** · **[Demo script](docs/DEMO.md)** · **[Live-call scenes](docs/LIVE-CALL-SCENES.md)** · **[Judge playbook](docs/JUDGE-PLAYBOOK.md)**
+**[Try the live app](https://vouch-co1l.onrender.com)** · **[Demo script](docs/DEMO.md)** · **[Live-call scenes](docs/LIVE-CALL-SCENES.md)** · **[Judge playbook](docs/JUDGE-PLAYBOOK.md)**
 
 </div>
 
 > [!NOTE]
-> The first load of the live app can take up to a minute if the free host has been asleep. Pairings live in the server's memory on the free plan, so a redeploy asks everyone to pair again.
+> The first load of the live app can take up to a minute if the free host has been asleep. Pairings are stored in a temporary file on the free plan, which is erased when the server sleeps, restarts or redeploys, so everyone has to pair again.
 
 ## The problem
 
@@ -34,6 +34,15 @@ A voice, a phone number and a polished message used to be proof of who was askin
 | --- | --- | --- |
 | **A person you know** (a "grandchild in trouble", a boss, a friend) | Asks that person's real, paired phone: *"Did you just ask Grandma for $200?"* | Their Yes or Not me is **signed** with a non-extractable key. Both the server and your phone verify the signature before anything turns green. |
 | **An organisation or stranger** (a "bank" asking for a code, a fake delivery link, remote access, a job-ID request) | Warns in plain words while it is happening, names the dangerous request, and says what to do | Rules run on the phone with no AI; Gemini can add an explanation. It can only add caution. |
+
+<table>
+<tr>
+<td align="center" width="25%"><img src="docs/img/app-home.jpg" alt="Vouch home screen"><br><sub>Home: check a message, or a call</sub></td>
+<td align="center" width="25%"><img src="docs/img/app-family-warning.jpg" alt="Family-emergency scam warning"><br><sub>A plain warning with three steps</sub></td>
+<td align="center" width="25%"><img src="docs/img/app-stop.jpg" alt="Friend says Not me: STOP"><br><sub>Friend says Not me: STOP</sub></td>
+<td align="center" width="25%"><img src="docs/img/app-verified.jpg" alt="Verified with a signed Yes"><br><sub>Signed Yes: Verified</sub></td>
+</tr>
+</table>
 
 ### How a friend check works
 
