@@ -9,6 +9,8 @@
 Two-factor authentication for people: before you send money, your friend's own phone confirms they really asked,
 with an answer signed by a key that never leaves that phone.
 
+**Built during HackPSU Fall 2026.**
+
 [![HackPSU Fall 2026](https://img.shields.io/badge/HackPSU-Fall%202026-4f46e5)](#the-team)
 [![FNB track](https://img.shields.io/badge/track-FNB%20Trust%2C%20Decisions%20%26%20Financial%20Confidence-0b5fff)](#why-it-fits-the-fnb-track)
 [![Node 20+](https://img.shields.io/badge/node-%3E%3D20-3c873a)](#run-it)
