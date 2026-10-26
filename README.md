@@ -26,6 +26,16 @@ with an answer signed by a key that never leaves that phone.
 > [!NOTE]
 > The first load of the live app can take up to a minute if the free host has been asleep. Pairings are stored in a temporary file on the free plan, which is erased when the server sleeps, restarts or redeploys, so everyone has to pair again.
 
+## Try it in a minute
+
+You can see the warnings with one phone and no setup:
+
+1. Open **[vouch-co1l.onrender.com](https://vouch-co1l.onrender.com)** on a phone and type a first name. Your phone makes its own private key.
+2. Tap **Check a message** and paste something like *"We sent a 6 digit code to your phone. Please read it to me to cancel the fraudulent login."* A plain warning appears with three steps to take.
+3. Paste *"dinner at 7? can you pick up the drinks?"* and nothing happens. It should not cry wolf.
+
+The friend check needs two phones: tap **Add someone** on one, scan or type the code on the other, then **Check a message** for a money request. The friend's phone asks, and a signed **Yes** turns it green.
+
 ## The problem
 
 A voice, a phone number and a polished message used to be proof of who was asking. They aren't any more: AI can clone a voice in seconds, and numbers can be spoofed. The FTC reported that consumers lost more than $12.5 billion to fraud in 2024, and $2.95 billion of that was imposter scams ([source](https://www.ftc.gov/news-events/news/press-releases/2025/03/new-ftc-data-show-big-jump-reported-losses-fraud-125-billion-2024); reported losses only). Detecting fakes is a losing arms race, so Vouch checks the *person* instead of the message.
@@ -138,6 +148,30 @@ On a call that is on speaker, Vouch turns the speech into words (the browser's o
 ## Why it fits the FNB track
 
 *Trust, Decisions & Financial Confidence.* The **decision** is a person's signed answer, not a score. The **trust** comes from a key that never leaves the friend's phone and a second check on your own. The **confidence** comes from warnings written in plain, calm words for someone who is scared in the middle of a call, with one clear next step.
+
+## Why it fits the Nittany AI Challenge
+
+The track asks for a clear problem, a meaningful use of AI, a creative approach, a working prototype and a positive impact.
+
+* **A clear problem:** imposter scams, with $2.95 billion reported lost in 2024, made easier by voice cloning.
+* **A meaningful use of AI, with limits:** Gemini reads scams, screenshots and live call words and explains them in plain words. ElevenLabs speaks the alerts and turns call audio into text. The AI can only warn, and only a person can clear a request.
+* **A creative approach:** check the person instead of detecting fakes, and read a call as a scam script unfolding in stages rather than by banned words.
+* **A working prototype:** a live app, real keys and signatures, and 344 automated tests.
+* **Positive impact:** calm, plain warnings for someone scared mid-call, display controls (text size, colours, reading mode, less motion) and no stored message text.
+
+<details>
+<summary><b>Problems we ran into, and what we did</b></summary>
+
+| Problem | What we did |
+| --- | --- |
+| **A Gemini model was retired** (it returned 404 for new keys) and the replacement sometimes hung | A chain of three models, the next one started after one second if the first stalls, all inside a 3-second limit, then a rule-based fallback |
+| **The AI must never approve anything** | Gemini can only add warnings. We ran every scenario with a bogus key and got the same verdicts as rules only |
+| **False alarms**: a real bank saying "we will never ask for your PIN" is not a scam | Negation handling, counter-signals for genuine bank phrases, and a set of everyday messages that must stay quiet |
+| **Live call listening** is hard: echo, noise, and phones that block the microphone | A call engine that scores the shape of a scam over time, plus a typed fallback. Tried on staged calls, not at scale |
+| **Bugs only a real phone showed**: a crash from a variable used before it was declared, and logos that did not load | Fixed and merged. Running it on a device beat reading the code |
+| **The free host loses pairings** when it sleeps or redeploys | A keep-awake ping, no deploys after the freeze, and a clear note that a real product needs persistent storage |
+
+</details>
 
 ## The team
 
