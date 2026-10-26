@@ -11,20 +11,25 @@ with an answer signed by a key that never leaves that phone.
 
 **Built during HackPSU Fall 2026.**
 
-[![HackPSU Fall 2026](https://img.shields.io/badge/HackPSU-Fall%202026-4f46e5)](#the-team)
-[![FNB track](https://img.shields.io/badge/track-FNB%20Trust%2C%20Decisions%20%26%20Financial%20Confidence-0b5fff)](#why-it-fits-the-fnb-track)
-[![Node 20+](https://img.shields.io/badge/node-%3E%3D20-3c873a)](#run-it)
+[![Built at HackPSU Fall 2026](https://img.shields.io/badge/built%20at-HackPSU%20Fall%202026-4f46e5)](#the-team)
+[![FNB Challenge](https://img.shields.io/badge/FNB-Trust%2C%20Decisions%20%26%20Financial%20Confidence-0b5fff)](#why-it-fits-the-fnb-track)
+[![Nittany AI Challenge](https://img.shields.io/badge/Nittany%20AI-Challenge-1e407c)](#why-it-fits-the-nittany-ai-challenge)
+[![Gemini: warns only](https://img.shields.io/badge/Gemini-warns%20only-1a73e8)](#how-it-works)
+[![ElevenLabs](https://img.shields.io/badge/ElevenLabs-voice-111)](#how-it-works)
 [![Tests](https://img.shields.io/badge/tests-344%20passing-2ea44f)](#run-it)
-[![Gemini](https://img.shields.io/badge/AI-Gemini%20(warn%20only)-1a73e8)](#how-it-works)
-[![ElevenLabs](https://img.shields.io/badge/voice-ElevenLabs-111)](#how-it-works)
 [![License: ISC](https://img.shields.io/badge/license-ISC-lightgrey)](LICENSE)
 
 **[Try the live app](https://vouch-co1l.onrender.com)** · **[Watch the demo video](https://youtu.be/3Ak9R70_H0s)** · **[Devpost](https://devpost.com/software/vouch-ai-4q21u7)** · **[Demo script](docs/DEMO.md)** · **[Live-call scenes](docs/LIVE-CALL-SCENES.md)** · **[Judge playbook](docs/JUDGE-PLAYBOOK.md)**
+
+<sub>**Jump to:** [Try it](#try-it-in-a-minute) · [The problem](#the-problem) · [How it works](#how-it-works) · [Tracks](#why-it-fits-the-fnb-track) · [Run it](#run-it) · [Privacy](#privacy) · [Limitations](#limitations) · [Credits](#credits)</sub>
 
 </div>
 
 > [!NOTE]
 > The first load of the live app can take up to a minute if the free host has been asleep. Pairings are stored in a temporary file on the free plan, which is erased when the server sleeps, restarts or redeploys, so everyone has to pair again.
+
+> [!IMPORTANT]
+> **Status:** a prototype built during HackPSU's 24-hour hackathon. The friend check is real end to end (real keys, pairing and signatures). Live call listening has been tried on staged calls, not at scale, and our accuracy checks are a small set, not a study.
 
 ## Try it in a minute
 
@@ -49,10 +54,11 @@ A voice, a phone number and a polished message used to be proof of who was askin
 
 <table>
 <tr>
-<td align="center" width="25%"><img src="docs/img/app-home.jpg" alt="Vouch home screen"><br><sub>Home: check a message, or a call</sub></td>
-<td align="center" width="25%"><img src="docs/img/app-family-warning.jpg" alt="Family-emergency scam warning"><br><sub>A plain warning with three steps</sub></td>
-<td align="center" width="25%"><img src="docs/img/app-stop.jpg" alt="Friend says Not me: STOP"><br><sub>Friend says Not me: STOP</sub></td>
-<td align="center" width="25%"><img src="docs/img/app-verified.jpg" alt="Verified with a signed Yes"><br><sub>Signed Yes: Verified</sub></td>
+<td align="center" width="20%"><img src="docs/img/app-home.jpg" alt="Vouch home screen"><br><sub>Home: check a message, or a call</sub></td>
+<td align="center" width="20%"><img src="docs/img/app-family-warning.jpg" alt="Family-emergency scam warning"><br><sub>A plain warning with three steps</sub></td>
+<td align="center" width="20%"><img src="docs/img/app-stop.jpg" alt="Friend says Not me: STOP"><br><sub>Friend says Not me: STOP</sub></td>
+<td align="center" width="20%"><img src="docs/img/app-verified.jpg" alt="Verified with a signed Yes"><br><sub>Signed Yes: Verified</sub></td>
+<td align="center" width="20%"><img src="docs/img/app-call.png" alt="Live call warning with what to say"><br><sub>Live call: STOP, and what to say</sub></td>
 </tr>
 </table>
 
@@ -203,7 +209,7 @@ Without `GEMINI_API_KEY` the risk layer runs on rules only. Verdicts can only di
 | --- | --- |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The contract between phones and server (events, signed strings, tiers) |
 | [docs/contracts.md](docs/contracts.md) | The risk layer's contracts: tags, payment risk, `analyze()`, `decide()` |
-| `server/src/` | Express + Socket.io + SQLite server; `decision.js` turns answers into red, amber or green |
+| `server/src/` | Express + Socket.IO + SQLite server; `decision.js` turns answers into red, amber or green |
 | `server/src/risk/` | `rules.js` (phrase and payment rules) and `gemini.js` (optional AI tags and explanation) |
 | `web/` | The phone app: plain ES modules, no build step |
 | `bot/` | Optional Vouch Watch: Telegram, SMS and WhatsApp (via Twilio) and live-call listening, started with `node bot/serve.js`; see [bot/README.md](bot/README.md) |
@@ -214,6 +220,11 @@ Without `GEMINI_API_KEY` the risk layer runs on rules only. Verdicts can only di
 | [docs/DEMO-MESSAGES.md](docs/DEMO-MESSAGES.md), [docs/FILMING-GUIDE.md](docs/FILMING-GUIDE.md) | Fictional scam messages and how we film the demo |
 
 ## Privacy
+
+**The short version:** the server never stores message text, audio or screenshots, only a SHA-256 of the normalised text, the amount, the method, the tags and the answer. If a Gemini key is set, pasted text, screenshots and call words are sent to Google to be read. If an ElevenLabs key is set, call audio and voice notes go to ElevenLabs to be turned into words, and spoken alerts send only four fixed phrases. Nothing is saved by Vouch, and no AI can clear a request.
+
+<details>
+<summary><b>The full privacy details</b> (what leaves the phone, the call watcher, the Telegram bot, what the database keeps)</summary>
 
 The server never stores or logs message text, audio or screenshots. For each request it keeps a SHA-256 of the normalized text, the amount, method, tags and the one-line AI summary (not the message). When a Gemini key is set, pasted text, an attached screenshot and, in some modes, call words or call audio are sent to Google's Gemini API for analysis. When a flagged message comes from a visible Telegram sender, their profile picture may also be sent to Gemini to check whether it looks AI-generated (a hint, not proof). If an ElevenLabs key is set, voice notes and call audio are sent to ElevenLabs to be turned into words, and the spoken alerts send ElevenLabs only four fixed phrases (never your message, a name or an amount). Vouch does not store them. Gemini can only add warnings or make a verdict more cautious; it can never clear a request.
 
@@ -232,6 +243,8 @@ The server never stores or logs message text, audio or screenshots. For each req
 **Alerts to family (optional).** A heads-up to a guardian chat names the person and the kind of warning, never the message (a masked number on SMS and WhatsApp). A call alert from the app goes only to the chats that person linked to their own Vouch, with fixed wording, and never to guardian chats.
 
 **Demo soundboard.** It only plays audio files you add yourself to a git-ignored folder. A cloned voice is used only with the speaker's written consent.
+
+</details>
 
 ## Limitations
 
