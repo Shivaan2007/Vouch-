@@ -17,7 +17,7 @@ with an answer signed by a key that never leaves that phone.
 [![ElevenLabs](https://img.shields.io/badge/voice-ElevenLabs-111)](#how-it-works)
 [![License: ISC](https://img.shields.io/badge/license-ISC-lightgrey)](LICENSE)
 
-**[Try the live app](https://vouch-co1l.onrender.com)** · **[Demo script](docs/DEMO.md)** · **[Live-call scenes](docs/LIVE-CALL-SCENES.md)** · **[Judge playbook](docs/JUDGE-PLAYBOOK.md)**
+**[Try the live app](https://vouch-co1l.onrender.com)** · **[Watch the demo video](docs/media/vouch-demo.mp4)** · **[Demo script](docs/DEMO.md)** · **[Live-call scenes](docs/LIVE-CALL-SCENES.md)** · **[Judge playbook](docs/JUDGE-PLAYBOOK.md)**
 
 </div>
 
